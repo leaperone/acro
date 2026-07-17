@@ -1,5 +1,5 @@
-// libghostty 运行时单例。集成方式取自 muxy(MIT, Copyright (c) 2026 Muxy)。
-// ponytail: 剪贴板读取与 IME 预编辑暂未接,粘贴走终端 bracketed paste 之外的路径时再补。
+// libghostty 运行时单例。集成与剪贴板回调取自 muxy
+// (MIT, Copyright (c) 2026 Muxy)的简化版。
 
 import AppKit
 import GhosttyKit
@@ -26,14 +26,37 @@ final class Ghostty {
 
         var rt = ghostty_runtime_config_s()
         rt.userdata = nil
-        rt.supports_selection_clipboard = false
+        rt.supports_selection_clipboard = true
         rt.wakeup_cb = { _ in
             Task { @MainActor in Ghostty.shared.tick() }
         }
         rt.action_cb = { _, _, _ in false }
-        rt.read_clipboard_cb = { _, _, _ in false }
-        rt.confirm_read_clipboard_cb = { _, _, _, _ in }
-        rt.write_clipboard_cb = { _, _, _, _, _ in }
+        rt.read_clipboard_cb = { userdata, _, state in
+            guard let userdata else { return false }
+            let view = Unmanaged<AcroTerminalNSView>.fromOpaque(userdata).takeUnretainedValue()
+            view.completeClipboardRequest(
+                NSPasteboard.general.string(forType: .string) ?? "",
+                state: state,
+                confirmed: false
+            )
+            return true
+        }
+        rt.confirm_read_clipboard_cb = { userdata, content, state, _ in
+            guard let userdata, let content else { return }
+            let view = Unmanaged<AcroTerminalNSView>.fromOpaque(userdata).takeUnretainedValue()
+            view.completeClipboardRequest(String(cString: content), state: state, confirmed: true)
+        }
+        rt.write_clipboard_cb = { _, _, content, count, _ in
+            guard let content, count > 0 else { return }
+            for item in UnsafeBufferPointer(start: content, count: Int(count)) {
+                guard let mime = item.mime, String(cString: mime).hasPrefix("text/plain"),
+                      let data = item.data
+                else { continue }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(String(cString: data), forType: .string)
+                return
+            }
+        }
         rt.close_surface_cb = { userdata, _ in
             guard let userdata else { return }
             let view = Unmanaged<AcroTerminalNSView>.fromOpaque(userdata).takeUnretainedValue()
