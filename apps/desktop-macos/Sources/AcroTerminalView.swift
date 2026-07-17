@@ -9,6 +9,7 @@ import SwiftUI
 final class AcroTerminalNSView: NSView {
     private var surface: ghostty_surface_t?
     private var cStrings: [UnsafeMutablePointer<CChar>] = []
+    private var appliedFocusRequest = 0
     private let command: String
     var onClose: (() -> Void)?
 
@@ -32,7 +33,7 @@ final class AcroTerminalNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         createSurfaceIfNeeded()
-        window?.makeFirstResponder(self)
+        focusTerminal()
     }
 
     override func layout() {
@@ -99,6 +100,18 @@ final class AcroTerminalNSView: NSView {
             self.surface = nil
         }
         onClose?()
+    }
+
+    func applyFocusRequest(_ request: Int) {
+        guard request != appliedFocusRequest else { return }
+        appliedFocusRequest = request
+        focusTerminal()
+    }
+
+    private func focusTerminal() {
+        NSApp.activate()
+        window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(self)
     }
 
     // ---- 焦点 ----
@@ -200,9 +213,7 @@ final class AcroTerminalNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
-        window?.makeFirstResponder(self)
+        focusTerminal()
         forwardMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
     }
 
@@ -245,13 +256,18 @@ final class AcroTerminalNSView: NSView {
 
 struct AcroTerminalView: NSViewRepresentable {
     let command: String
+    let focusRequest: Int
     var onClose: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> AcroTerminalNSView {
         let view = AcroTerminalNSView(command: command)
         view.onClose = onClose
+        view.applyFocusRequest(focusRequest)
         return view
     }
 
-    func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {}
+    func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {
+        nsView.onClose = onClose
+        nsView.applyFocusRequest(focusRequest)
+    }
 }
