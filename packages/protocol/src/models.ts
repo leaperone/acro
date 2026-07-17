@@ -15,20 +15,18 @@ export const Project = z.object({
 });
 export type Project = z.infer<typeof Project>;
 
-export const Worktree = z.object({
+export const Workspace = z.object({
   id: z.string(),
-  projectId: z.string(),
-  path: z.string(),
-  branch: z.string().nullable(),
-  head: z.string().nullable(),
-  isMain: z.boolean(),
+  name: z.string(),
+  projectIds: z.array(z.string()),
+  sessionIds: z.array(z.string()),
+  createdAt: z.string(),
 });
-export type Worktree = z.infer<typeof Worktree>;
+export type Workspace = z.infer<typeof Workspace>;
 
 export const Session = z.object({
   id: z.string(),
   projectId: z.string().nullable(),
-  worktreeId: z.string().nullable(),
   cwd: z.string(),
   command: z.string(),
   cols: z.number().int(),

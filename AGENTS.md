@@ -1,13 +1,14 @@
 # Acro
 
-Acro 是团队内部使用的远程开发控制台。它管理项目、Git Worktree、持久终端、浏览器、模拟器和 macOS Computer Use。
+Acro 是团队内部使用的远程开发控制台。它管理工作区、项目、持久终端、浏览器、模拟器和 macOS Computer Use。
 
 ## 核心边界
 
 - Mac mini 持有仓库、进程、终端会话、浏览器、模拟器和系统权限。
 - iPhone、iPad、MacBook 等客户端只负责显示、输入和控制，不在本地执行开发任务。
 - 不自研终端模拟器、Git 实现或网络穿透协议。优先复用 libghostty、xterm.js、@xterm/headless、系统 Git、Playwright 和安全私网。
-- Worktree 是任务隔离单元。终端、浏览器和模拟器必须归属明确的项目与 Worktree。
+- Workspace 是用户手动创建的工作上下文。只有用户加入 Workspace 的项目才出现在工作台中。
+- Acro 不管理 Git 分支、Worktree 或提交流程。终端里的 Agent 按项目规则自行处理这些工作。
 - 高危 Git、文件和系统操作必须在服务端校验，不能只依赖客户端确认。
 
 ## Monorepo
@@ -38,7 +39,7 @@ Acro 是团队内部使用的远程开发控制台。它管理项目、Git Workt
 ## 工程规则
 
 - 使用 pnpm workspace。协议唯一真源是 `packages/protocol` 的 zod schema，Swift 端类型用 codegen 生成，禁止手工镜像。
-- 优先调用项目已有的 Worktree、构建和 preflight 脚本，不在 Acro 中复制项目规则。
+- 优先调用项目已有的构建和 preflight 脚本，不在 Acro 中复制项目规则。
 - 服务端是会话状态的唯一真相源。客户端重连不能终止服务端进程。
 - 服务端逻辑使用 TypeScript；桌面客户端和 Computer Use helper 使用 Swift。
 - 只为已确认的需求增加依赖、应用或抽象。

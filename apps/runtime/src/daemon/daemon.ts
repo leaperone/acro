@@ -69,7 +69,6 @@ class DaemonSession {
   constructor(
     opts: {
       projectId?: string | undefined;
-      worktreeId?: string | undefined;
       cwd?: string | undefined;
       command?: string | undefined;
       cols: number;
@@ -86,7 +85,6 @@ class DaemonSession {
     this.meta = {
       id: crypto.randomUUID(),
       projectId: opts.projectId ?? null,
-      worktreeId: opts.worktreeId ?? null,
       cwd,
       command: opts.command ?? shell,
       cols: opts.cols,
@@ -236,7 +234,6 @@ const handlers: Record<string, Handler> = {
   "daemon.info": () => ({ boot, pid: process.pid }),
   "session.create": (params: {
     projectId?: string;
-    worktreeId?: string;
     cwd?: string;
     command?: string;
     cols: number;

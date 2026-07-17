@@ -3,10 +3,8 @@
 // 用法:
 //   acro pair <host:port> [--code XXXX] [--name mac]
 //   acro projects
-//   acro worktrees <projectName|id>
-//   acro new <projectName|id> <branch> [base]
 //   acro sessions
-//   acro run [--worktree <id>] [--project <name|id>] [--] [command...]
+//   acro run [--project <name|id>] [--] [command...]
 //   acro attach <sessionId>
 
 import readline from "node:readline";
@@ -52,25 +50,6 @@ async function cmdProjects(client: AcroClient): Promise<void> {
   }
 }
 
-async function cmdWorktrees(client: AcroClient, args: string[]): Promise<void> {
-  const project = await resolveProject(client, args[0] ?? fail("usage: acro worktrees <project>"));
-  for (const w of await client.rpc("worktree.list", { projectId: project.id })) {
-    console.log(`${w.id}  ${w.isMain ? "*" : " "} ${w.branch ?? "(detached)"}  ${w.path}`);
-  }
-}
-
-async function cmdNew(client: AcroClient, args: string[]): Promise<void> {
-  const [ref, branch, base] = args;
-  if (!ref || !branch) fail("usage: acro new <project> <branch> [base]");
-  const project = await resolveProject(client, ref);
-  const w = await client.rpc("worktree.create", {
-    projectId: project.id,
-    branch,
-    ...(base ? { base } : {}),
-  });
-  console.log(`${w.id}  ${w.branch}  ${w.path}`);
-}
-
 async function cmdSessions(client: AcroClient): Promise<void> {
   for (const s of await client.rpc("session.list", {})) {
     const state = s.alive ? "alive" : `exit=${s.exitCode ?? "?"}`;
@@ -83,17 +62,15 @@ function termSize(): { cols: number; rows: number } {
 }
 
 async function cmdRun(client: AcroClient, args: string[]): Promise<void> {
-  const worktreeId = flagValue(args, "--worktree");
   const projectRef = flagValue(args, "--project");
   const rest = args.filter((a, i) => {
     if (a.startsWith("--")) return false;
     const prev = args[i - 1];
-    return !(prev === "--worktree" || prev === "--project");
+    return prev !== "--project";
   });
   const command = rest.length > 0 ? rest.join(" ") : undefined;
   const projectId = projectRef ? (await resolveProject(client, projectRef)).id : undefined;
   const session = await client.rpc("session.create", {
-    ...(worktreeId ? { worktreeId } : {}),
     ...(projectId ? { projectId } : {}),
     ...(command ? { command } : {}),
     ...termSize(),
@@ -175,10 +152,8 @@ async function main(): Promise<void> {
       [
         "acro pair <host:port> [--code XXXX] [--name mac]",
         "acro projects",
-        "acro worktrees <project>",
-        "acro new <project> <branch> [base]",
         "acro sessions",
-        "acro run [--worktree <id>] [--project <p>] [command...]",
+        "acro run [--project <p>] [command...]",
         "acro attach <sessionId>",
       ].join("\n"),
     );
@@ -192,12 +167,6 @@ async function main(): Promise<void> {
   switch (cmd) {
     case "projects":
       await cmdProjects(client);
-      break;
-    case "worktrees":
-      await cmdWorktrees(client, args);
-      break;
-    case "new":
-      await cmdNew(client, args);
       break;
     case "sessions":
       await cmdSessions(client);

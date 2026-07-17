@@ -16,7 +16,8 @@ struct ClientConfig: Codable {
 
     // 与 acro CLI 共用 ~/.acro/client.json,CLI 配对后桌面端直接可用
     static func load() -> ClientConfig? {
-        let path = "\(NSHomeDirectory())/.acro/client.json"
+        let path = ProcessInfo.processInfo.environment["ACRO_CLIENT_CONFIG"]
+            ?? "\(NSHomeDirectory())/.acro/client.json"
         guard let data = FileManager.default.contents(atPath: path) else { return nil }
         return try? JSONDecoder().decode(ClientConfig.self, from: data)
     }
@@ -26,6 +27,7 @@ struct ClientConfig: Codable {
 final class RuntimeConnection: ObservableObject {
     @Published var connected = false
     @Published var projects: [[String: Any]] = []
+    @Published var workspaces: [[String: Any]] = []
     @Published var sessions: [[String: Any]] = []
 
     private var task: URLSessionWebSocketTask?
@@ -91,15 +93,24 @@ final class RuntimeConnection: ObservableObject {
         nextId += 1
         let payload: [String: Any] = ["t": "req", "id": id, "method": method, "params": params]
         let data = try JSONSerialization.data(withJSONObject: payload)
-        try await task.send(.string(String(decoding: data, as: UTF8.self)))
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
+            Task {
+                do {
+                    try await task.send(.string(String(decoding: data, as: UTF8.self)))
+                } catch {
+                    pending.removeValue(forKey: id)?.resume(throwing: error)
+                }
+            }
         }
     }
 
     func refresh() async {
         if let list = try? await rpc("project.list") as? [[String: Any]] {
             projects = list
+        }
+        if let list = try? await rpc("workspace.list") as? [[String: Any]] {
+            workspaces = list
         }
         if let list = try? await rpc("session.list") as? [[String: Any]] {
             sessions = list

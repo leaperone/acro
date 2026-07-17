@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Device, Project, Session, Worktree } from "./models.ts";
+import { Device, Project, Session, Workspace } from "./models.ts";
 
 // 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
 
@@ -47,30 +47,34 @@ export const methods = {
     params: z.object({}),
     result: z.array(Project),
   },
-  "worktree.list": {
-    params: z.object({ projectId: z.string() }),
-    result: z.array(Worktree),
+  "workspace.list": {
+    params: z.object({}),
+    result: z.array(Workspace),
   },
-  "worktree.create": {
-    params: z.object({
-      projectId: z.string(),
-      branch: z.string(),
-      base: z.string().optional(),
-    }),
-    result: Worktree,
+  "workspace.create": {
+    params: z.object({ name: z.string().trim().min(1).max(80) }),
+    result: Workspace,
   },
-  "worktree.remove": {
-    params: z.object({
-      projectId: z.string(),
-      worktreeId: z.string(),
-      force: z.boolean().optional(),
-    }),
+  "workspace.update": {
+    params: z
+      .object({
+        workspaceId: z.string(),
+        name: z.string().trim().min(1).max(80).optional(),
+        projectIds: z.array(z.string()).optional(),
+      })
+      .refine((value) => value.name !== undefined || value.projectIds !== undefined, {
+        message: "name or projectIds is required",
+      }),
+    result: Workspace,
+  },
+  "workspace.remove": {
+    params: z.object({ workspaceId: z.string() }),
     result: z.object({ removed: z.boolean() }),
   },
   "session.create": {
     params: z.object({
+      workspaceId: z.string().optional(),
       projectId: z.string().optional(),
-      worktreeId: z.string().optional(),
       cwd: z.string().optional(),
       command: z.string().optional(),
       cols: z.number().int().min(2).max(1000),
@@ -113,7 +117,6 @@ export const methods = {
   "browser.open": {
     params: z.object({
       url: z.string(),
-      worktreeId: z.string().optional(),
       width: z.number().int().min(320).max(3840).optional(),
       height: z.number().int().min(240).max(2160).optional(),
     }),
@@ -126,7 +129,6 @@ export const methods = {
         browserId: z.string(),
         url: z.string(),
         title: z.string(),
-        worktreeId: z.string().nullable(),
       }),
     ),
   },

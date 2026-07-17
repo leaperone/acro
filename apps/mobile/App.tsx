@@ -13,7 +13,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import * as SecureStore from "expo-secure-store";
 import { WebView } from "react-native-webview";
-import type { Project, Session, Worktree } from "@acro/protocol";
+import type { Project, Session } from "@acro/protocol";
 import { encodeInFrame, FRAME_BROWSER, FRAME_OUT, FRAME_SIM } from "@acro/protocol";
 import { MobileClient, pairWithHost } from "./src/client.ts";
 import { terminalHtml } from "./src/terminal-html.ts";
@@ -204,8 +204,6 @@ function HomeScreen({
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sims, setSims] = useState<SimInfo[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
-  const [newBranch, setNewBranch] = useState("");
 
   const refresh = useCallback(() => {
     void client.rpc("project.list", {}).then(setProjects).catch(() => {});
@@ -223,13 +221,11 @@ function HomeScreen({
 
   const openProject = (p: Project) => {
     setExpanded(expanded === p.id ? null : p.id);
-    void client.rpc("worktree.list", { projectId: p.id }).then(setWorktrees).catch(() => {});
   };
 
-  const createSession = (worktreeId?: string, projectId?: string, command?: string) => {
+  const createSession = (projectId?: string, command?: string) => {
     void client
       .rpc("session.create", {
-        ...(worktreeId ? { worktreeId } : {}),
         ...(projectId ? { projectId } : {}),
         ...(command ? { command } : {}),
         cols: 80,
@@ -254,44 +250,10 @@ function HomeScreen({
             </Pressable>
             {expanded === p.id && (
               <View style={styles.sub}>
-                {worktrees.map((w) => (
-                  <Pressable
-                    key={w.id}
-                    style={styles.row}
-                    onPress={() => createSession(w.id)}
-                  >
-                    <Text style={styles.rowText}>
-                      {w.isMain ? "◆ " : "◇ "}
-                      {w.branch ?? "(detached)"}
-                    </Text>
-                    <Text style={styles.dim}>开终端</Text>
-                  </Pressable>
-                ))}
-                <View style={styles.newRow}>
-                  <TextInput
-                    style={[styles.input, styles.flex]}
-                    placeholder="新分支名"
-                    placeholderTextColor="#666"
-                    autoCapitalize="none"
-                    value={newBranch}
-                    onChangeText={setNewBranch}
-                  />
-                  <Pressable
-                    style={styles.buttonSmall}
-                    onPress={() => {
-                      if (!newBranch.trim()) return;
-                      void client
-                        .rpc("worktree.create", { projectId: p.id, branch: newBranch.trim() })
-                        .then((w) => {
-                          setNewBranch("");
-                          createSession(w.id);
-                        })
-                        .catch(() => {});
-                    }}
-                  >
-                    <Text style={styles.buttonText}>建 Worktree</Text>
-                  </Pressable>
-                </View>
+                <Pressable style={styles.row} onPress={() => createSession(p.id)}>
+                  <Text style={styles.rowText}>终端</Text>
+                  <Text style={styles.dim}>打开</Text>
+                </Pressable>
               </View>
             )}
           </View>
@@ -579,7 +541,6 @@ const styles = StyleSheet.create({
   dead: { color: "#585b70" },
   dim: { color: "#7f849c", fontSize: 13 },
   sub: { backgroundColor: "#181825" },
-  newRow: { flexDirection: "row", gap: 8, padding: 12, alignItems: "center" },
   pairBox: { flex: 1, justifyContent: "center", padding: 24, gap: 12 },
   input: {
     backgroundColor: "#1e1e2e",
@@ -595,12 +556,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: "center",
-  },
-  buttonSmall: {
-    backgroundColor: "#89b4fa",
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
   },
   buttonText: { color: "#11111b", fontWeight: "600" },
   buttonGhost: { padding: 8 },
