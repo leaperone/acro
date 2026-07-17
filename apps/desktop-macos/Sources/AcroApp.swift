@@ -1,6 +1,6 @@
-// Acro Desktop 骨架:工作区侧边栏 + 会话列表。
-// 终端渲染下一步接 libghostty(acro attach 作 surface command,集成方式取自 muxy);
-// 骨架阶段先用 Terminal.app 打开 attach 会话,保证桌面端立即可用。
+// Acro Desktop:工作区侧边栏 + libghostty 终端表面。
+// 终端渲染由 libghostty 完成,surface command 跑 `acro attach <sessionId>`,
+// 会话本体永远活在 Runtime 侧的 terminal daemon 里。
 
 import AppKit
 import SwiftUI
@@ -14,6 +14,7 @@ struct AcroApp: App {
             ContentView()
                 .environmentObject(runtime)
                 .onAppear {
+                    _ = Ghostty.shared // 初始化 libghostty
                     if let config = ClientConfig.load() {
                         runtime.connect(config: config)
                     }
@@ -22,8 +23,23 @@ struct AcroApp: App {
     }
 }
 
+// 解析 attach 命令:node + acro CLI 的绝对路径(GUI 进程没有用户 PATH)
+enum AttachCommand {
+    static func resolve(sessionId: String) -> String {
+        let env = ProcessInfo.processInfo.environment
+        let node = env["ACRO_NODE"]
+            ?? ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+            ?? "node"
+        let cli = env["ACRO_CLI_PATH"]
+            ?? "\(NSHomeDirectory())/project/acro/apps/cli/src/cli.ts"
+        return "\(node) \(cli) attach \(sessionId)"
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var runtime: RuntimeConnection
+    @State private var selectedSessionId: String?
 
     var body: some View {
         NavigationSplitView {
@@ -31,32 +47,55 @@ struct ContentView: View {
                 Section("项目") {
                     ForEach(runtime.projects.indices, id: \.self) { i in
                         let p = runtime.projects[i]
-                        Label(p["name"] as? String ?? "?", systemImage: "folder")
+                        HStack {
+                            Label(p["name"] as? String ?? "?", systemImage: "folder")
+                            Spacer()
+                            Button("开终端") {
+                                Task {
+                                    if let result = try? await runtime.rpc("session.create", [
+                                        "projectId": p["id"] as? String ?? "",
+                                        "cols": 140,
+                                        "rows": 40,
+                                    ]) as? [String: Any], let id = result["id"] as? String {
+                                        await runtime.refresh()
+                                        selectedSessionId = id
+                                    }
+                                }
+                            }
+                            .buttonStyle(.link)
+                        }
                     }
                 }
                 Section("会话") {
                     ForEach(runtime.sessions.indices, id: \.self) { i in
                         let s = runtime.sessions[i]
                         let alive = s["alive"] as? Bool ?? false
+                        let id = s["id"] as? String ?? ""
                         HStack {
                             Circle()
                                 .fill(alive ? Color.green : Color.gray)
                                 .frame(width: 8, height: 8)
                             Text(s["command"] as? String ?? "?")
                                 .lineLimit(1)
-                            Spacer()
-                            if alive, let id = s["id"] as? String {
-                                Button("attach") { openInTerminal(sessionId: id) }
-                                    .buttonStyle(.link)
-                            }
                         }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if alive { selectedSessionId = id }
+                        }
+                        .listRowBackground(selectedSessionId == id ? Color.accentColor.opacity(0.2) : nil)
                     }
                 }
             }
             .listStyle(.sidebar)
         } detail: {
-            if runtime.connected {
-                Text("选择会话,或用 acro CLI 创建")
+            if let sessionId = selectedSessionId {
+                AcroTerminalView(
+                    command: AttachCommand.resolve(sessionId: sessionId),
+                    onClose: { selectedSessionId = nil }
+                )
+                .id(sessionId) // 切换会话时重建 surface
+            } else if runtime.connected {
+                Text("选择会话,或在项目上点\u{201C}开终端\u{201D}")
                     .foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 8) {
@@ -67,16 +106,6 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(minWidth: 720, minHeight: 480)
-    }
-
-    // ponytail: 骨架阶段借 Terminal.app 跑 `acro attach`;libghostty surface 落地后替换
-    private func openInTerminal(sessionId: String) {
-        let script = "tell application \"Terminal\" to do script \"acro attach \(sessionId)\""
-        if let appleScript = NSAppleScript(source: script) {
-            var error: NSDictionary?
-            appleScript.executeAndReturnError(&error)
-            NSWorkspace.shared.launchApplication("Terminal")
-        }
+        .frame(minWidth: 900, minHeight: 560)
     }
 }
