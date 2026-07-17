@@ -27,6 +27,7 @@ final class AcroTerminalNSView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -199,6 +200,8 @@ final class AcroTerminalNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        NSApp.activate()
+        window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(self)
         forwardMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
     }

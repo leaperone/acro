@@ -5,8 +5,16 @@
 import AppKit
 import SwiftUI
 
+final class AcroAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+    }
+}
+
 @main
 struct AcroApp: App {
+    @NSApplicationDelegateAdaptor(AcroAppDelegate.self) private var appDelegate
     @StateObject private var runtime = RuntimeConnection()
 
     var body: some Scene {
@@ -41,11 +49,12 @@ struct ContentView: View {
     @EnvironmentObject var runtime: RuntimeConnection
     @State private var selectedSessionId: String?
     @State private var expandedWorkspaceIds: Set<String> = []
-    @State private var ungroupedExpanded = true
+    @State private var knownWorkspaceIds: Set<String> = []
     @State private var showingWorkspaceEditor = false
     @State private var editingWorkspaceId: String?
     @State private var workspaceName = ""
     @State private var pendingWorkspaceDeletion: [String: Any]?
+    @State private var pendingSessionTermination: [String: Any]?
     @State private var projectPickerWorkspace: [String: Any]?
     @State private var projectQuery = ""
     @State private var errorMessage: String?
@@ -53,20 +62,29 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             List {
-                ForEach(runtime.workspaces.indices, id: \.self) { index in
-                    workspaceRow(runtime.workspaces[index])
-                }
-
-                if !ungroupedSessions.isEmpty {
-                    DisclosureGroup("未分组", isExpanded: $ungroupedExpanded) {
-                        ForEach(ungroupedSessions.indices, id: \.self) { index in
-                            sessionRow(ungroupedSessions[index])
+                Section("工作区") {
+                    if runtime.workspaces.isEmpty {
+                        Button {
+                            presentWorkspaceEditor(workspaceId: nil, name: "")
+                        } label: {
+                            Label("新建工作区", systemImage: "plus")
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        ForEach(runtime.workspaces.indices, id: \.self) { index in
+                            workspaceRow(runtime.workspaces[index])
                         }
                     }
                 }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
+            .onChange(of: workspaceIds, initial: true) { _, ids in
+                let current = Set(ids)
+                expandedWorkspaceIds.formUnion(current.subtracting(knownWorkspaceIds))
+                expandedWorkspaceIds.formIntersection(current)
+                knownWorkspaceIds = current
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -123,6 +141,16 @@ struct ContentView: View {
         } message: {
             Text("运行中的会话会阻止删除。")
         }
+        .confirmationDialog("关闭终端？", isPresented: terminationPresented) {
+            Button("关闭", role: .destructive) {
+                if let session = pendingSessionTermination {
+                    Task { await terminateSession(session) }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("终端中的运行进程会被结束。")
+        }
         .sheet(isPresented: projectPickerPresented) {
             projectPicker
         }
@@ -151,6 +179,13 @@ struct ContentView: View {
                     projectQuery = ""
                 }
             }
+        )
+    }
+
+    private var terminationPresented: Binding<Bool> {
+        Binding(
+            get: { pendingSessionTermination != nil },
+            set: { if !$0 { pendingSessionTermination = nil } }
         )
     }
 
@@ -199,9 +234,8 @@ struct ContentView: View {
         }
     }
 
-    private var ungroupedSessions: [[String: Any]] {
-        let claimed = Set(runtime.workspaces.flatMap { strings($0["sessionIds"]) })
-        return runtime.sessions.filter { !claimed.contains(string($0, "id")) }
+    private var workspaceIds: [String] {
+        runtime.workspaces.map { string($0, "id") }
     }
 
     private func projects(in workspace: [String: Any]) -> [[String: Any]] {
@@ -218,7 +252,9 @@ struct ContentView: View {
     private func sessions(in workspace: [String: Any], projectId: String) -> [[String: Any]] {
         let sessionIds = Set(strings(workspace["sessionIds"]))
         return runtime.sessions.filter {
-            sessionIds.contains(string($0, "id")) && string($0, "projectId") == projectId
+            ($0["alive"] as? Bool ?? false)
+                && sessionIds.contains(string($0, "id"))
+                && string($0, "projectId") == projectId
         }
     }
 
@@ -261,9 +297,14 @@ struct ContentView: View {
             }
             if expanded {
                 if workspaceProjects.isEmpty {
-                    Text("没有项目")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Button {
+                        projectPickerWorkspace = workspace
+                        projectQuery = ""
+                    } label: {
+                        Label("添加项目", systemImage: "plus")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
                         .padding(.leading, 28)
                 } else {
                     ForEach(workspaceProjects.indices, id: \.self) { index in
@@ -307,6 +348,16 @@ struct ContentView: View {
                 sessionRow(projectSessions[index])
                     .padding(.leading, 18)
             }
+            if projectSessions.isEmpty {
+                Button {
+                    Task { await openTerminal(project: project, workspace: workspace) }
+                } label: {
+                    Label("新建终端", systemImage: "terminal")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 18)
+            }
         }
         .contextMenu {
             Button("从工作区移除", role: .destructive) {
@@ -338,6 +389,11 @@ struct ContentView: View {
         .listRowBackground(
             selectedSessionId == sessionId ? Color.accentColor.opacity(0.16) : nil
         )
+        .contextMenu {
+            Button("关闭终端", role: .destructive) {
+                pendingSessionTermination = session
+            }
+        }
     }
 
     private func presentWorkspaceEditor(workspaceId: String?, name: String) {
@@ -424,6 +480,21 @@ struct ContentView: View {
                 selectedSessionId = string(session, "id")
             }
         } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func terminateSession(_ session: [String: Any]) async {
+        do {
+            let sessionId = string(session, "id")
+            _ = try await runtime.rpc("session.kill", ["sessionId": sessionId])
+            if selectedSessionId == sessionId {
+                selectedSessionId = nil
+            }
+            pendingSessionTermination = nil
+            await runtime.refresh()
+        } catch {
+            pendingSessionTermination = nil
             errorMessage = error.localizedDescription
         }
     }
