@@ -1,0 +1,129 @@
+import http from "node:http";
+import os from "node:os";
+import type { Session, Worktree } from "@acro/protocol";
+import { loadConfig } from "./config.ts";
+import { DeviceRegistry } from "./devices.ts";
+import { DaemonClient } from "./daemon/client.ts";
+import { discoverProjects, findProject } from "./projects.ts";
+import { listWorktrees, createWorktree, removeWorktree } from "./worktrees.ts";
+import { createHttpHandler } from "./http.ts";
+import { Gateway, type Handlers } from "./ws.ts";
+import { ensureStateDirs } from "./paths.ts";
+
+interface SnapshotResult {
+  handle: number;
+  seq: number;
+  snapshot: string;
+  cols: number;
+  rows: number;
+}
+
+async function main(): Promise<void> {
+  ensureStateDirs();
+  const config = loadConfig();
+  const registry = new DeviceRegistry();
+  const daemon = await DaemonClient.connect();
+
+  async function findWorktree(worktreeId: string): Promise<Worktree | null> {
+    for (const project of discoverProjects(config.projectRoots)) {
+      const found = (await listWorktrees(project)).find((w) => w.id === worktreeId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const handlers: Handlers = {
+    "device.list": () => registry.list(),
+    "project.list": () => discoverProjects(config.projectRoots),
+    "worktree.list": async (_conn, { projectId }) => {
+      const project = findProject(config.projectRoots, projectId);
+      if (!project) throw new Error("project not found");
+      return listWorktrees(project);
+    },
+    "worktree.create": async (_conn, { projectId, branch, base }) => {
+      const project = findProject(config.projectRoots, projectId);
+      if (!project) throw new Error("project not found");
+      return createWorktree(project, branch, base);
+    },
+    "worktree.remove": async (_conn, { projectId, worktreeId, force }) => {
+      const project = findProject(config.projectRoots, projectId);
+      if (!project) throw new Error("project not found");
+      await removeWorktree(project, worktreeId, force ?? false);
+      return { removed: true };
+    },
+    "session.create": async (_conn, params) => {
+      let cwd = params.cwd;
+      let projectId = params.projectId;
+      if (params.worktreeId) {
+        const worktree = await findWorktree(params.worktreeId);
+        if (!worktree) throw new Error("worktree not found");
+        cwd = worktree.path;
+        projectId = worktree.projectId;
+      } else if (params.projectId) {
+        const project = findProject(config.projectRoots, params.projectId);
+        if (!project) throw new Error("project not found");
+        cwd = project.path;
+      }
+      const { session } = await daemon.request<{ session: Session; handle: number }>(
+        "session.create",
+        { ...params, cwd: cwd ?? os.homedir(), projectId },
+      );
+      return session;
+    },
+    "session.list": () => daemon.request<Session[]>("session.list"),
+    "session.attach": async (conn, { sessionId }) => {
+      const snap = await daemon.request<SnapshotResult>("session.snapshot", { sessionId });
+      conn.attached.set(snap.handle, { sessionId, attachSeq: snap.seq });
+      return {
+        channel: snap.handle,
+        snapshot: snap.snapshot,
+        seq: snap.seq,
+        cols: snap.cols,
+        rows: snap.rows,
+      };
+    },
+    "session.detach": (conn, { sessionId }) => {
+      for (const [channel, st] of conn.attached) {
+        if (st.sessionId === sessionId) conn.attached.delete(channel);
+      }
+      return { detached: true };
+    },
+    "session.resize": async (_conn, params) => {
+      await daemon.request("session.resize", params);
+      return { resized: true };
+    },
+    "session.kill": async (_conn, { sessionId }) => {
+      await daemon.request("session.kill", { sessionId });
+      return { killed: true };
+    },
+  };
+
+  const gateway = new Gateway(registry, handlers, (handle, data) =>
+    daemon.sendInput(handle, data),
+  );
+  daemon.on("frame", (frame) => gateway.forwardFrame(frame));
+  daemon.on("event", (evt) => gateway.broadcastEvent(evt));
+
+  const server = http.createServer(createHttpHandler(registry));
+  server.on("upgrade", (req, socket, head) => gateway.handleUpgrade(req, socket, head));
+  server.listen(config.port, () => {
+    console.log(`[runtime] listening on http://127.0.0.1:${config.port}`);
+    if (!registry.hasDevices() || process.env.ACRO_PRINT_PAIR === "1") {
+      console.log(`[runtime] pair code: ${registry.newPairCode()}`);
+    }
+  });
+
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => {
+      gateway.close();
+      server.close();
+      daemon.close(); // 只断开连接,daemon 和会话继续活着
+      process.exit(0);
+    });
+  }
+}
+
+main().catch((err) => {
+  console.error("[runtime] fatal:", err);
+  process.exit(1);
+});

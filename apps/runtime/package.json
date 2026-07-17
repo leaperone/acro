@@ -1,0 +1,25 @@
+{
+  "name": "@acro/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/index.ts",
+    "check": "tsc --noEmit",
+    "e2e": "node scripts/e2e.ts"
+  },
+  "dependencies": {
+    "@acro/protocol": "workspace:*",
+    "@xterm/addon-serialize": "^0.13.0",
+    "@xterm/headless": "^5.5.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3"
+  }
+}

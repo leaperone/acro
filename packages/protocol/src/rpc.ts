@@ -1,0 +1,140 @@
+import { z } from "zod";
+import { Device, Project, Session, Worktree } from "./models.ts";
+
+// 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
+
+export const RpcRequest = z.object({
+  t: z.literal("req"),
+  id: z.number().int(),
+  method: z.string(),
+  params: z.unknown().optional(),
+});
+export type RpcRequest = z.infer<typeof RpcRequest>;
+
+export const RpcError = z.object({
+  code: z.string(),
+  message: z.string(),
+});
+export type RpcError = z.infer<typeof RpcError>;
+
+export const RpcResponse = z.discriminatedUnion("ok", [
+  z.object({ t: z.literal("res"), id: z.number().int(), ok: z.literal(true), result: z.unknown() }),
+  z.object({ t: z.literal("res"), id: z.number().int(), ok: z.literal(false), error: RpcError }),
+]);
+export type RpcResponse = z.infer<typeof RpcResponse>;
+
+// 事件带 seq + boot:boot 变了说明服务端重启过,客户端必须全量重新同步;
+// seq 用于同一 boot 内的断点续传。
+export const RpcEvent = z.object({
+  t: z.literal("evt"),
+  seq: z.number().int(),
+  boot: z.string(),
+  event: z.string(),
+  payload: z.unknown().optional(),
+});
+export type RpcEvent = z.infer<typeof RpcEvent>;
+
+export const RpcMessage = z.union([RpcRequest, RpcResponse, RpcEvent]);
+export type RpcMessage = z.infer<typeof RpcMessage>;
+
+// 方法表:唯一真源。服务端按它校验入参,客户端按它推导类型,Swift 端按它 codegen。
+export const methods = {
+  "device.list": {
+    params: z.object({}),
+    result: z.array(Device),
+  },
+  "project.list": {
+    params: z.object({}),
+    result: z.array(Project),
+  },
+  "worktree.list": {
+    params: z.object({ projectId: z.string() }),
+    result: z.array(Worktree),
+  },
+  "worktree.create": {
+    params: z.object({
+      projectId: z.string(),
+      branch: z.string(),
+      base: z.string().optional(),
+    }),
+    result: Worktree,
+  },
+  "worktree.remove": {
+    params: z.object({
+      projectId: z.string(),
+      worktreeId: z.string(),
+      force: z.boolean().optional(),
+    }),
+    result: z.object({ removed: z.boolean() }),
+  },
+  "session.create": {
+    params: z.object({
+      projectId: z.string().optional(),
+      worktreeId: z.string().optional(),
+      cwd: z.string().optional(),
+      command: z.string().optional(),
+      cols: z.number().int().min(2).max(1000),
+      rows: z.number().int().min(2).max(1000),
+    }),
+    result: Session,
+  },
+  "session.list": {
+    params: z.object({}),
+    result: z.array(Session),
+  },
+  // attach 返回:连接内 channel、快照(含 scrollback 的 ANSI 序列,base64)、
+  // 快照覆盖到的输出 seq。之后的 OUT 帧从 seq+1 开始。
+  "session.attach": {
+    params: z.object({ sessionId: z.string() }),
+    result: z.object({
+      channel: z.number().int(),
+      snapshot: z.string(),
+      seq: z.number().int(),
+      cols: z.number().int(),
+      rows: z.number().int(),
+    }),
+  },
+  "session.detach": {
+    params: z.object({ sessionId: z.string() }),
+    result: z.object({ detached: z.boolean() }),
+  },
+  "session.resize": {
+    params: z.object({
+      sessionId: z.string(),
+      cols: z.number().int().min(2).max(1000),
+      rows: z.number().int().min(2).max(1000),
+    }),
+    result: z.object({ resized: z.boolean() }),
+  },
+  "session.kill": {
+    params: z.object({ sessionId: z.string() }),
+    result: z.object({ killed: z.boolean() }),
+  },
+} as const;
+
+export type MethodName = keyof typeof methods;
+export type MethodParams<M extends MethodName> = z.infer<(typeof methods)[M]["params"]>;
+export type MethodResult<M extends MethodName> = z.infer<(typeof methods)[M]["result"]>;
+
+// 服务端事件。payload 同样走 zod。
+export const events = {
+  "session.exit": z.object({ sessionId: z.string(), exitCode: z.number().int().nullable() }),
+  "session.created": Session,
+  "session.removed": z.object({ sessionId: z.string() }),
+} as const;
+
+export type EventName = keyof typeof events;
+export type EventPayload<E extends EventName> = z.infer<(typeof events)[E]>;
+
+// HTTP 配对(唯一的非 WS 接口,加上 /health)。
+export const PairRequest = z.object({
+  code: z.string().min(6),
+  deviceName: z.string().min(1).max(64),
+});
+export type PairRequest = z.infer<typeof PairRequest>;
+
+export const PairResponse = z.object({
+  deviceId: z.string(),
+  token: z.string(),
+});
+export type PairResponse = z.infer<typeof PairResponse>;
