@@ -194,6 +194,41 @@ export const methods = {
     params: z.object({ udid: z.string() }),
     result: z.object({ detached: z.boolean() }),
   },
+  // Computer Use:由 acro-helper(Swift)执行,runtime 只做转发与校验
+  "computer.permissions": {
+    params: z.object({}),
+    result: z.object({ accessibility: z.boolean(), screenRecording: z.boolean() }),
+  },
+  "computer.capture": {
+    params: z.object({}),
+    result: z.object({ png: z.string(), width: z.number(), height: z.number() }),
+  },
+  "computer.windows": {
+    params: z.object({}),
+    result: z.object({ windows: z.array(z.unknown()) }),
+  },
+  "computer.click": {
+    params: z.object({ x: z.number(), y: z.number() }),
+    result: z.object({}),
+  },
+  "computer.type": {
+    params: z.object({ text: z.string() }),
+    result: z.object({}),
+  },
+  "computer.key": {
+    params: z.object({
+      keyCode: z.number().int(),
+      command: z.boolean().optional(),
+      option: z.boolean().optional(),
+      control: z.boolean().optional(),
+      shift: z.boolean().optional(),
+    }),
+    result: z.object({}),
+  },
+  "computer.activate": {
+    params: z.object({ bundleId: z.string() }),
+    result: z.object({ activated: z.boolean() }),
+  },
 } as const;
 
 export type MethodName = keyof typeof methods;

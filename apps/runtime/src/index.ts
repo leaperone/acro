@@ -6,6 +6,7 @@ import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
 import { BrowserManager } from "./browser.ts";
 import { SimulatorManager } from "./simulator.ts";
+import { HelperClient } from "./computer.ts";
 import { discoverProjects, findProject } from "./projects.ts";
 import { listWorktrees, createWorktree, removeWorktree } from "./worktrees.ts";
 import { createHttpHandler } from "./http.ts";
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
   const daemon = await DaemonClient.connect();
   const browsers = new BrowserManager();
   const simulators = new SimulatorManager();
+  const helper = new HelperClient();
 
   async function findWorktree(worktreeId: string): Promise<Worktree | null> {
     for (const project of discoverProjects(config.projectRoots)) {
@@ -138,6 +140,17 @@ async function main(): Promise<void> {
       conn.simChannels.clear();
       return { detached: true };
     },
+    // ponytail: computer.* 目前全量转发,项目级安全策略(哪些 app/区域可操作)接入时再收紧
+    "computer.permissions": () =>
+      helper.request<{ accessibility: boolean; screenRecording: boolean }>("permissions.check"),
+    "computer.capture": () =>
+      helper.request<{ png: string; width: number; height: number }>("screen.capture"),
+    "computer.windows": () => helper.request<{ windows: unknown[] }>("window.list"),
+    "computer.click": async (_conn, params) => helper.request("input.click", params),
+    "computer.type": async (_conn, params) => helper.request("input.type", params),
+    "computer.key": async (_conn, params) => helper.request("input.key", params),
+    "computer.activate": (_conn, params) =>
+      helper.request<{ activated: boolean }>("app.activate", params),
   };
 
   const gateway = new Gateway(registry, handlers, (handle, data) =>

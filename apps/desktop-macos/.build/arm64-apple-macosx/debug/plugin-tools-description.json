@@ -1,0 +1,270 @@
+{
+  "builtTestProducts" : [
+
+  ],
+  "copyCommands" : {
+
+  },
+  "explicitTargetDependencyImportCheckingMode" : {
+    "none" : {
+
+    }
+  },
+  "generatedSourceTargetSet" : [
+
+  ],
+  "pluginDescriptions" : [
+
+  ],
+  "swiftCommands" : {
+    "C.AcroDesktop-arm64-apple-macosx-debug.module" : {
+      "executable" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "fileList" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/sources",
+      "importPath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/Modules",
+      "inputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/AcroApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/RuntimeConnection.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/sources"
+        }
+      ],
+      "isLibrary" : false,
+      "moduleName" : "AcroDesktop",
+      "moduleOutputPath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/Modules/AcroDesktop.swiftmodule",
+      "objects" : [
+        "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/AcroApp.swift.o",
+        "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/RuntimeConnection.swift.o"
+      ],
+      "otherArguments" : [
+        "-target",
+        "arm64-apple-macosx14.0",
+        "-incremental",
+        "-enable-batch-mode",
+        "-serialize-diagnostics",
+        "-index-store-path",
+        "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+        "-module-cache-path",
+        "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "AcroDesktop_main",
+        "-swift-version",
+        "5",
+        "-plugin-path",
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+        "-sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-F",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-I",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-L",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+        "-g",
+        "-Xcc",
+        "-isysroot",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+        "-Xcc",
+        "-F",
+        "-Xcc",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "desktop_macos"
+      ],
+      "outputFileMapPath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/output-file-map.json",
+      "outputs" : [
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/AcroApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/RuntimeConnection.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/Modules/AcroDesktop.swiftmodule"
+        }
+      ],
+      "prepareForIndexing" : false,
+      "sources" : [
+        "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/AcroApp.swift",
+        "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/RuntimeConnection.swift"
+      ],
+      "tempsPath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build",
+      "wholeModuleOptimization" : false
+    }
+  },
+  "swiftFrontendCommands" : {
+
+  },
+  "swiftTargetScanArgs" : {
+    "AcroDesktop" : [
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+      "-module-name",
+      "AcroDesktop",
+      "-package-name",
+      "desktop_macos",
+      "-c",
+      "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/AcroApp.swift",
+      "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/RuntimeConnection.swift",
+      "-I",
+      "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/Modules",
+      "-target",
+      "arm64-apple-macosx14.0",
+      "-incremental",
+      "-enable-batch-mode",
+      "-serialize-diagnostics",
+      "-index-store-path",
+      "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/index/store",
+      "-Onone",
+      "-enable-testing",
+      "-j10",
+      "-DSWIFT_PACKAGE",
+      "-DDEBUG",
+      "-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE",
+      "-module-cache-path",
+      "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/ModuleCache",
+      "-parseable-output",
+      "-Xfrontend",
+      "-entry-point-function-name",
+      "-Xfrontend",
+      "AcroDesktop_main",
+      "-swift-version",
+      "5",
+      "-plugin-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing",
+      "-sdk",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-F",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-I",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-L",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib",
+      "-g",
+      "-Xcc",
+      "-isysroot",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+      "-Xcc",
+      "-F",
+      "-Xcc",
+      "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks",
+      "-Xcc",
+      "-fPIC",
+      "-Xcc",
+      "-g",
+      "-package-name",
+      "desktop_macos",
+      "-driver-use-frontend-path",
+      "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+    ]
+  },
+  "targetDependencyMap" : {
+    "AcroDesktop" : [
+
+    ]
+  },
+  "testDiscoveryCommands" : {
+
+  },
+  "testEntryPointCommands" : {
+
+  },
+  "traitConfiguration" : {
+    "default" : {
+
+    }
+  },
+  "writeCommands" : {
+    "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop-entitlement.plist" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<entitlement-plist>"
+        },
+        {
+          "kind" : "virtual",
+          "name" : "<com.apple.security.get-task-allow>"
+        }
+      ],
+      "outputFilePath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop-entitlement.plist"
+    },
+    "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/sources" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<sources-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/AcroApp.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/Sources/RuntimeConnection.swift"
+        }
+      ],
+      "outputFilePath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/sources"
+    },
+    "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.product/Objects.LinkFileList" : {
+      "alwaysOutOfDate" : false,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<link-file-list>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/AcroApp.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.build/RuntimeConnection.swift.o"
+        }
+      ],
+      "outputFilePath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/AcroDesktop.product/Objects.LinkFileList"
+    },
+    "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt" : {
+      "alwaysOutOfDate" : true,
+      "inputs" : [
+        {
+          "kind" : "virtual",
+          "name" : "<swift-get-version>"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
+        }
+      ],
+      "outputFilePath" : "/Users/harry/project/acro/.claude/worktrees/feat-first-loop/apps/desktop-macos/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+    }
+  }
+}
