@@ -15,6 +15,12 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
 struct WorkbenchActions {
     let newWorkspace: () -> Void
     let newTerminal: () -> Void
+    let showCommandPalette: () -> Void
+    let splitRight: () -> Void
+    let splitDown: () -> Void
+    let focusPreviousPane: () -> Void
+    let focusNextPane: () -> Void
+    let closePane: () -> Void
     let toggleLeftSidebar: () -> Void
     let toggleInspector: () -> Void
     let previousSession: () -> Void
@@ -22,6 +28,9 @@ struct WorkbenchActions {
     let focusTerminal: () -> Void
     let closeSession: () -> Void
     let canCreateTerminal: Bool
+    let canSplitTerminal: Bool
+    let canNavigatePanes: Bool
+    let canClosePane: Bool
     let canNavigateSessions: Bool
     let canFocusTerminal: Bool
     let canCloseSession: Bool
@@ -58,6 +67,13 @@ struct AcroWorkbenchCommands: Commands {
         }
 
         CommandMenu("工作台") {
+            Button("命令面板", systemImage: "command") {
+                actions?.showCommandPalette()
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+
+            Divider()
+
             Button(actions?.leftSidebarVisible == true ? "隐藏左侧栏" : "显示左侧栏", systemImage: "sidebar.left") {
                 actions?.toggleLeftSidebar()
             }
@@ -67,6 +83,38 @@ struct AcroWorkbenchCommands: Commands {
                 actions?.toggleInspector()
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
+
+            Divider()
+
+            Button("向右分屏", systemImage: "rectangle.split.2x1") {
+                actions?.splitRight()
+            }
+            .keyboardShortcut("d", modifiers: .command)
+            .disabled(actions?.canSplitTerminal != true)
+
+            Button("向下分屏", systemImage: "rectangle.split.1x2") {
+                actions?.splitDown()
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(actions?.canSplitTerminal != true)
+
+            Button("上一个窗格", systemImage: "chevron.left") {
+                actions?.focusPreviousPane()
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            .disabled(actions?.canNavigatePanes != true)
+
+            Button("下一个窗格", systemImage: "chevron.right") {
+                actions?.focusNextPane()
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            .disabled(actions?.canNavigatePanes != true)
+
+            Button("关闭窗格", systemImage: "rectangle.split.2x1") {
+                actions?.closePane()
+            }
+            .keyboardShortcut("w", modifiers: .command)
+            .disabled(actions?.canClosePane != true)
 
             Divider()
 
@@ -124,37 +172,77 @@ struct AcroApp: App {
 enum AttachCommand {
     static func resolve(sessionId: String) -> String {
         let env = ProcessInfo.processInfo.environment
-        let node = env["ACRO_NODE"]
-            ?? ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        let runtimeArguments = runtimeProgramArguments()
+        let node = [
+            env["ACRO_NODE"],
+            runtimeArguments?.first,
+            "/opt/homebrew/bin/node",
+            "/opt/homebrew/opt/node@22/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ]
+        .compactMap { $0 }
+        .first { FileManager.default.isExecutableFile(atPath: $0) }
             ?? "node"
         let cli = env["ACRO_CLI_PATH"]
+            ?? runtimeCliPath(from: runtimeArguments)
             ?? "\(NSHomeDirectory())/project/acro/apps/cli/src/cli.ts"
-        return "\(node) \(cli) attach \(sessionId)"
+        return [node, cli, "attach", sessionId].map(shellQuote).joined(separator: " ")
     }
+
+    private static func runtimeProgramArguments() -> [String]? {
+        let path = "\(NSHomeDirectory())/Library/LaunchAgents/one.leaper.acro.runtime.plist"
+        guard let data = FileManager.default.contents(atPath: path),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dictionary = plist as? [String: Any],
+              let arguments = dictionary["ProgramArguments"] as? [String]
+        else { return nil }
+        return arguments
+    }
+
+    private static func runtimeCliPath(from arguments: [String]?) -> String? {
+        guard let runtimeScript = arguments?.dropFirst().first else { return nil }
+        var root = URL(fileURLWithPath: runtimeScript)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        return root.appendingPathComponent("apps/cli/src/cli.ts").path
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+}
+
+private enum TerminalSplit: Equatable {
+    case horizontal
+    case vertical
 }
 
 struct ContentView: View {
     @EnvironmentObject var runtime: RuntimeConnection
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-    @State private var inspectorVisible = true
+    @State private var inspectorVisible = false
     @State private var selectedWorkspaceId: String?
     @State private var selectedProjectId: String?
     @State private var selectedSessionId: String?
+    @State private var paneSessionIds: [String] = []
+    @State private var focusedPaneIndex = 0
+    @State private var terminalSplit: TerminalSplit?
     @State private var terminalFocusRequest = 0
     @State private var expandedWorkspaceIds: Set<String> = []
-    @State private var knownWorkspaceIds: Set<String> = []
     @State private var showingWorkspaceEditor = false
     @State private var editingWorkspaceId: String?
     @State private var workspaceName = ""
     @State private var pendingWorkspaceDeletion: [String: Any]?
     @State private var pendingSessionTermination: [String: Any]?
     @State private var projectPickerWorkspace: [String: Any]?
+    @State private var terminalProjectPickerWorkspace: [String: Any]?
     @State private var projectQuery = ""
+    @State private var showingCommandPalette = false
     @State private var errorMessage: String?
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        ZStack {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     Text("工作区")
@@ -184,13 +272,17 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
             .onChange(of: workspaceIds, initial: true) { _, ids in
                 let current = Set(ids)
-                expandedWorkspaceIds.formUnion(current.subtracting(knownWorkspaceIds))
                 expandedWorkspaceIds.formIntersection(current)
-                knownWorkspaceIds = current
                 if let selectedWorkspaceId, !current.contains(selectedWorkspaceId) {
                     self.selectedWorkspaceId = nil
                     selectedProjectId = nil
                     selectedSessionId = nil
+                }
+                if self.selectedWorkspaceId == nil,
+                   let first = runtime.workspaces.first {
+                    let workspaceId = string(first, "id")
+                    self.selectedWorkspaceId = workspaceId
+                    expandedWorkspaceIds.insert(workspaceId)
                 }
             }
             .toolbar {
@@ -204,38 +296,64 @@ struct ContentView: View {
                     .accessibilityLabel("新建工作区")
                 }
             }
-        } detail: {
-            HSplitView {
-                terminalContent
-                    .frame(minWidth: 440, maxHeight: .infinity)
-                    .layoutPriority(1)
+            } detail: {
+                HSplitView {
+                    terminalContent
+                        .frame(minWidth: 440, maxHeight: .infinity)
+                        .layoutPriority(1)
 
-                if inspectorVisible {
-                    inspector
-                        .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
-                        .frame(maxHeight: .infinity)
+                    if inspectorVisible {
+                        inspector
+                            .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
+                            .frame(maxHeight: .infinity)
+                    }
+                }
+                .navigationTitle(windowTitle)
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingCommandPalette = true
+                        } label: {
+                            Image(systemName: "command")
+                        }
+                        .help("命令面板")
+                        .accessibilityLabel("命令面板")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            inspectorVisible.toggle()
+                        } label: {
+                            Image(systemName: "sidebar.right")
+                        }
+                        .help(inspectorVisible ? "隐藏右侧栏" : "显示右侧栏")
+                        .accessibilityLabel(inspectorVisible ? "隐藏右侧栏" : "显示右侧栏")
+                    }
                 }
             }
-            .navigationTitle(windowTitle)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        inspectorVisible.toggle()
-                    } label: {
-                        Image(systemName: "sidebar.right")
-                    }
-                    .help(inspectorVisible ? "隐藏右侧栏" : "显示右侧栏")
-                    .accessibilityLabel(inspectorVisible ? "隐藏右侧栏" : "显示右侧栏")
+
+            if showingCommandPalette {
+                CommandPalette(items: commandPaletteItems) {
+                    showingCommandPalette = false
+                    requestTerminalFocus()
                 }
+                .zIndex(10)
             }
         }
-        .frame(minHeight: 620)
+        .frame(minWidth: 760, minHeight: 620)
         .onChange(of: activeSessionIds) { _, ids in
+            paneSessionIds = paneSessionIds.filter(ids.contains)
+            if paneSessionIds.count < 2 { terminalSplit = nil }
+            focusedPaneIndex = min(focusedPaneIndex, max(paneSessionIds.count - 1, 0))
             if let selectedSessionId, !ids.contains(selectedSessionId) {
                 self.selectedSessionId = nil
             }
-            if self.selectedSessionId == nil, let session = activeSessions.first {
-                selectSession(session)
+            if self.selectedSessionId == nil {
+                if let paneId = paneSessionIds.first,
+                   let session = activeSessions.first(where: { string($0, "id") == paneId }) {
+                    focusSession(session, paneIndex: 0)
+                } else if let session = activeSessions.first {
+                    showSession(session)
+                }
             }
         }
         .alert(
@@ -277,13 +395,24 @@ struct ContentView: View {
         .sheet(isPresented: projectPickerPresented) {
             projectPicker
         }
+        .sheet(isPresented: terminalProjectPickerPresented) {
+            terminalProjectPicker
+        }
         .focusedSceneValue(\.workbenchActions, workbenchActions)
     }
 
     private var workbenchActions: WorkbenchActions {
         WorkbenchActions(
             newWorkspace: { presentWorkspaceEditor(workspaceId: nil, name: "") },
-            newTerminal: { createTerminalFromSelection() },
+            newTerminal: {
+                if let selectedWorkspace { requestNewTerminal(in: selectedWorkspace) }
+            },
+            showCommandPalette: { showingCommandPalette = true },
+            splitRight: { splitTerminal(.horizontal) },
+            splitDown: { splitTerminal(.vertical) },
+            focusPreviousPane: { focusAdjacentPane(offset: -1) },
+            focusNextPane: { focusAdjacentPane(offset: 1) },
+            closePane: { closeFocusedPane() },
             toggleLeftSidebar: {
                 columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
             },
@@ -294,7 +423,10 @@ struct ContentView: View {
             closeSession: {
                 if let selectedSession { pendingSessionTermination = selectedSession }
             },
-            canCreateTerminal: selectedWorkspace != nil && selectedProject != nil,
+            canCreateTerminal: selectedWorkspace.map { !projects(in: $0).isEmpty } ?? false,
+            canSplitTerminal: selectedWorkspace != nil && selectedProject != nil && selectedSession != nil,
+            canNavigatePanes: paneSessionIds.count > 1,
+            canClosePane: !paneSessionIds.isEmpty,
             canNavigateSessions: activeSessions.count > 1,
             canFocusTerminal: selectedSession != nil,
             canCloseSession: selectedSession != nil,
@@ -340,23 +472,34 @@ struct ContentView: View {
 
     @ViewBuilder
     private var terminalContent: some View {
-        if let sessionId = selectedSessionId {
-            AcroTerminalView(
-                command: AttachCommand.resolve(sessionId: sessionId),
-                focusRequest: terminalFocusRequest,
-                onClose: { selectedSessionId = nil }
-            )
-            .id(sessionId)
-        } else if selectedWorkspace != nil, selectedProject != nil {
+        if terminalSplit == .horizontal, paneSessionIds.count == 2 {
+            HSplitView {
+                terminalPane(sessionId: paneSessionIds[0], paneIndex: 0)
+                terminalPane(sessionId: paneSessionIds[1], paneIndex: 1)
+            }
+        } else if terminalSplit == .vertical, paneSessionIds.count == 2 {
+            VSplitView {
+                terminalPane(sessionId: paneSessionIds[0], paneIndex: 0)
+                terminalPane(sessionId: paneSessionIds[1], paneIndex: 1)
+            }
+        } else if let sessionId = paneSessionIds.first ?? selectedSessionId {
+            terminalPane(sessionId: sessionId, paneIndex: 0)
+        } else if let selectedWorkspace {
             ContentUnavailableView {
                 Label("没有终端", systemImage: "terminal")
             } actions: {
-                Button("新建终端") {
-                    createTerminalFromSelection()
+                if projects(in: selectedWorkspace).isEmpty {
+                    Button("添加项目") {
+                        projectPickerWorkspace = selectedWorkspace
+                    }
+                } else {
+                    Button("新建终端") {
+                        requestNewTerminal(in: selectedWorkspace)
+                    }
                 }
             }
         } else if runtime.connected {
-            ContentUnavailableView("选择项目", systemImage: "folder")
+            ContentUnavailableView("选择工作区", systemImage: "square.stack.3d.up")
         } else {
             VStack(spacing: 8) {
                 Text("未连接 Runtime")
@@ -365,6 +508,68 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func terminalPane(sessionId: String, paneIndex: Int) -> some View {
+        let session = activeSessions.first { string($0, "id") == sessionId }
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "terminal")
+                    .foregroundStyle(.secondary)
+                Text(session.map(sessionDisplayName) ?? "终端")
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                if let session {
+                    Text(URL(fileURLWithPath: string(session, "cwd")).lastPathComponent)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    splitTerminal(.horizontal)
+                } label: {
+                    Image(systemName: "rectangle.split.2x1")
+                }
+                .buttonStyle(.borderless)
+                .help("向右分屏")
+                .accessibilityLabel("向右分屏")
+                Button {
+                    splitTerminal(.vertical)
+                } label: {
+                    Image(systemName: "rectangle.split.1x2")
+                }
+                .buttonStyle(.borderless)
+                .help("向下分屏")
+                .accessibilityLabel("向下分屏")
+                Button {
+                    closePane(at: paneIndex)
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.borderless)
+                .help("关闭窗格")
+                .accessibilityLabel("关闭窗格")
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 36)
+            .background(paneIndex == focusedPaneIndex ? Color.accentColor.opacity(0.1) : Color.clear)
+
+            Divider()
+
+            if let session {
+                AcroTerminalView(
+                    command: AttachCommand.resolve(sessionId: sessionId),
+                    focusRequest: paneIndex == focusedPaneIndex ? terminalFocusRequest : 0,
+                    onClose: { closePane(at: paneIndex) },
+                    onFocus: { focusSession(session, paneIndex: paneIndex) }
+                )
+                .id(sessionId)
+            } else {
+                ContentUnavailableView("终端已结束", systemImage: "terminal")
+            }
+        }
+        .frame(minWidth: 260, minHeight: 220)
     }
 
     private var inspector: some View {
@@ -412,7 +617,9 @@ struct ContentView: View {
                             inspectorRow("名称", string(selectedProject, "name"))
                             inspectorRow("路径", string(selectedProject, "path"), monospaced: true)
                             Button("新建终端", systemImage: "plus") {
-                                createTerminalFromSelection()
+                                if let selectedWorkspace {
+                                    Task { _ = await openTerminal(project: selectedProject, workspace: selectedWorkspace) }
+                                }
                             }
                             .controlSize(.small)
                         }
@@ -501,6 +708,18 @@ struct ContentView: View {
         )
     }
 
+    private var terminalProjectPickerPresented: Binding<Bool> {
+        Binding(
+            get: { terminalProjectPickerWorkspace != nil },
+            set: {
+                if !$0 {
+                    terminalProjectPickerWorkspace = nil
+                    projectQuery = ""
+                }
+            }
+        )
+    }
+
     private var terminationPresented: Binding<Bool> {
         Binding(
             get: { pendingSessionTermination != nil },
@@ -553,6 +772,144 @@ struct ContentView: View {
         }
     }
 
+    private var terminalProjectPicker: some View {
+        NavigationStack {
+            List {
+                ForEach(filteredTerminalProjects.indices, id: \.self) { index in
+                    let project = filteredTerminalProjects[index]
+                    Button {
+                        guard let workspace = terminalProjectPickerWorkspace else { return }
+                        terminalProjectPickerWorkspace = nil
+                        projectQuery = ""
+                        Task { _ = await openTerminal(project: project, workspace: workspace) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label(string(project, "name"), systemImage: "folder")
+                            Text(string(project, "path"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .searchable(text: $projectQuery, prompt: "搜索项目")
+            .navigationTitle("新建终端")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        terminalProjectPickerWorkspace = nil
+                        projectQuery = ""
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 460, minHeight: 420)
+    }
+
+    private var filteredTerminalProjects: [[String: Any]] {
+        guard let workspace = terminalProjectPickerWorkspace else { return [] }
+        let values = projects(in: workspace)
+        let query = projectQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return values }
+        return values.filter {
+            string($0, "name").localizedCaseInsensitiveContains(query)
+                || string($0, "path").localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var commandPaletteItems: [CommandPaletteItem] {
+        var items: [CommandPaletteItem] = [
+            CommandPaletteItem(
+                id: "command:new-workspace",
+                title: "新建工作区",
+                subtitle: "创建新的任务分组",
+                symbol: "square.stack.3d.up.badge.plus",
+                action: { presentWorkspaceEditor(workspaceId: nil, name: "") }
+            ),
+            CommandPaletteItem(
+                id: "command:toggle-sidebar",
+                title: columnVisibility == .detailOnly ? "显示左侧栏" : "隐藏左侧栏",
+                subtitle: nil,
+                symbol: "sidebar.left",
+                action: {
+                    columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                }
+            ),
+            CommandPaletteItem(
+                id: "command:toggle-inspector",
+                title: inspectorVisible ? "隐藏右侧栏" : "显示右侧栏",
+                subtitle: nil,
+                symbol: "sidebar.right",
+                action: { inspectorVisible.toggle() }
+            ),
+        ]
+
+        if let selectedWorkspace {
+            if !projects(in: selectedWorkspace).isEmpty {
+                items.append(CommandPaletteItem(
+                    id: "command:new-terminal",
+                    title: "新建终端",
+                    subtitle: string(selectedWorkspace, "name"),
+                    symbol: "terminal",
+                    action: { requestNewTerminal(in: selectedWorkspace) }
+                ))
+            }
+            if selectedSession != nil, selectedProject != nil {
+                items.append(contentsOf: [
+                    CommandPaletteItem(
+                        id: "command:split-right",
+                        title: "向右分屏",
+                        subtitle: "在同一项目中创建终端",
+                        symbol: "rectangle.split.2x1",
+                        action: { splitTerminal(.horizontal) }
+                    ),
+                    CommandPaletteItem(
+                        id: "command:split-down",
+                        title: "向下分屏",
+                        subtitle: "在同一项目中创建终端",
+                        symbol: "rectangle.split.1x2",
+                        action: { splitTerminal(.vertical) }
+                    ),
+                ])
+            }
+        }
+
+        for workspace in runtime.workspaces {
+            let workspaceId = string(workspace, "id")
+            items.append(CommandPaletteItem(
+                id: "workspace:\(workspaceId)",
+                title: string(workspace, "name"),
+                subtitle: "工作区 · \(activeSessionCount(in: workspace)) 个运行终端",
+                symbol: "square.stack.3d.up",
+                action: { selectWorkspace(workspace) }
+            ))
+            for project in projects(in: workspace) {
+                items.append(CommandPaletteItem(
+                    id: "project:\(workspaceId):\(string(project, "id"))",
+                    title: string(project, "name"),
+                    subtitle: "\(string(workspace, "name")) · \(string(project, "path"))",
+                    symbol: "folder",
+                    action: {
+                        Task { _ = await openTerminal(project: project, workspace: workspace) }
+                    }
+                ))
+            }
+            for session in sessions(in: workspace) {
+                items.append(CommandPaletteItem(
+                    id: "session:\(string(session, "id"))",
+                    title: sessionDisplayName(session),
+                    subtitle: "\(string(workspace, "name")) · \(string(session, "cwd"))",
+                    symbol: "terminal",
+                    action: { showSession(session) }
+                ))
+            }
+        }
+        return items
+    }
+
     private var workspaceIds: [String] {
         runtime.workspaces.map { string($0, "id") }
     }
@@ -568,25 +925,24 @@ struct ContentView: View {
         return runtime.projects.filter { !existing.contains(string($0, "id")) }
     }
 
-    private func sessions(in workspace: [String: Any], projectId: String) -> [[String: Any]] {
+    private func sessions(in workspace: [String: Any]) -> [[String: Any]] {
         let sessionIds = Set(strings(workspace["sessionIds"]))
         return runtime.sessions.filter {
             ($0["alive"] as? Bool ?? false)
                 && sessionIds.contains(string($0, "id"))
-                && string($0, "projectId") == projectId
         }
+        .sorted { string($0, "createdAt") < string($1, "createdAt") }
     }
 
     private func workspaceRow(_ workspace: [String: Any]) -> some View {
         let workspaceId = string(workspace, "id")
         let expanded = expandedWorkspaceIds.contains(workspaceId)
         let workspaceProjects = projects(in: workspace)
-        return VStack(alignment: .leading, spacing: 4) {
+        let workspaceSessions = sessions(in: workspace)
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Button {
-                    selectedWorkspaceId = workspaceId
-                    selectedProjectId = nil
-                    selectedSessionId = nil
+                    selectWorkspace(workspace)
                     if expanded {
                         expandedWorkspaceIds.remove(workspaceId)
                     } else {
@@ -597,34 +953,44 @@ struct ContentView: View {
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
                             .font(.caption)
                             .frame(width: 10)
-                        Label(string(workspace, "name"), systemImage: "square.stack.3d.up")
+                        Image(systemName: "square.stack.3d.up")
+                            .frame(width: 16)
+                        Text(string(workspace, "name"))
                             .lineLimit(1)
+                        Spacer(minLength: 6)
+                        if !workspaceSessions.isEmpty {
+                            Text("\(workspaceSessions.count)")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .frame(height: 18)
+                                .background(.quaternary, in: Capsule())
+                        }
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .frame(height: 34)
                     .background(
-                        selectedWorkspaceId == workspaceId && selectedProjectId == nil
+                        selectedWorkspaceId == workspaceId
                             ? Color.accentColor.opacity(0.16)
                             : Color.clear
                     )
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(string(workspace, "name"))
                 .accessibilityValue(expanded ? "已展开" : "已折叠")
-                Spacer()
-                Button("添加项目", systemImage: "plus") {
-                    selectedWorkspaceId = workspaceId
-                    projectPickerWorkspace = workspace
-                    projectQuery = ""
+                if !workspaceProjects.isEmpty {
+                    Button {
+                        requestNewTerminal(in: workspace)
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .frame(width: 24, height: 24)
+                    .buttonStyle(.borderless)
+                    .help("新建终端")
+                    .accessibilityLabel("在 \(string(workspace, "name")) 新建终端")
                 }
-                .labelStyle(.iconOnly)
-                .frame(width: 20, height: 20)
-                .buttonStyle(.borderless)
-                .disabled(availableProjects(for: workspace).isEmpty)
-                .help("添加项目")
-                .accessibilityLabel("添加项目")
             }
             if expanded {
                 if workspaceProjects.isEmpty {
@@ -637,16 +1003,55 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                        .padding(.leading, 28)
+                    .padding(.leading, 34)
                 } else {
-                    ForEach(workspaceProjects.indices, id: \.self) { index in
-                        projectRow(workspaceProjects[index], workspace: workspace)
+                    ForEach(workspaceSessions.indices, id: \.self) { index in
+                        sessionRow(workspaceSessions[index], workspace: workspace)
                             .padding(.leading, 18)
                     }
+                    if workspaceSessions.isEmpty {
+                        Text("尚无运行终端")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, 42)
+                            .frame(height: 28)
+                    }
+                    HStack(spacing: 14) {
+                        Button {
+                            requestNewTerminal(in: workspace)
+                        } label: {
+                            Label("新建终端", systemImage: "plus")
+                        }
+                        Button {
+                            projectPickerWorkspace = workspace
+                            projectQuery = ""
+                        } label: {
+                            Label("添加项目", systemImage: "folder.badge.plus")
+                        }
+                        .disabled(availableProjects(for: workspace).isEmpty)
+                    }
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 36)
+                    .frame(height: 30)
                 }
             }
         }
         .contextMenu {
+            if !workspaceProjects.isEmpty {
+                Menu("移除项目") {
+                    ForEach(workspaceProjects.indices, id: \.self) { index in
+                        let project = workspaceProjects[index]
+                        Button(string(project, "name"), role: .destructive) {
+                            Task { await removeProject(project, from: workspace) }
+                        }
+                        .disabled(sessions(in: workspace).contains {
+                            string($0, "projectId") == string(project, "id")
+                        })
+                    }
+                }
+            }
             Button("重命名") {
                 presentWorkspaceEditor(
                     workspaceId: workspaceId,
@@ -659,104 +1064,53 @@ struct ContentView: View {
         }
     }
 
-    private func projectRow(_ project: [String: Any], workspace: [String: Any]) -> some View {
-        let projectId = string(project, "id")
-        let projectSessions = sessions(in: workspace, projectId: projectId)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                Button {
-                    selectProject(project, workspace: workspace)
-                } label: {
-                    Label(string(project, "name"), systemImage: "folder")
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                        .background(
-                            selectedWorkspaceId == string(workspace, "id")
-                                && selectedProjectId == projectId
-                                && selectedSessionId == nil
-                                ? Color.accentColor.opacity(0.16)
-                                : Color.clear
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Spacer()
-                Button("新建终端", systemImage: "plus") {
-                    selectProject(project, workspace: workspace)
-                    Task { await openTerminal(project: project, workspace: workspace) }
-                }
-                .labelStyle(.iconOnly)
-                .frame(width: 20, height: 20)
-                .buttonStyle(.borderless)
-                .help("新建终端")
-                .accessibilityLabel("在 \(string(project, "name")) 新建终端")
-            }
-            ForEach(projectSessions.indices, id: \.self) { index in
-                sessionRow(projectSessions[index])
-                    .padding(.leading, 18)
-            }
-            if projectSessions.isEmpty {
-                Button {
-                    selectProject(project, workspace: workspace)
-                    Task { await openTerminal(project: project, workspace: workspace) }
-                } label: {
-                    Label("新建终端", systemImage: "terminal")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .padding(.leading, 18)
-            }
-        }
-        .contextMenu {
-            Button("从工作区移除", role: .destructive) {
-                Task { await removeProject(project, from: workspace) }
-            }
-        }
-    }
-
-    private func sessionRow(_ session: [String: Any]) -> some View {
+    private func sessionRow(_ session: [String: Any], workspace: [String: Any]) -> some View {
         let alive = session["alive"] as? Bool ?? false
         let sessionId = string(session, "id")
         return Button {
-            if alive { selectSession(session) }
+            if alive { showSession(session) }
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 Circle()
                     .fill(alive ? Color.green : Color.gray)
                     .frame(width: 7, height: 7)
-                Text(string(session, "command"))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(sessionDisplayName(session))
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(string(session, "command"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Spacer()
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 8)
+            .frame(height: 46)
             .background(
-                selectedSessionId == sessionId ? Color.accentColor.opacity(0.16) : Color.clear
+                selectedSessionId == sessionId ? Color.accentColor.opacity(0.22) : Color.clear
             )
-            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!alive)
-        .accessibilityLabel(string(session, "command"))
+        .accessibilityLabel(sessionDisplayName(session))
         .accessibilityValue(alive ? "运行中" : "已结束")
         .contextMenu {
+            if let project = project(for: session) {
+                Button("在同一项目新建终端") {
+                    Task { _ = await openTerminal(project: project, workspace: workspace) }
+                }
+                Divider()
+            }
             Button("关闭终端", role: .destructive) {
                 pendingSessionTermination = session
             }
         }
     }
 
-    private func selectProject(_ project: [String: Any], workspace: [String: Any]) {
-        selectedWorkspaceId = string(workspace, "id")
-        selectedProjectId = string(project, "id")
-        selectedSessionId = nil
-        expandedWorkspaceIds.insert(string(workspace, "id"))
-    }
-
-    private func selectSession(_ session: [String: Any]) {
+    private func showSession(_ session: [String: Any]) {
         let sessionId = string(session, "id")
         guard let workspace = runtime.workspaces.first(where: {
             strings($0["sessionIds"]).contains(sessionId)
@@ -765,13 +1119,120 @@ struct ContentView: View {
         selectedWorkspaceId = string(workspace, "id")
         selectedProjectId = string(session, "projectId")
         selectedSessionId = sessionId
+        if let paneIndex = paneSessionIds.firstIndex(of: sessionId) {
+            focusedPaneIndex = paneIndex
+        } else if terminalSplit != nil, paneSessionIds.count == 2 {
+            paneSessionIds[focusedPaneIndex] = sessionId
+        } else {
+            paneSessionIds = [sessionId]
+            focusedPaneIndex = 0
+            terminalSplit = nil
+        }
         expandedWorkspaceIds.insert(string(workspace, "id"))
         requestTerminalFocus()
     }
 
-    private func createTerminalFromSelection() {
-        guard let selectedWorkspace, let selectedProject else { return }
-        Task { await openTerminal(project: selectedProject, workspace: selectedWorkspace) }
+    private func selectWorkspace(_ workspace: [String: Any]) {
+        let workspaceId = string(workspace, "id")
+        selectedWorkspaceId = workspaceId
+        expandedWorkspaceIds.insert(workspaceId)
+        if let selectedSessionId,
+           strings(workspace["sessionIds"]).contains(selectedSessionId) {
+            return
+        }
+        if let session = sessions(in: workspace).first {
+            showSession(session)
+        } else {
+            selectedProjectId = nil
+            selectedSessionId = nil
+            paneSessionIds = []
+            focusedPaneIndex = 0
+            terminalSplit = nil
+        }
+    }
+
+    private func focusSession(_ session: [String: Any], paneIndex: Int) {
+        let sessionId = string(session, "id")
+        guard let workspace = runtime.workspaces.first(where: {
+            strings($0["sessionIds"]).contains(sessionId)
+        }) else { return }
+        selectedWorkspaceId = string(workspace, "id")
+        selectedProjectId = string(session, "projectId")
+        selectedSessionId = sessionId
+        focusedPaneIndex = paneIndex
+        expandedWorkspaceIds.insert(string(workspace, "id"))
+    }
+
+    private func requestNewTerminal(in workspace: [String: Any]) {
+        let workspaceProjects = projects(in: workspace)
+        selectedWorkspaceId = string(workspace, "id")
+        expandedWorkspaceIds.insert(string(workspace, "id"))
+        switch workspaceProjects.count {
+        case 0:
+            projectPickerWorkspace = workspace
+            projectQuery = ""
+        case 1:
+            Task { _ = await openTerminal(project: workspaceProjects[0], workspace: workspace) }
+        default:
+            terminalProjectPickerWorkspace = workspace
+            projectQuery = ""
+        }
+    }
+
+    private func splitTerminal(_ direction: TerminalSplit) {
+        if paneSessionIds.count == 2 {
+            terminalSplit = direction
+            requestTerminalFocus()
+            return
+        }
+        guard let sourceSessionId = selectedSessionId,
+              let selectedWorkspace,
+              let selectedProject
+        else { return }
+        Task {
+            guard let session = await openTerminal(
+                project: selectedProject,
+                workspace: selectedWorkspace,
+                activate: false
+            ) else { return }
+            paneSessionIds = [sourceSessionId, string(session, "id")]
+            terminalSplit = direction
+            focusSession(session, paneIndex: 1)
+            requestTerminalFocus()
+        }
+    }
+
+    private func focusAdjacentPane(offset: Int) {
+        guard paneSessionIds.count > 1 else { return }
+        let index = (focusedPaneIndex + offset + paneSessionIds.count) % paneSessionIds.count
+        guard let session = activeSessions.first(where: {
+            string($0, "id") == paneSessionIds[index]
+        }) else { return }
+        focusSession(session, paneIndex: index)
+        requestTerminalFocus()
+    }
+
+    private func closeFocusedPane() {
+        closePane(at: focusedPaneIndex)
+    }
+
+    private func closePane(at index: Int) {
+        guard paneSessionIds.indices.contains(index) else { return }
+        paneSessionIds.remove(at: index)
+        terminalSplit = nil
+        focusedPaneIndex = 0
+        guard !paneSessionIds.isEmpty else {
+            selectedSessionId = nil
+            return
+        }
+        guard let sessionId = paneSessionIds.first,
+              let session = activeSessions.first(where: { string($0, "id") == sessionId })
+        else {
+            selectedSessionId = nil
+            return
+        }
+        focusSession(session, paneIndex: 0)
+        requestTerminalFocus()
     }
 
     private func selectAdjacentSession(offset: Int) {
@@ -780,12 +1241,30 @@ struct ContentView: View {
             string($0, "id") == selectedSessionId
         } ?? (offset > 0 ? -1 : 0)
         let nextIndex = (currentIndex + offset + activeSessions.count) % activeSessions.count
-        selectSession(activeSessions[nextIndex])
+        showSession(activeSessions[nextIndex])
     }
 
     private func requestTerminalFocus() {
         guard selectedSessionId != nil else { return }
         terminalFocusRequest &+= 1
+    }
+
+    private func project(for session: [String: Any]) -> [String: Any]? {
+        let projectId = string(session, "projectId")
+        return runtime.projects.first { string($0, "id") == projectId }
+    }
+
+    private func sessionDisplayName(_ session: [String: Any]) -> String {
+        let projectName = project(for: session).map { string($0, "name") } ?? "终端"
+        let projectId = string(session, "projectId")
+        guard let workspace = runtime.workspaces.first(where: {
+            strings($0["sessionIds"]).contains(string(session, "id"))
+        }) else { return projectName }
+        let related = sessions(in: workspace).filter { string($0, "projectId") == projectId }
+        guard related.count > 1,
+              let index = related.firstIndex(where: { string($0, "id") == string(session, "id") })
+        else { return projectName }
+        return "\(projectName) · \(index + 1)"
     }
 
     private func presentWorkspaceEditor(workspaceId: String?, name: String) {
@@ -863,6 +1342,8 @@ struct ContentView: View {
             if let selectedSessionId, sessionIds.contains(selectedSessionId) {
                 self.selectedSessionId = nil
             }
+            paneSessionIds.removeAll { sessionIds.contains($0) }
+            if paneSessionIds.count < 2 { terminalSplit = nil }
             if selectedWorkspaceId == string(workspace, "id") {
                 selectedWorkspaceId = nil
                 selectedProjectId = nil
@@ -875,7 +1356,12 @@ struct ContentView: View {
         }
     }
 
-    private func openTerminal(project: [String: Any], workspace: [String: Any]) async {
+    @discardableResult
+    private func openTerminal(
+        project: [String: Any],
+        workspace: [String: Any],
+        activate: Bool = true
+    ) async -> [String: Any]? {
         do {
             if let session = try await runtime.rpc("session.create", [
                 "workspaceId": string(workspace, "id"),
@@ -884,11 +1370,13 @@ struct ContentView: View {
                 "rows": 40,
             ]) as? [String: Any] {
                 await runtime.refresh()
-                selectSession(session)
+                if activate { showSession(session) }
+                return session
             }
         } catch {
             errorMessage = error.localizedDescription
         }
+        return nil
     }
 
     private func terminateSession(_ session: [String: Any]) async {
@@ -908,12 +1396,21 @@ struct ContentView: View {
             _ = try await runtime.rpc("session.kill", ["sessionId": sessionId])
             pendingSessionTermination = nil
             await runtime.refresh()
+            let removedPaneIndex = paneSessionIds.firstIndex(of: sessionId)
+            paneSessionIds.removeAll { $0 == sessionId }
+            if paneSessionIds.count < 2 { terminalSplit = nil }
             if wasSelected {
-                if let fallbackSession {
-                    selectSession(fallbackSession)
+                if let paneId = paneSessionIds.first,
+                   let paneSession = activeSessions.first(where: { string($0, "id") == paneId }) {
+                    focusSession(paneSession, paneIndex: 0)
+                    requestTerminalFocus()
+                } else if let fallbackSession {
+                    showSession(fallbackSession)
                 } else {
                     selectedSessionId = nil
                 }
+            } else if let removedPaneIndex {
+                focusedPaneIndex = min(removedPaneIndex, max(paneSessionIds.count - 1, 0))
             }
         } catch {
             pendingSessionTermination = nil

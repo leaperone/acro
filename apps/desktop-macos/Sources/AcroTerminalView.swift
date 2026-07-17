@@ -1,6 +1,6 @@
 // libghostty 终端表面。surface command 跑 `acro attach`,把 Runtime 的 WS 会话桥到本地 PTY
-// (cmux 验证过的模式)。事件转发取自 muxy(MIT, Copyright (c) 2026 Muxy)的简化版:
-// ponytail: 无 IME/marked text/option-as-alt,中文输入法组合输入接 NSTextInputClient 时再补。
+// (cmux 验证过的模式)。事件转发与 NSTextInputClient 接入取自 muxy
+// (MIT, Copyright (c) 2026 Muxy)的简化版。
 
 import AppKit
 import GhosttyKit
@@ -11,7 +11,14 @@ final class AcroTerminalNSView: NSView {
     private var cStrings: [UnsafeMutablePointer<CChar>] = []
     private var appliedFocusRequest = 0
     private let command: String
+    private var markedText = ""
+    private var _markedRange = NSRange(location: NSNotFound, length: 0)
+    private var _selectedMarkedRange = NSRange(location: 0, length: 0)
+    private var keyTextAccumulator: [String] = []
+    private var currentKeyEvent: NSEvent?
+    private var commandSelectorCalled = false
     var onClose: (() -> Void)?
+    var onFocus: (() -> Void)?
 
     init(command: String) {
         self.command = command
@@ -118,7 +125,10 @@ final class AcroTerminalNSView: NSView {
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok, let surface { ghostty_surface_set_focus(surface, true) }
+        if ok {
+            if let surface { ghostty_surface_set_focus(surface, true) }
+            onFocus?()
+        }
         return ok
     }
 
@@ -156,30 +166,104 @@ final class AcroTerminalNSView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        guard let surface else { return }
-        var key = buildKeyEvent(
-            from: event,
-            action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
-        )
+        guard let surface else {
+            super.keyDown(with: event)
+            return
+        }
+        let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let text = event.characters ?? ""
-        let printable = !text.isEmpty && !flags.contains(.command)
-            && !(text.unicodeScalars.first.map { $0.value < 0x20 || ($0.value >= 0xF700 && $0.value <= 0xF8FF) } ?? true)
-        if printable, !flags.contains(.control) {
-            key.consumed_mods = ghostty_input_mods_e(
-                rawValue: Self.mods(from: flags).rawValue
-                    & (GHOSTTY_MODS_SHIFT.rawValue | GHOSTTY_MODS_ALT.rawValue)
-            )
+
+        if flags.contains(.command) || flags.contains(.control) {
+            if isAppShortcut(event) {
+                super.keyDown(with: event)
+                return
+            }
+            var key = buildKeyEvent(from: event, action: action)
+            key.text = nil
+            _ = ghostty_surface_key(surface, key)
+            return
+        }
+
+        let hadMarkedText = hasMarkedText()
+        currentKeyEvent = event
+        keyTextAccumulator = []
+        commandSelectorCalled = false
+        let optionAsAlt = translatedOptionAsAlt(for: event)
+        interpretKeyEvents([optionAsAlt ? eventStrippingOption(event) : event])
+        currentKeyEvent = nil
+        syncPreedit(clearIfNeeded: hadMarkedText)
+
+        if !keyTextAccumulator.isEmpty {
+            for text in keyTextAccumulator {
+                var key = buildKeyEvent(from: event, action: action)
+                key.consumed_mods = commandSelectorCalled
+                    ? GHOSTTY_MODS_NONE
+                    : consumedMods(from: flags, consumeOption: !optionAsAlt)
+                text.withCString { ptr in
+                    key.text = ptr
+                    _ = ghostty_surface_key(surface, key)
+                }
+            }
+            return
+        }
+
+        var key = buildKeyEvent(from: event, action: action)
+        key.consumed_mods = commandSelectorCalled
+            ? GHOSTTY_MODS_NONE
+            : consumedMods(from: flags, consumeOption: !optionAsAlt)
+        key.composing = hasMarkedText() || hadMarkedText
+        let text = filterSpecialCharacters(event.characters ?? "")
+        if !text.isEmpty, !key.composing {
             text.withCString { ptr in
                 key.text = ptr
                 _ = ghostty_surface_key(surface, key)
             }
         } else {
+            key.consumed_mods = GHOSTTY_MODS_NONE
+            key.text = nil
             _ = ghostty_surface_key(surface, key)
         }
     }
 
+    override func doCommand(by selector: Selector) {
+        commandSelectorCalled = true
+    }
+
+    override func insertText(_ insertString: Any) {
+        insertText(insertString, replacementRange: NSRange(location: NSNotFound, length: 0))
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if isAppShortcut(event) { return false }
+        guard window?.firstResponder === self,
+              event.type == .keyDown,
+              let surface
+        else { return false }
+        var key = buildKeyEvent(
+            from: event,
+            action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
+        )
+        key.text = nil
+        guard ghostty_surface_key_is_binding(surface, key, nil) else { return false }
+        _ = ghostty_surface_key(surface, key)
+        return true
+    }
+
+    private func isAppShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command) else { return false }
+        let key = (event.charactersIgnoringModifiers ?? "").lowercased()
+        if flags.contains(.option) {
+            return ["b", "i", "t"].contains(key) || event.keyCode == 123 || event.keyCode == 124
+        }
+        if flags.contains(.shift) {
+            return ["p", "d", "w", "[", "]"].contains(key)
+        }
+        return ["n", "t", "d", "w"].contains(key)
+    }
+
     override func keyUp(with event: NSEvent) {
+        if isAppShortcut(event) { return }
         guard let surface else { return }
         let key = buildKeyEvent(from: event, action: GHOSTTY_ACTION_RELEASE)
         _ = ghostty_surface_key(surface, key)
@@ -187,6 +271,7 @@ final class AcroTerminalNSView: NSView {
 
     override func flagsChanged(with event: NSEvent) {
         guard let surface else { return }
+        if hasMarkedText() { return }
         let isPress: Bool = switch event.keyCode {
         case 56, 60: event.modifierFlags.contains(.shift)
         case 58, 61: event.modifierFlags.contains(.option)
@@ -252,22 +337,153 @@ final class AcroTerminalNSView: NSView {
             owner: self
         ))
     }
+
+    func completeClipboardRequest(_ text: String, state: UnsafeMutableRawPointer?, confirmed: Bool) {
+        guard let surface else { return }
+        text.withCString { ptr in
+            ghostty_surface_complete_clipboard_request(surface, ptr, state, confirmed)
+        }
+    }
+
+    private func consumedMods(
+        from flags: NSEvent.ModifierFlags,
+        consumeOption: Bool
+    ) -> ghostty_input_mods_e {
+        var mods = GHOSTTY_MODS_NONE.rawValue
+        if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
+        if consumeOption, flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
+        return ghostty_input_mods_e(rawValue: mods)
+    }
+
+    private func translatedOptionAsAlt(for event: NSEvent) -> Bool {
+        guard let surface, event.modifierFlags.contains(.option) else { return false }
+        let translated = ghostty_surface_key_translation_mods(surface, Self.mods(from: event.modifierFlags))
+        return translated.rawValue & GHOSTTY_MODS_ALT.rawValue == 0
+    }
+
+    private func eventStrippingOption(_ event: NSEvent) -> NSEvent {
+        NSEvent.keyEvent(
+            with: event.type,
+            location: event.locationInWindow,
+            modifierFlags: event.modifierFlags.subtracting(.option),
+            timestamp: event.timestamp,
+            windowNumber: event.windowNumber,
+            context: nil,
+            characters: event.charactersIgnoringModifiers ?? "",
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "",
+            isARepeat: event.isARepeat,
+            keyCode: event.keyCode
+        ) ?? event
+    }
+
+    private func syncPreedit(clearIfNeeded: Bool = true) {
+        guard let surface else { return }
+        if hasMarkedText(), !markedText.isEmpty {
+            markedText.withCString { ptr in
+                ghostty_surface_preedit(surface, ptr, UInt(markedText.utf8.count))
+            }
+        } else if clearIfNeeded {
+            ghostty_surface_preedit(surface, nil, 0)
+        }
+    }
+
+    private func filterSpecialCharacters(_ text: String) -> String {
+        guard let scalar = text.unicodeScalars.first else { return "" }
+        let value = scalar.value
+        return value < 0x20 || (0xF700 ... 0xF8FF).contains(value) ? "" : text
+    }
+}
+
+extension AcroTerminalNSView: NSTextInputClient {
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        unmarkText()
+        guard !text.isEmpty else { return }
+        if currentKeyEvent != nil {
+            keyTextAccumulator.append(text)
+        } else if let surface {
+            text.withCString { ptr in
+                var key = ghostty_input_key_s()
+                key.action = GHOSTTY_ACTION_PRESS
+                key.text = ptr
+                _ = ghostty_surface_key(surface, key)
+            }
+        }
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        markedText = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        _markedRange = markedText.isEmpty
+            ? NSRange(location: NSNotFound, length: 0)
+            : NSRange(location: 0, length: markedText.utf16.count)
+        let length = markedText.utf16.count
+        let location = selectedRange.location == NSNotFound ? 0 : min(selectedRange.location, length)
+        _selectedMarkedRange = NSRange(
+            location: location,
+            length: min(selectedRange.length, length - location)
+        )
+        if currentKeyEvent == nil { syncPreedit() }
+    }
+
+    func unmarkText() {
+        guard hasMarkedText() else { return }
+        markedText = ""
+        _markedRange = NSRange(location: NSNotFound, length: 0)
+        _selectedMarkedRange = NSRange(location: 0, length: 0)
+        syncPreedit()
+    }
+
+    func selectedRange() -> NSRange { _selectedMarkedRange }
+    func markedRange() -> NSRange { _markedRange }
+    func hasMarkedText() -> Bool { _markedRange.location != NSNotFound }
+
+    func attributedSubstring(
+        forProposedRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSAttributedString? {
+        guard hasMarkedText(), range.location != NSNotFound else { return nil }
+        let start = max(range.location, _markedRange.location)
+        let end = min(range.location + range.length, _markedRange.location + _markedRange.length)
+        guard start <= end else { return nil }
+        let safeRange = NSRange(location: start, length: end - start)
+        actualRange?.pointee = safeRange
+        return NSAttributedString(string: (markedText as NSString).substring(with: safeRange))
+    }
+
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        guard let surface else { return .zero }
+        var x: Double = 0
+        var y: Double = 0
+        var width: Double = 0
+        var height: Double = 0
+        ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+        let viewPoint = NSPoint(x: x, y: bounds.height - y)
+        let screenPoint = window?.convertPoint(toScreen: convert(viewPoint, to: nil)) ?? viewPoint
+        actualRange?.pointee = range
+        return NSRect(x: screenPoint.x, y: screenPoint.y - height, width: width, height: height)
+    }
 }
 
 struct AcroTerminalView: NSViewRepresentable {
     let command: String
     let focusRequest: Int
     var onClose: (() -> Void)? = nil
+    var onFocus: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> AcroTerminalNSView {
         let view = AcroTerminalNSView(command: command)
         view.onClose = onClose
+        view.onFocus = onFocus
         view.applyFocusRequest(focusRequest)
         return view
     }
 
     func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {
         nsView.onClose = onClose
+        nsView.onFocus = onFocus
         nsView.applyFocusRequest(focusRequest)
     }
 }
