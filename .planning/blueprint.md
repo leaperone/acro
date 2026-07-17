@@ -43,7 +43,7 @@ Mac mini Acro Runtime
 职责：
 
 - 发现项目和 Worktree，调用系统 Git 与仓库自带脚本。
-- 管理持久终端。使用 tmux 保存会话，使用 node-pty 接入终端数据。
+- 管理持久终端。终端由独立 terminal daemon 进程持有：node-pty 驱动 PTY，服务端 headless 终端维护屏幕状态，checkpoint 落盘。Runtime 升级或崩溃不影响会话。daemon 实现大量取用 orca（MIT）的代码。
 - 运行 Codex、Claude Code、开发服务器和普通命令。
 - 使用 Playwright 管理运行在 Mac mini 上的 Chromium。
 - 调用 Swift helper 完成窗口发现、截图、输入和应用唤醒。
@@ -52,7 +52,7 @@ Mac mini Acro Runtime
 
 ### Desktop Client
 
-使用 Electron、React 和 xterm.js。
+原生 macOS 应用，使用 Swift 和 SwiftUI。终端渲染嵌入 libghostty：`acro attach` CLI 把 Runtime 的 WebSocket 会话桥接到 surface command（cmux 验证过的模式，集成方式取自 muxy）。交互设计对标 cmux：垂直标签、Worktree 卡片侧边栏、通知环、命令面板。
 
 职责：
 
@@ -102,8 +102,9 @@ Machine
 
 - 内部使用安全私网连接，不向公网暴露 Runtime 端口。
 - 首次连接使用一次性配对码，之后使用设备密钥。
-- HTTP 处理查询和命令；WebSocket 传输终端、状态事件和画面帧。
-- 控制消息使用共享 TypeScript 类型；终端数据使用二进制帧。
+- 每个客户端与 Runtime 之间只有一条 WebSocket：控制消息使用 zod 定义的 JSON-RPC，终端数据使用二进制帧，事件带 `seq` 和 `boot_id` 支持断点续传。HTTP 只用于配对和健康检查。
+- 协议唯一真源是 `packages/protocol` 的 zod schema；Swift 客户端类型用 codegen 生成，禁止手工镜像。
+- 客户端 attach 会话时先收快照再收增量；多客户端输入所有权由 Runtime 仲裁。
 - 服务端为每个写操作检查设备、项目、Worktree 和操作类型。
 - 删除、强推、覆盖文件、生产操作和 Computer Use 必须执行项目级安全规则。
 
@@ -145,8 +146,8 @@ Acro 达到以下结果时，基础架构成立：
 ## 实现顺序
 
 1. Runtime、设备配对和项目发现。
-2. Worktree 与持久终端。
-3. Desktop Client 的工作区、分屏和快捷键。
+2. Worktree 与终端 daemon（持久会话、快照、`seq` 续传）。
+3. Swift Desktop Client 的工作区、分屏、快捷键和 libghostty attach。
 4. 服务端 Chromium 和浏览器表面。
 5. Mobile Client 和断线重连。
 6. Swift helper、Simulator 和 Computer Use。
@@ -163,9 +164,14 @@ Acro 达到以下结果时，基础架构成立：
 
 这些风险必须通过真实 Mac mini、iPhone 和 MacBook 的端到端验证解决，不能只靠单元测试或桌面本地演示判断。
 
-## 参考
+## 参考与取材规则
 
-- Orca 本地源码：`/Users/harry/project/acro/.tmp/orca`
-- Orca 上游：`https://github.com/stablyai/orca`
-- cmux 本地源码：`/Users/harry/project/acro/.tmp/cmux`
-- cmux 上游：`https://github.com/manaflow-ai/cmux`
+| 项目 | 本地路径 | License | 用途 |
+|---|---|---|---|
+| orca | `.tmp/orca` | MIT | 服务端代码来源：terminal daemon、RPC、编排模型可直接取用 |
+| cmux | `.tmp/cmux` | GPL-3.0 | 只作交互设计与架构参考，禁止复制代码 |
+| muxy | `.tmp/muxy` | MIT | SwiftUI + libghostty 集成与移动端远程协议的代码来源 |
+| ghostty | `.tmp/ghostty` | MIT | libghostty 上游，xcframework 构建方式 |
+| otty | `.tmp/otty` | Apache-2.0 | Rust 终端工作台，快照帧与后端抽象参考 |
+
+MIT / Apache 项目的代码在理解后可以取用并保留版权声明。libghostty 没有喂字节 API，远程会话必须走 attach CLI 作 surface command 的模式；embedding API 不稳定，需 pin ghostty fork。
