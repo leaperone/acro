@@ -117,11 +117,9 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
 
     mutating func prune(validSessionIds: Set<String>) {
         root = root?.pruning(validSessionIds: validSessionIds)
-        if let focusedSessionId, !validSessionIds.contains(focusedSessionId) {
-            self.focusedSessionId = root?.firstSessionId
-        }
-        if focusedSessionId == nil {
+        guard let focusedSessionId, root?.contains(focusedSessionId) == true else {
             focusedSessionId = root?.firstSessionId
+            return
         }
     }
 }
