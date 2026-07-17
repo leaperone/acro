@@ -9,6 +9,7 @@ export const paths = {
   state: stateDir,
   config: path.join(stateDir, "config.json"),
   devices: path.join(stateDir, "devices.json"),
+  workspaces: path.join(stateDir, "workspaces.json"),
   daemonSocket: path.join(stateDir, "daemon.sock"),
   daemonMeta: path.join(stateDir, "daemon.meta.json"),
   daemonLog: path.join(stateDir, "daemon.log"),

@@ -31,7 +31,10 @@ export function saveClientConfig(config: ClientConfig): void {
 export class AcroClient {
   private ws: WebSocket;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  private pending = new Map<
+    number,
+    { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+  >();
   onFrame: ((frame: Frame) => void) | null = null;
   onEvent: ((event: string, payload: unknown) => void) | null = null;
 
@@ -56,6 +59,7 @@ export class AcroClient {
         const p = client.pending.get(msg.id);
         if (!p) return;
         client.pending.delete(msg.id);
+        clearTimeout(p.timer);
         if (msg.ok) p.resolve(msg.result);
         else p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
       } else if (msg.t === "evt") {
@@ -67,12 +71,12 @@ export class AcroClient {
 
   rpc<M extends MethodName>(method: M, params: MethodParams<M>): Promise<MethodResult<M>> {
     const id = this.nextId++;
-    this.ws.send(JSON.stringify({ t: "req", id, method, params }));
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pending.delete(id)) reject(new Error(`rpc timeout: ${method}`));
       }, 30000);
+      this.pending.set(id, { resolve, reject, timer });
+      this.ws.send(JSON.stringify({ t: "req", id, method, params }));
     });
   }
 

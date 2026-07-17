@@ -31,7 +31,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  // 假 dev server:模拟 worktree 里的 localhost 服务
+  // 假 dev server:模拟项目里的 localhost 服务
   const page = http.createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/html" });
     res.end(

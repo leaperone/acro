@@ -38,7 +38,6 @@ interface BrowserSurface {
   handle: number;
   page: Page;
   cdp: CDPSession;
-  worktreeId: string | null;
   width: number;
   height: number;
   seq: number;
@@ -66,7 +65,6 @@ export class BrowserManager extends EventEmitter {
 
   async open(opts: {
     url: string;
-    worktreeId?: string | undefined;
     width?: number | undefined;
     height?: number | undefined;
   }): Promise<string> {
@@ -81,7 +79,6 @@ export class BrowserManager extends EventEmitter {
       handle: this.nextHandle++,
       page,
       cdp,
-      worktreeId: opts.worktreeId ?? null,
       width,
       height,
       seq: 0,
@@ -107,12 +104,11 @@ export class BrowserManager extends EventEmitter {
     return surface;
   }
 
-  list(): Array<{ browserId: string; url: string; title: string; worktreeId: string | null }> {
+  list(): Array<{ browserId: string; url: string; title: string }> {
     return [...this.surfaces.values()].map((s) => ({
       browserId: s.id,
       url: s.page.url(),
       title: "", // page.title() 是异步的,列表里不阻塞;客户端要标题走事件
-      worktreeId: s.worktreeId,
     }));
   }
 

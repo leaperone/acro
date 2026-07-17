@@ -1,4 +1,4 @@
-// 端到端验证:配对 → 项目发现 → worktree → 会话 → 断线重连 → Runtime 重启会话存活。
+// 端到端验证:配对 → Workspace → 项目 → 会话 → 断线重连 → Runtime 重启会话存活。
 // 全部走真实进程和真实 WS,不 mock。失败即 assert 抛错。
 
 import assert from "node:assert/strict";
@@ -14,7 +14,7 @@ import {
   FRAME_OUT,
   type Project,
   type Session,
-  type Worktree,
+  type Workspace,
 } from "@acro/protocol";
 
 const PORT = 18790;
@@ -181,26 +181,33 @@ async function main(): Promise<void> {
     assert.equal(projects[0]!.name, "demo");
     const project = projects[0]!;
 
-    // worktree 创建
-    const worktree = await client.rpc<Worktree>("worktree.create", {
-      projectId: project.id,
-      branch: "test/e2e",
+    const workspace = await client.rpc<Workspace>("workspace.create", { name: "E2E" });
+    assert.deepEqual(workspace.projectIds, []);
+    const configuredWorkspace = await client.rpc<Workspace>("workspace.update", {
+      workspaceId: workspace.id,
+      projectIds: [project.id],
     });
-    assert.ok(worktree.path.includes(".claude/worktrees/test-e2e"));
-    assert.equal(worktree.branch, "test/e2e");
-    const worktrees = await client.rpc<Worktree[]>("worktree.list", { projectId: project.id });
-    assert.equal(worktrees.length, 2);
-    log("worktree created");
+    assert.deepEqual(configuredWorkspace.projectIds, [project.id]);
+    log("workspace created");
 
-    // 会话:在 worktree 里跑 /bin/sh(避免用户 shell 配置噪音)
+    // 会话:在项目目录里跑 /bin/sh(避免用户 shell 配置噪音)
     const session = await client.rpc<Session>("session.create", {
-      worktreeId: worktree.id,
+      workspaceId: workspace.id,
+      projectId: project.id,
       command: "/bin/sh",
       cols: 80,
       rows: 24,
     });
     assert.equal(session.alive, true);
-    assert.equal(session.cwd, worktree.path);
+    assert.equal(session.cwd, project.path);
+    const workspaceWithSession = (await client.rpc<Workspace[]>("workspace.list")).find(
+      (item) => item.id === workspace.id,
+    );
+    assert.ok(workspaceWithSession?.sessionIds.includes(session.id));
+    await assert.rejects(
+      client.rpc("workspace.remove", { workspaceId: workspace.id }),
+      /workspace has active sessions/,
+    );
 
     const attach1 = await client.rpc<{ channel: number; snapshot: string; seq: number }>(
       "session.attach",
@@ -209,7 +216,7 @@ async function main(): Promise<void> {
     client.sendInput(attach1.channel, "echo MARK_${RANDOM}_ONE; pwd\n");
     client.sendInput(attach1.channel, "echo BEFORE_DISCONNECT_XYZ\n");
     await client.waitOutput("BEFORE_DISCONNECT_XYZ");
-    await client.waitOutput(worktree.path); // pwd 确认跑在 worktree 里
+    await client.waitOutput(project.path); // pwd 确认跑在项目目录里
     log("session io ok");
 
     // 断开重连:会话必须还在,快照必须包含断开前的输出,且不重发旧帧
@@ -245,6 +252,10 @@ async function main(): Promise<void> {
     const sessions = await client3.rpc<Session[]>("session.list");
     const survived = sessions.find((s) => s.id === session.id);
     assert.ok(survived?.alive, "session must survive runtime restart");
+    const restoredWorkspace = (await client3.rpc<Workspace[]>("workspace.list")).find(
+      (item) => item.id === workspace.id,
+    );
+    assert.ok(restoredWorkspace?.sessionIds.includes(session.id));
     const attach3 = await client3.rpc<{ channel: number; snapshot: string }>("session.attach", {
       sessionId: session.id,
     });
@@ -265,14 +276,12 @@ async function main(): Promise<void> {
     assert.equal(after.find((s) => s.id === session.id)?.alive, false);
     log("kill + exit event ok");
 
-    // worktree 清理(会话已结束,目录应干净)
-    await client3.rpc("worktree.remove", { projectId: project.id, worktreeId: worktree.id });
-    const finalWorktrees = await client3.rpc<Worktree[]>("worktree.list", { projectId: project.id });
-    assert.equal(finalWorktrees.length, 1);
+    await client3.rpc("workspace.remove", { workspaceId: workspace.id });
+    assert.equal((await client3.rpc<Workspace[]>("workspace.list")).length, 0);
     client3.close();
-    log("worktree removed");
+    log("workspace removed");
 
-    console.log("\nE2E PASS ✅  配对/发现/worktree/会话/断线重连/Runtime重启存活 全部通过");
+    console.log("\nE2E PASS ✅  配对/Workspace/项目/会话/断线重连/Runtime重启存活 全部通过");
   } finally {
     runtime.kill("SIGTERM");
     // 杀掉测试 daemon

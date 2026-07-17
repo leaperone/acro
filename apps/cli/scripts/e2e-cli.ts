@@ -1,4 +1,4 @@
-// CLI 端到端:pair → projects → new → run(管道模式跑命令并收输出) → sessions。
+// CLI 端到端:pair → projects → run(管道模式跑命令并收输出) → sessions。
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -66,12 +66,6 @@ async function main(): Promise<void> {
     const projects = cli("projects");
     assert.match(projects, /demo/);
 
-    const newOut = cli("new", "demo", "e2e/cli");
-    assert.match(newOut, /e2e\/cli/);
-    const worktrees = cli("worktrees", "demo");
-    assert.match(worktrees, /e2e-cli/);
-    console.log("[e2e] worktree ok");
-
     // run:管道模式,命令自然退出,CLI 跟随退出并带回输出
     const runOut = execFileSync(
       process.execPath,
@@ -86,7 +80,7 @@ async function main(): Promise<void> {
     assert.match(sessions, /exit=0/);
     console.log("[e2e] sessions ok");
 
-    console.log("\nE2E-CLI PASS ✅  pair/projects/new/run/sessions 全部通过");
+    console.log("\nE2E-CLI PASS ✅  pair/projects/run/sessions 全部通过");
   } finally {
     runtime.kill("SIGTERM");
     await sleep(300);

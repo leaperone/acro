@@ -1,6 +1,6 @@
 import http from "node:http";
 import os from "node:os";
-import type { Session, Worktree } from "@acro/protocol";
+import type { Session } from "@acro/protocol";
 import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
@@ -8,7 +8,7 @@ import { BrowserManager } from "./browser.ts";
 import { SimulatorManager } from "./simulator.ts";
 import { HelperClient } from "./computer.ts";
 import { discoverProjects, findProject } from "./projects.ts";
-import { listWorktrees, createWorktree, removeWorktree } from "./worktrees.ts";
+import { WorkspaceRegistry } from "./workspaces.ts";
 import { createHttpHandler } from "./http.ts";
 import { Gateway, type Handlers } from "./ws.ts";
 import { ensureStateDirs } from "./paths.ts";
@@ -29,51 +29,65 @@ async function main(): Promise<void> {
   const browsers = new BrowserManager();
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
-
-  async function findWorktree(worktreeId: string): Promise<Worktree | null> {
-    for (const project of discoverProjects(config.projectRoots)) {
-      const found = (await listWorktrees(project)).find((w) => w.id === worktreeId);
-      if (found) return found;
-    }
-    return null;
-  }
+  const workspaces = new WorkspaceRegistry();
 
   const handlers: Handlers = {
     "device.list": () => registry.list(),
     "project.list": () => discoverProjects(config.projectRoots),
-    "worktree.list": async (_conn, { projectId }) => {
-      const project = findProject(config.projectRoots, projectId);
-      if (!project) throw new Error("project not found");
-      return listWorktrees(project);
+    "workspace.list": () => workspaces.list(),
+    "workspace.create": (_conn, { name }) => workspaces.create(name),
+    "workspace.update": async (_conn, { workspaceId, name, projectIds }) => {
+      const current = workspaces.get(workspaceId);
+      if (!current) throw new Error("workspace not found");
+      if (projectIds) {
+        const knownProjectIds = new Set(discoverProjects(config.projectRoots).map((p) => p.id));
+        const missing = projectIds.find((id) => !knownProjectIds.has(id));
+        if (missing) throw new Error("project not found");
+
+        const removed = new Set(current.projectIds.filter((id) => !projectIds.includes(id)));
+        if (removed.size > 0) {
+          const sessions = await daemon.request<Session[]>("session.list");
+          const hasActiveSession = sessions.some(
+            (session) =>
+              session.alive &&
+              current.sessionIds.includes(session.id) &&
+              session.projectId !== null &&
+              removed.has(session.projectId),
+          );
+          if (hasActiveSession) throw new Error("project has active sessions in this workspace");
+        }
+      }
+      return workspaces.update(workspaceId, { name, projectIds });
     },
-    "worktree.create": async (_conn, { projectId, branch, base }) => {
-      const project = findProject(config.projectRoots, projectId);
-      if (!project) throw new Error("project not found");
-      return createWorktree(project, branch, base);
-    },
-    "worktree.remove": async (_conn, { projectId, worktreeId, force }) => {
-      const project = findProject(config.projectRoots, projectId);
-      if (!project) throw new Error("project not found");
-      await removeWorktree(project, worktreeId, force ?? false);
+    "workspace.remove": async (_conn, { workspaceId }) => {
+      const workspace = workspaces.get(workspaceId);
+      if (!workspace) throw new Error("workspace not found");
+      const sessions = await daemon.request<Session[]>("session.list");
+      if (sessions.some((session) => session.alive && workspace.sessionIds.includes(session.id))) {
+        throw new Error("workspace has active sessions");
+      }
+      workspaces.remove(workspaceId);
       return { removed: true };
     },
     "session.create": async (_conn, params) => {
+      const workspace = params.workspaceId ? workspaces.get(params.workspaceId) : null;
+      if (params.workspaceId && !workspace) throw new Error("workspace not found");
       let cwd = params.cwd;
       let projectId = params.projectId;
-      if (params.worktreeId) {
-        const worktree = await findWorktree(params.worktreeId);
-        if (!worktree) throw new Error("worktree not found");
-        cwd = worktree.path;
-        projectId = worktree.projectId;
-      } else if (params.projectId) {
+      if (params.projectId) {
         const project = findProject(config.projectRoots, params.projectId);
         if (!project) throw new Error("project not found");
         cwd = project.path;
       }
+      if (workspace && (!projectId || !workspace.projectIds.includes(projectId))) {
+        throw new Error("project is not in workspace");
+      }
+      const { workspaceId, ...daemonParams } = params;
       const { session } = await daemon.request<{ session: Session; handle: number }>(
         "session.create",
-        { ...params, cwd: cwd ?? os.homedir(), projectId },
+        { ...daemonParams, cwd: cwd ?? os.homedir(), projectId },
       );
+      if (workspaceId) workspaces.addSession(workspaceId, session.id);
       return session;
     },
     "session.list": () => daemon.request<Session[]>("session.list"),
