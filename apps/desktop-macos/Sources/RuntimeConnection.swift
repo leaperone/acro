@@ -93,9 +93,15 @@ final class RuntimeConnection: ObservableObject {
         nextId += 1
         let payload: [String: Any] = ["t": "req", "id": id, "method": method, "params": params]
         let data = try JSONSerialization.data(withJSONObject: payload)
-        try await task.send(.string(String(decoding: data, as: UTF8.self)))
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
+            Task {
+                do {
+                    try await task.send(.string(String(decoding: data, as: UTF8.self)))
+                } catch {
+                    pending.removeValue(forKey: id)?.resume(throwing: error)
+                }
+            }
         }
     }
 
