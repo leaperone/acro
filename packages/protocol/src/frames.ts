@@ -9,6 +9,8 @@
 
 export const FRAME_OUT = 0x01;
 export const FRAME_IN = 0x02;
+// 浏览器 screencast 帧(JPEG),与终端 OUT 同结构,channel 命名空间独立
+export const FRAME_BROWSER = 0x03;
 
 export interface OutFrame {
   type: typeof FRAME_OUT;
@@ -23,7 +25,14 @@ export interface InFrame {
   data: Uint8Array;
 }
 
-export type Frame = OutFrame | InFrame;
+export interface BrowserFrame {
+  type: typeof FRAME_BROWSER;
+  channel: number;
+  seq: number;
+  data: Uint8Array;
+}
+
+export type Frame = OutFrame | InFrame | BrowserFrame;
 
 export function encodeOutFrame(channel: number, seq: number, data: Uint8Array): Uint8Array {
   const buf = new Uint8Array(9 + data.byteLength);
@@ -44,13 +53,19 @@ export function encodeInFrame(channel: number, data: Uint8Array): Uint8Array {
   return buf;
 }
 
+export function encodeBrowserFrame(channel: number, seq: number, data: Uint8Array): Uint8Array {
+  const buf = encodeOutFrame(channel, seq, data);
+  buf[0] = FRAME_BROWSER;
+  return buf;
+}
+
 export function decodeFrame(raw: Uint8Array): Frame {
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const type = view.getUint8(0);
-  if (type === FRAME_OUT) {
+  if (type === FRAME_OUT || type === FRAME_BROWSER) {
     if (raw.byteLength < 9) throw new Error("out frame too short");
     return {
-      type: FRAME_OUT,
+      type,
       channel: view.getUint32(1),
       seq: view.getUint32(5),
       data: raw.subarray(9),

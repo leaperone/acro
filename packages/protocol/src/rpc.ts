@@ -110,6 +110,62 @@ export const methods = {
     params: z.object({ sessionId: z.string() }),
     result: z.object({ killed: z.boolean() }),
   },
+  "browser.open": {
+    params: z.object({
+      url: z.string(),
+      worktreeId: z.string().optional(),
+      width: z.number().int().min(320).max(3840).optional(),
+      height: z.number().int().min(240).max(2160).optional(),
+    }),
+    result: z.object({ browserId: z.string() }),
+  },
+  "browser.list": {
+    params: z.object({}),
+    result: z.array(
+      z.object({
+        browserId: z.string(),
+        url: z.string(),
+        title: z.string(),
+        worktreeId: z.string().nullable(),
+      }),
+    ),
+  },
+  "browser.navigate": {
+    params: z.object({ browserId: z.string(), url: z.string() }),
+    result: z.object({ url: z.string() }),
+  },
+  // screencast 帧走 FRAME_BROWSER 二进制帧,attach 后开始接收
+  "browser.attach": {
+    params: z.object({ browserId: z.string() }),
+    result: z.object({ channel: z.number().int(), width: z.number(), height: z.number() }),
+  },
+  "browser.detach": {
+    params: z.object({ browserId: z.string() }),
+    result: z.object({ detached: z.boolean() }),
+  },
+  // 输入频率低,走 JSON 而不是二进制帧
+  "browser.input": {
+    params: z.object({
+      browserId: z.string(),
+      event: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("click"), x: z.number(), y: z.number() }),
+        z.object({ kind: z.literal("move"), x: z.number(), y: z.number() }),
+        z.object({
+          kind: z.literal("wheel"),
+          x: z.number(),
+          y: z.number(),
+          deltaY: z.number(),
+        }),
+        z.object({ kind: z.literal("key"), key: z.string() }),
+        z.object({ kind: z.literal("type"), text: z.string() }),
+      ]),
+    }),
+    result: z.object({ done: z.boolean() }),
+  },
+  "browser.close": {
+    params: z.object({ browserId: z.string() }),
+    result: z.object({ closed: z.boolean() }),
+  },
 } as const;
 
 export type MethodName = keyof typeof methods;

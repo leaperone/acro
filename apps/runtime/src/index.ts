@@ -4,6 +4,7 @@ import type { Session, Worktree } from "@acro/protocol";
 import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
+import { BrowserManager } from "./browser.ts";
 import { discoverProjects, findProject } from "./projects.ts";
 import { listWorktrees, createWorktree, removeWorktree } from "./worktrees.ts";
 import { createHttpHandler } from "./http.ts";
@@ -23,6 +24,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const registry = new DeviceRegistry();
   const daemon = await DaemonClient.connect();
+  const browsers = new BrowserManager();
 
   async function findWorktree(worktreeId: string): Promise<Worktree | null> {
     for (const project of discoverProjects(config.projectRoots)) {
@@ -96,6 +98,29 @@ async function main(): Promise<void> {
       await daemon.request("session.kill", { sessionId });
       return { killed: true };
     },
+    "browser.open": async (_conn, params) => ({ browserId: await browsers.open(params) }),
+    "browser.list": () => browsers.list(),
+    "browser.navigate": async (_conn, { browserId, url }) => ({
+      url: await browsers.navigate(browserId, url),
+    }),
+    "browser.attach": async (conn, { browserId }) => {
+      const result = await browsers.attach(browserId);
+      conn.browserChannels.add(result.channel);
+      return result;
+    },
+    "browser.detach": async (conn, { browserId }) => {
+      await browsers.detach(browserId);
+      for (const ch of conn.browserChannels) conn.browserChannels.delete(ch);
+      return { detached: true };
+    },
+    "browser.input": async (_conn, { browserId, event }) => {
+      await browsers.input(browserId, event);
+      return { done: true };
+    },
+    "browser.close": async (_conn, { browserId }) => {
+      await browsers.close(browserId);
+      return { closed: true };
+    },
   };
 
   const gateway = new Gateway(registry, handlers, (handle, data) =>
@@ -103,6 +128,9 @@ async function main(): Promise<void> {
   );
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
   daemon.on("event", (evt) => gateway.broadcastEvent(evt));
+  browsers.on("frame", (handle: number, seq: number, data: Buffer) =>
+    gateway.forwardBrowserFrame(handle, seq, data),
+  );
 
   const server = http.createServer(createHttpHandler(registry));
   server.on("upgrade", (req, socket, head) => gateway.handleUpgrade(req, socket, head));
@@ -118,7 +146,7 @@ async function main(): Promise<void> {
       gateway.close();
       server.close();
       daemon.close(); // 只断开连接,daemon 和会话继续活着
-      process.exit(0);
+      void browsers.shutdown().finally(() => process.exit(0));
     });
   }
 }

@@ -2,7 +2,14 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Device, OutFrame } from "@acro/protocol";
-import { decodeFrame, encodeOutFrame, FRAME_IN, methods, RpcRequest } from "@acro/protocol";
+import {
+  decodeFrame,
+  encodeBrowserFrame,
+  encodeOutFrame,
+  FRAME_IN,
+  methods,
+  RpcRequest,
+} from "@acro/protocol";
 import type { DeviceRegistry } from "./devices.ts";
 
 export interface Conn {
@@ -10,6 +17,8 @@ export interface Conn {
   device: Device;
   // channel(=daemon handle) -> 附着状态。attachSeq 之前的输出已包含在快照里。
   attached: Map<number, { sessionId: string; attachSeq: number }>;
+  // 已附着的浏览器 screencast channel
+  browserChannels: Set<number>;
 }
 
 export type Handlers = {
@@ -47,7 +56,7 @@ export class Gateway {
       return;
     }
     this.wss.handleUpgrade(req, socket, head, (ws) => {
-      const conn: Conn = { ws, device, attached: new Map() };
+      const conn: Conn = { ws, device, attached: new Map(), browserChannels: new Set() };
       this.conns.add(conn);
       ws.on("message", (raw, isBinary) => this.onMessage(conn, raw as Buffer, isBinary));
       ws.on("close", () => this.conns.delete(conn));
@@ -104,6 +113,14 @@ export class Gateway {
         ok: false,
         error: { code: "internal", message: (err as Error).message },
       });
+    }
+  }
+
+  forwardBrowserFrame(channel: number, seq: number, data: Uint8Array): void {
+    for (const conn of this.conns) {
+      if (conn.browserChannels.has(channel)) {
+        conn.ws.send(encodeBrowserFrame(channel, seq, data), { binary: true });
+      }
     }
   }
 
