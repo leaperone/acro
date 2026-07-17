@@ -29,6 +29,7 @@ final class RuntimeConnection: ObservableObject {
     @Published var projects: [[String: Any]] = []
     @Published var workspaces: [[String: Any]] = []
     @Published var sessions: [[String: Any]] = []
+    @Published var snapshotLoaded = false
 
     private var task: URLSessionWebSocketTask?
     private var nextId = 1
@@ -39,6 +40,7 @@ final class RuntimeConnection: ObservableObject {
         guard let url = URL(string: "ws://\(config.host)/ws?token=\(config.token)") else { return }
         let task = URLSession.shared.webSocketTask(with: url)
         self.task = task
+        snapshotLoaded = false
         task.resume()
         connected = true
         receiveLoop()
@@ -115,5 +117,6 @@ final class RuntimeConnection: ObservableObject {
         if let list = try? await rpc("session.list") as? [[String: Any]] {
             sessions = list
         }
+        snapshotLoaded = true
     }
 }

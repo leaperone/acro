@@ -130,7 +130,10 @@ struct CommandPalette: View {
             .shadow(radius: 24, y: 12)
             .padding(.top, 72)
         }
-        .onAppear { searchFocused = true }
+        .onExitCommand(perform: onDismiss)
+        .onAppear {
+            DispatchQueue.main.async { searchFocused = true }
+        }
         .onChange(of: query) { _, _ in selectedIndex = 0 }
     }
 

@@ -37,5 +37,10 @@ let package = Package(
                 .linkedLibrary("sqlite3"),
             ]
         ),
+        .testTarget(
+            name: "AcroDesktopTests",
+            dependencies: ["AcroDesktop"],
+            path: "Tests"
+        ),
     ]
 )
