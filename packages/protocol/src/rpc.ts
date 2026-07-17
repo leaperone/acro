@@ -166,6 +166,34 @@ export const methods = {
     params: z.object({ browserId: z.string() }),
     result: z.object({ closed: z.boolean() }),
   },
+  "simulator.list": {
+    params: z.object({}),
+    result: z.array(
+      z.object({
+        udid: z.string(),
+        name: z.string(),
+        state: z.string(),
+        runtime: z.string(),
+      }),
+    ),
+  },
+  "simulator.boot": {
+    params: z.object({ udid: z.string() }),
+    result: z.object({ state: z.string() }),
+  },
+  "simulator.shutdown": {
+    params: z.object({ udid: z.string() }),
+    result: z.object({ state: z.string() }),
+  },
+  // 画面走 FRAME_SIM 帧(PNG,低帧率轮询;ScreenCaptureKit helper 接管后提频)
+  "simulator.attach": {
+    params: z.object({ udid: z.string() }),
+    result: z.object({ channel: z.number().int() }),
+  },
+  "simulator.detach": {
+    params: z.object({ udid: z.string() }),
+    result: z.object({ detached: z.boolean() }),
+  },
 } as const;
 
 export type MethodName = keyof typeof methods;

@@ -11,6 +11,8 @@ export const FRAME_OUT = 0x01;
 export const FRAME_IN = 0x02;
 // 浏览器 screencast 帧(JPEG),与终端 OUT 同结构,channel 命名空间独立
 export const FRAME_BROWSER = 0x03;
+// 模拟器画面帧(PNG),同结构,channel 命名空间独立
+export const FRAME_SIM = 0x04;
 
 export interface OutFrame {
   type: typeof FRAME_OUT;
@@ -32,7 +34,14 @@ export interface BrowserFrame {
   data: Uint8Array;
 }
 
-export type Frame = OutFrame | InFrame | BrowserFrame;
+export interface SimFrame {
+  type: typeof FRAME_SIM;
+  channel: number;
+  seq: number;
+  data: Uint8Array;
+}
+
+export type Frame = OutFrame | InFrame | BrowserFrame | SimFrame;
 
 export function encodeOutFrame(channel: number, seq: number, data: Uint8Array): Uint8Array {
   const buf = new Uint8Array(9 + data.byteLength);
@@ -59,10 +68,16 @@ export function encodeBrowserFrame(channel: number, seq: number, data: Uint8Arra
   return buf;
 }
 
+export function encodeSimFrame(channel: number, seq: number, data: Uint8Array): Uint8Array {
+  const buf = encodeOutFrame(channel, seq, data);
+  buf[0] = FRAME_SIM;
+  return buf;
+}
+
 export function decodeFrame(raw: Uint8Array): Frame {
   const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const type = view.getUint8(0);
-  if (type === FRAME_OUT || type === FRAME_BROWSER) {
+  if (type === FRAME_OUT || type === FRAME_BROWSER || type === FRAME_SIM) {
     if (raw.byteLength < 9) throw new Error("out frame too short");
     return {
       type,

@@ -5,6 +5,7 @@ import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
 import { BrowserManager } from "./browser.ts";
+import { SimulatorManager } from "./simulator.ts";
 import { discoverProjects, findProject } from "./projects.ts";
 import { listWorktrees, createWorktree, removeWorktree } from "./worktrees.ts";
 import { createHttpHandler } from "./http.ts";
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
   const registry = new DeviceRegistry();
   const daemon = await DaemonClient.connect();
   const browsers = new BrowserManager();
+  const simulators = new SimulatorManager();
 
   async function findWorktree(worktreeId: string): Promise<Worktree | null> {
     for (const project of discoverProjects(config.projectRoots)) {
@@ -121,6 +123,21 @@ async function main(): Promise<void> {
       await browsers.close(browserId);
       return { closed: true };
     },
+    "simulator.list": () => simulators.list(),
+    "simulator.boot": async (_conn, { udid }) => ({ state: await simulators.boot(udid) }),
+    "simulator.shutdown": async (_conn, { udid }) => ({
+      state: await simulators.shutdown(udid),
+    }),
+    "simulator.attach": (conn, { udid }) => {
+      const result = simulators.attach(udid);
+      conn.simChannels.add(result.channel);
+      return result;
+    },
+    "simulator.detach": (conn, { udid }) => {
+      simulators.detach(udid);
+      conn.simChannels.clear();
+      return { detached: true };
+    },
   };
 
   const gateway = new Gateway(registry, handlers, (handle, data) =>
@@ -130,6 +147,9 @@ async function main(): Promise<void> {
   daemon.on("event", (evt) => gateway.broadcastEvent(evt));
   browsers.on("frame", (handle: number, seq: number, data: Buffer) =>
     gateway.forwardBrowserFrame(handle, seq, data),
+  );
+  simulators.on("frame", (handle: number, seq: number, data: Buffer) =>
+    gateway.forwardSimFrame(handle, seq, data),
   );
 
   const server = http.createServer(createHttpHandler(registry));
@@ -146,6 +166,7 @@ async function main(): Promise<void> {
       gateway.close();
       server.close();
       daemon.close(); // 只断开连接,daemon 和会话继续活着
+      simulators.shutdownManager();
       void browsers.shutdown().finally(() => process.exit(0));
     });
   }

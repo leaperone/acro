@@ -6,6 +6,7 @@ import {
   decodeFrame,
   encodeBrowserFrame,
   encodeOutFrame,
+  encodeSimFrame,
   FRAME_IN,
   methods,
   RpcRequest,
@@ -19,6 +20,8 @@ export interface Conn {
   attached: Map<number, { sessionId: string; attachSeq: number }>;
   // 已附着的浏览器 screencast channel
   browserChannels: Set<number>;
+  // 已附着的模拟器画面 channel
+  simChannels: Set<number>;
 }
 
 export type Handlers = {
@@ -56,7 +59,13 @@ export class Gateway {
       return;
     }
     this.wss.handleUpgrade(req, socket, head, (ws) => {
-      const conn: Conn = { ws, device, attached: new Map(), browserChannels: new Set() };
+      const conn: Conn = {
+        ws,
+        device,
+        attached: new Map(),
+        browserChannels: new Set(),
+        simChannels: new Set(),
+      };
       this.conns.add(conn);
       ws.on("message", (raw, isBinary) => this.onMessage(conn, raw as Buffer, isBinary));
       ws.on("close", () => this.conns.delete(conn));
@@ -120,6 +129,14 @@ export class Gateway {
     for (const conn of this.conns) {
       if (conn.browserChannels.has(channel)) {
         conn.ws.send(encodeBrowserFrame(channel, seq, data), { binary: true });
+      }
+    }
+  }
+
+  forwardSimFrame(channel: number, seq: number, data: Uint8Array): void {
+    for (const conn of this.conns) {
+      if (conn.simChannels.has(channel)) {
+        conn.ws.send(encodeSimFrame(channel, seq, data), { binary: true });
       }
     }
   }
