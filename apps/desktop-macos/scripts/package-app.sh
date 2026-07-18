@@ -34,6 +34,10 @@ mkdir -p "$RT/node_modules"
 cp ../runtime/dist/runtime.cjs ../runtime/dist/daemon.cjs "$RT/"
 cp -RL ../runtime/node_modules/node-pty "$RT/node_modules/node-pty"
 cp -RL ../runtime/node_modules/playwright-core "$RT/node_modules/playwright-core"
+# 桌面包只运行在 macOS；Windows 预编译文件会放大包体，codesign 还会给它们写入
+# Sparkle BinaryDelta 不支持的扩展属性。
+find "$RT/node_modules/node-pty/prebuilds" -mindepth 1 -maxdepth 1 \
+    ! -name 'darwin-*' -exec rm -rf {} +
 find "$RT/node_modules/node-pty/prebuilds" -type f -name "spawn-helper" -exec chmod 755 {} +
 
 # Sparkle 自动更新框架(可执行文件 rpath 指向 ../Frameworks)
@@ -62,6 +66,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# 依赖缓存可能带 provenance/quarantine 等扩展属性；签名前统一清掉，
+# 避免把非 bundle 元数据带进公证包和后续 delta 基线。
+xattr -cr "$APP"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     codesign --force --deep --sign - "$APP"
