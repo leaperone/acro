@@ -114,14 +114,28 @@ async function main(): Promise<void> {
       emitRuntimeEvent("workspace.layoutChanged", { workspaceId, rev });
       return { rev };
     },
-    "workspace.remove": async (_conn, { workspaceId }) => {
+    "workspace.remove": async (_conn, { workspaceId, force }) => {
       const workspace = workspaces.get(workspaceId);
       if (!workspace) throw new Error("workspace not found");
       const sessions = await daemon.request<Session[]>("session.list");
-      if (sessions.some((session) => session.alive && workspace.sessionIds.includes(session.id))) {
+      const hasActiveSessions = sessions.some(
+        (session) => session.alive && workspace.sessionIds.includes(session.id),
+      );
+      if (hasActiveSessions && !force) {
         throw new Error("workspace has active sessions");
       }
+      await Promise.all(
+        workspace.sessionIds.map((sessionId) =>
+          daemon.request("session.remove", { sessionId }),
+        ),
+      );
+      for (const sessionId of workspace.sessionIds) {
+        focusOwners.delete(sessionId);
+        sessionSizes.delete(sessionId);
+        appliedSizes.delete(sessionId);
+      }
       workspaces.remove(workspaceId);
+      emitRuntimeEvent("workspace.removed", { workspaceId });
       return { removed: true };
     },
     "session.create": async (_conn, params) => {

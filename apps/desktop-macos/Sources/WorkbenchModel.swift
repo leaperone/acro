@@ -286,9 +286,15 @@ final class WorkbenchModel: ObservableObject {
             .sorted { $0.createdAt < $1.createdAt }
     }
 
-    func activeSessionCount(in workspace: Workspace) -> Int {
-        let sessionIds = Set(workspace.sessionIds)
-        return activeSessions.count { sessionIds.contains($0.id) }
+    func activeSessionCount(
+        in workspace: Workspace, on connection: RuntimeConnection? = nil
+    ) -> Int {
+        sessions(in: workspace, on: connection).count
+    }
+
+    var pendingWorkspaceDeletionSessionCount: Int {
+        guard let workspace = pendingWorkspaceDeletion else { return 0 }
+        return activeSessionCount(in: workspace, on: pendingRuntime)
     }
 
     func workspace(containing sessionId: String) -> Workspace? {
@@ -724,8 +730,17 @@ final class WorkbenchModel: ObservableObject {
     func deleteWorkspace(_ workspace: Workspace) async {
         let connection = pendingRuntime
         do {
-            _ = try await connection.rpc("workspace.remove", ["workspaceId": workspace.id])
+            _ = try await connection.rpc(
+                "workspace.remove", ["workspaceId": workspace.id, "force": true]
+            )
+            for sessionId in workspace.sessionIds {
+                TerminalSurfaceCache.shared.evict(sessionId)
+            }
             workspaceLayouts.removeValue(forKey: workspace.id)
+            appliedLayoutRevs.removeValue(forKey: workspace.id)
+            lastSyncedLayouts.removeValue(forKey: workspace.id)
+            layoutPushFrozen.remove(workspace.id)
+            dirtyLayoutWorkspaceIds.remove(workspace.id)
             expandedWorkspaceIds.remove(workspace.id)
             if selectedWorkspaceId == workspace.id {
                 selectedWorkspaceId = nil
