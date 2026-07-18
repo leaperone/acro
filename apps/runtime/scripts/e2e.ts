@@ -300,7 +300,12 @@ async function main(): Promise<void> {
     await sleep(800);
     assert.ok(!seat.output.includes("LOCKED_OUT_XYZ"), "non-owner input must be dropped");
 
-    await seat.rpc("session.claimFocus", { sessionId: session.id });
+    // 非 force 拿不到别人手里的会话;显式接管必须 force
+    const denied = await seat.rpc<{ claimed: boolean }>("session.claimFocus", {
+      sessionId: session.id,
+    });
+    assert.equal(denied.claimed, false, "silent claim must not steal an owned session");
+    await seat.rpc("session.claimFocus", { sessionId: session.id, force: true });
     seat.sendInput(seatAttach.channel, "echo TAKEN_OVER_XYZ\n");
     await seat.waitOutput("TAKEN_OVER_XYZ");
     assert.ok(

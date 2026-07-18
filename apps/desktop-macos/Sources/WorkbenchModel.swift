@@ -369,11 +369,12 @@ final class WorkbenchModel: ObservableObject {
         claimFocus(sessionId)
     }
 
-    // 显式接管:蒙版按钮直达,无条件夺取占用权
-    func claimFocus(_ sessionId: String) {
+    // 显式接管:蒙版按钮直达,force 夺取占用权
+    func claimFocus(_ sessionId: String, force: Bool = false) {
         let connection = runtime
         Task {
-            _ = try? await connection.rpc("session.claimFocus", ["sessionId": sessionId])
+            _ = try? await connection.rpc(
+                "session.claimFocus", ["sessionId": sessionId, "force": force])
             await connection.refresh()
         }
     }
@@ -401,6 +402,7 @@ final class WorkbenchModel: ObservableObject {
         if let focusedSessionId = currentLayout?.focusedSessionId {
             flashPane(focusedSessionId)
             requestTerminalFocus()
+            maybeClaimFocus(focusedSessionId)
         }
     }
 
@@ -417,6 +419,7 @@ final class WorkbenchModel: ObservableObject {
         expandedWorkspaceIds.insert(workspace.id)
         expandGroupContaining(workspace.id)
         if flash { flashPane(session.id) }
+        maybeClaimFocus(session.id)
     }
 
     func focusSessionId(_ sessionId: String) {
@@ -536,6 +539,7 @@ final class WorkbenchModel: ObservableObject {
         mutateCurrentLayout { $0.focusedPaneId = targetPaneId }
         if let sessionId = currentLayout?.root?.pane(withId: targetPaneId)?.selectedSessionId {
             flashPane(sessionId)
+            maybeClaimFocus(sessionId)
         }
         requestTerminalFocus()
     }

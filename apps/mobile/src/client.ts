@@ -108,6 +108,8 @@ export class MobileClient {
   onFrame: ((frame: Frame) => void) | null = null;
   onEvent: ((event: string, payload: unknown) => void) | null = null;
   onStateChange: ((connected: boolean) => void) | null = null;
+  // authed 后写入;终端占用锁用它判断"占用者是不是自己"
+  deviceId = "";
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -133,6 +135,7 @@ export class MobileClient {
   private attach(channel: Channel): void {
     this.ws = channel.ws;
     this.session = channel.session;
+    this.deviceId = channel.deviceId;
     this.onStateChange?.(true);
     channel.ws.onclose = () => {
       this.ws = null;

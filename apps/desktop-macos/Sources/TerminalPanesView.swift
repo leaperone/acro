@@ -278,7 +278,7 @@ private struct PaneView: View {
                 if let occupant = model.focusOccupant(sessionId) {
                     FocusLockOverlay(
                         deviceName: occupant.deviceName,
-                        takeOver: { model.claimFocus(sessionId) }
+                        takeOver: { model.claimFocus(sessionId, force: true) }
                     )
                 }
             }

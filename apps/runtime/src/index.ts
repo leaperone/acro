@@ -104,8 +104,17 @@ async function main(): Promise<void> {
       return session;
     },
     "session.list": () => daemon.request<Session[]>("session.list"),
-    "session.claimFocus": (conn, { sessionId }) => {
+    "session.claimFocus": async (conn, { sessionId, force }) => {
       if (!conn.device) throw new Error("unauthenticated");
+      const owner = focusOwners.get(sessionId);
+      // 静默认领拿不到别人手里的会话:防客户端缓存过期时绕过显式接管语义
+      if (owner && owner.deviceId !== conn.device.id && !force) {
+        return { claimed: false };
+      }
+      const sessions = await daemon.request<Session[]>("session.list");
+      if (!sessions.some((s) => s.id === sessionId && s.alive)) {
+        throw new Error("session not alive");
+      }
       focusOwners.set(sessionId, { deviceId: conn.device.id, deviceName: conn.device.name });
       emitRuntimeEvent("session.focusChanged", {
         sessionId,

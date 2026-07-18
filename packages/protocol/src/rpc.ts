@@ -140,8 +140,10 @@ export const methods = {
   },
   // 终端占用锁:claim 即夺取占用权(focus 上报与显式接管共用);
   // 非占用设备的终端输入会被网关丢弃,设备全部断开时占用自动释放
+  // force=false 时会话已被其他设备占用则拒绝(claimed:false)——
+  // 静默认领只能拿无主会话,夺取必须显式 force(蒙版上的接管按钮)
   "session.claimFocus": {
-    params: z.object({ sessionId: z.string() }),
+    params: z.object({ sessionId: z.string(), force: z.boolean().optional() }),
     result: z.object({ claimed: z.boolean() }),
   },
   "session.focusList": {
