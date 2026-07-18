@@ -11,6 +11,8 @@ import ScreenCaptureKit
 let socketPath =
     ProcessInfo.processInfo.environment["ACRO_HELPER_SOCKET"]
     ?? ("\(NSHomeDirectory())/.acro/helper.sock")
+let usesDefaultSocket = ProcessInfo.processInfo.environment["ACRO_HELPER_SOCKET"] == nil
+let maxRequestBytes = 2 * 1024 * 1024
 
 // ---- 方法实现 ----
 
@@ -175,8 +177,13 @@ func handle(method: String, params: [String: Any]) async throws -> [String: Any]
 
 func serve() throws {
     let dir = (socketPath as NSString).deletingLastPathComponent
-    try? FileManager.default.createDirectory(
-        atPath: dir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(
+        atPath: dir, withIntermediateDirectories: true,
+        attributes: usesDefaultSocket ? [.posixPermissions: 0o700] : nil)
+    if usesDefaultSocket {
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: dir)
+    }
     unlink(socketPath)
 
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -193,6 +200,9 @@ func serve() throws {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, size) }
     }
     guard bindResult == 0 else { throw HelperError.message("bind() failed") }
+    guard chmod(socketPath, mode_t(S_IRUSR | S_IWUSR)) == 0 else {
+        throw HelperError.message("chmod() failed")
+    }
     guard listen(fd, 4) == 0 else { throw HelperError.message("listen() failed") }
     FileHandle.standardError.write("acro-helper listening on \(socketPath)\n".data(using: .utf8)!)
 
@@ -212,6 +222,7 @@ func serveClient(fd: Int32) async {
         let n = read(fd, &chunk, chunkSize)
         if n <= 0 { return }
         buffer.append(contentsOf: chunk[0..<n])
+        if buffer.count > maxRequestBytes { return }
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer.prefix(upTo: newline)
             buffer.removeSubrange(...newline)

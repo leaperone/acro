@@ -478,6 +478,7 @@ function startServer(): void {
     socket.on("error", () => clients.delete(socket));
   });
   server.listen(paths.daemonSocket, () => {
+    fs.chmodSync(paths.daemonSocket, 0o600);
     writeJsonAtomic(paths.daemonMeta, { pid: process.pid, boot, startedAt: new Date().toISOString() });
     console.log(`[daemon] listening on ${paths.daemonSocket} boot=${boot}`);
   });

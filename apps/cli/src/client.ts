@@ -39,8 +39,11 @@ export function loadClientConfig(): ClientConfig {
 }
 
 export function saveClientConfig(config: ClientConfig): void {
-  fs.mkdirSync(path.dirname(configFile), { recursive: true });
+  const directory = path.dirname(configFile);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  fs.chmodSync(directory, 0o700);
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 });
+  fs.chmodSync(configFile, 0o600);
 }
 
 // ref 缺省用配置里的默认服务器;显式 ref 匹配 localId/deviceId/名称(桌面端多主机 attach 用)

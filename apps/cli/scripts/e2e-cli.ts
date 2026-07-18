@@ -13,13 +13,14 @@ const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-cli-client-"))
 const projectsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-cli-projects-"));
 const runtimeEntry = fileURLToPath(new URL("../../runtime/src/index.ts", import.meta.url));
 const cliEntry = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const clientConfig = path.join(clientDir, "client.json");
 
 const runtimeEnv = {
   ...process.env,
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
 };
-const cliEnv = { ...process.env, ACRO_CLIENT_CONFIG: path.join(clientDir, "client.json") };
+const cliEnv = { ...process.env, ACRO_CLIENT_CONFIG: clientConfig };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -30,6 +31,9 @@ function cli(...args: string[]): string {
 }
 
 async function main(): Promise<void> {
+  fs.chmodSync(clientDir, 0o755);
+  fs.writeFileSync(clientConfig, "{}", { mode: 0o644 });
+
   // fixture repo
   const repo = path.join(projectsRoot, "demo");
   fs.mkdirSync(repo);
@@ -59,6 +63,8 @@ async function main(): Promise<void> {
     const offer = fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim();
     const pairOut = cli("pair", offer, "--name", "e2e-cli");
     assert.match(pairOut, /已配对 e2e-cli/);
+    assert.equal(fs.statSync(clientDir).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(clientConfig).mode & 0o777, 0o600);
     console.log("[e2e] pair ok");
 
     // run:管道模式,命令自然退出,CLI 跟随退出并带回输出

@@ -106,7 +106,15 @@ struct ClientConfig: Codable {
 
     func save() {
         let dir = (Self.path as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(
+                atPath: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: dir)
+        } catch {
+            return
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(self) {

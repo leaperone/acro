@@ -7,7 +7,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_BIN="$(command -v node)"
 AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/.acro/logs"
-mkdir -p "$AGENTS_DIR" "$LOG_DIR"
+mkdir -p "$AGENTS_DIR"
+install -d -m 700 "$HOME/.acro" "$LOG_DIR"
+touch "$LOG_DIR/runtime.log" "$LOG_DIR/helper.log"
+chmod 600 "$LOG_DIR/runtime.log" "$LOG_DIR/helper.log"
 
 cat > "$AGENTS_DIR/one.leaper.acro.runtime.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
