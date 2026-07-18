@@ -739,11 +739,14 @@ enum TerminalAppearance {
     static func write(fontFamily: String, fontSize: Int, theme: String) {
         var lines: [String] = ["# 由 Acro 设置窗口生成;重启应用后生效"]
         let family = fontFamily.trimmingCharacters(in: .whitespaces)
-        if !family.isEmpty { lines.append("font-family = \(family)") }
-        // 中文回退:主字体(或 ghostty 默认)缺 CJK 字形时映射到苹方,避免落到宋体
-        lines.append(
-            "font-codepoint-map = U+2E80-U+9FFF,U+F900-U+FAFF,U+FE30-U+FE4F,U+FF00-U+FFEF=PingFang SC"
-        )
+        // 西文主字体:用户选的,或常驻的 Menlo。必须是系统能查到的等宽字体,
+        // 否则下面的中文回退项会抢渲染西文(ghostty 内置 JetBrains Mono 无法按名引用)。
+        lines.append("font-family = \(family.isEmpty ? "Menlo" : family)")
+        // 中文回退链:优先苹方(PingFang SC)。苹方在 macOS 上是按需下载字体,
+        // 无头机等实例上可能未物化,查找失败时自动落到常驻的黑体(Hiragino Sans GB),
+        // 不再无控地回退到宋体。ghostty 按 font-family 顺序对缺字形的码位逐级回退。
+        lines.append("font-family = PingFang SC")
+        lines.append("font-family = Hiragino Sans GB")
         if fontSize > 0 { lines.append("font-size = \(fontSize)") }
         let trimmedTheme = theme.trimmingCharacters(in: .whitespaces)
         if !trimmedTheme.isEmpty { lines.append("theme = \(trimmedTheme)") }
@@ -763,7 +766,7 @@ private struct AppearanceSettingsPane: View {
         Form {
             Section {
                 Picker("字体", selection: $fontFamily) {
-                    Text("默认(JetBrains Mono)").tag("")
+                    Text("默认(Menlo)").tag("")
                     Divider()
                     ForEach(TerminalAppearance.monospaceFonts, id: \.self) { Text($0).tag($0) }
                 }
@@ -780,7 +783,7 @@ private struct AppearanceSettingsPane: View {
             } header: {
                 Text("终端")
             } footer: {
-                Text("写入 ~/.config/acro/ghostty.conf,重启应用后生效。中文自动回退到苹方(PingFang SC)。")
+                Text("写入 ~/.config/acro/ghostty.conf,重启应用后生效。中文优先苹方,缺失时回退黑体(Hiragino Sans GB)。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
