@@ -155,6 +155,13 @@ final class RuntimeConnection: ObservableObject {
         case connected
     }
 
+    struct RefreshSnapshot {
+        let workspaceGroups: [WorkspaceGroup]
+        let workspaces: [Workspace]
+        let sessions: [Session]
+        let focus: [SessionFocus]
+    }
+
     @Published private(set) var state: ConnectionState = .disconnected
     @Published private(set) var workspaceGroups: [WorkspaceGroup] = []
     @Published private(set) var workspaces: [Workspace] = []
@@ -184,8 +191,16 @@ final class RuntimeConnection: ObservableObject {
         let timeoutTask: Task<Void, Never>
     }
 
+    private struct RefreshJob {
+        let id: Int
+        let task: Task<Bool, Never>
+    }
+
     private var pending: [Int: PendingRpc] = [:]
-    private var refreshGeneration = 0
+    private let refreshSnapshotProvider: (@MainActor () async throws -> RefreshSnapshot)?
+    private var currentRefreshJob: RefreshJob?
+    private var nextRefreshJob: RefreshJob?
+    private var nextRefreshJobId = 0
     private var probeTimer: Timer?
     private var probeOutstanding = false
     private var reconnectTask: Task<Void, Never>?
@@ -193,6 +208,12 @@ final class RuntimeConnection: ObservableObject {
 
     // orca RECONNECT_DELAYS_MS 的等价物,尾项为稳态重试间隔
     private static let reconnectDelays: [TimeInterval] = [0.5, 1, 2, 3, 5, 8]
+
+    init(
+        refreshSnapshotProvider: (@MainActor () async throws -> RefreshSnapshot)? = nil
+    ) {
+        self.refreshSnapshotProvider = refreshSnapshotProvider
+    }
 
     func connect(server: ServerEntry) {
         reconnectTask?.cancel()
@@ -218,6 +239,10 @@ final class RuntimeConnection: ObservableObject {
         probeTimer?.invalidate()
         probeTimer = nil
         probeOutstanding = false
+        currentRefreshJob?.task.cancel()
+        nextRefreshJob?.task.cancel()
+        currentRefreshJob = nil
+        nextRefreshJob = nil
         failPending(RpcError(message: "disconnected"))
     }
 
@@ -415,7 +440,7 @@ final class RuntimeConnection: ObservableObject {
                 completePending(id, .failure(RpcError(message: err)))
             }
         case "evt":
-            Task { await refresh() }
+            scheduleRefresh()
         default:
             break
         }
@@ -460,27 +485,79 @@ final class RuntimeConnection: ObservableObject {
 
     @discardableResult
     func refresh() async -> Bool {
-        refreshGeneration &+= 1
-        let refreshId = refreshGeneration
-        let connectionGeneration = generation
+        await enqueueRefresh().task.value
+    }
+
+    private func scheduleRefresh() {
+        _ = enqueueRefresh()
+    }
+
+    private func enqueueRefresh() -> RefreshJob {
+        if let currentRefreshJob {
+            if let nextRefreshJob { return nextRefreshJob }
+            let job = makeRefreshJob(after: currentRefreshJob.task)
+            nextRefreshJob = job
+            return job
+        }
+        let job = makeRefreshJob(after: nil)
+        currentRefreshJob = job
+        return job
+    }
+
+    private func makeRefreshJob(after predecessor: Task<Bool, Never>?) -> RefreshJob {
+        nextRefreshJobId &+= 1
+        let id = nextRefreshJobId
+        let task = Task { [weak self] in
+            if let predecessor { _ = await predecessor.value }
+            guard !Task.isCancelled else { return false }
+            guard let self else { return false }
+            let connectionGeneration = generation
+            let result = await performRefresh(connectionGeneration: connectionGeneration)
+            completeRefreshJob(id: id)
+            return result
+        }
+        return RefreshJob(id: id, task: task)
+    }
+
+    private func completeRefreshJob(id: Int) {
+        guard currentRefreshJob?.id == id else { return }
+        if let nextRefreshJob {
+            currentRefreshJob = nextRefreshJob
+            self.nextRefreshJob = nil
+        } else {
+            currentRefreshJob = nil
+        }
+    }
+
+    private func performRefresh(connectionGeneration: Int) async -> Bool {
         do {
-            let nextWorkspaceGroups = try await rpc("workspaceGroup.list", as: [WorkspaceGroup].self)
-            let nextWorkspaces = try await rpc("workspace.list", as: [Workspace].self)
-            let nextSessions = try await rpc("session.list", as: [Session].self)
-            let nextFocus = try await rpc("session.focusList", as: [SessionFocus].self)
-            guard refreshId == refreshGeneration,
-                  connectionGeneration == generation else { return false }
+            let snapshot = try await loadRefreshSnapshot()
+            guard connectionGeneration == generation else { return false }
             commitRefreshSnapshot(
-                workspaceGroups: nextWorkspaceGroups,
-                workspaces: nextWorkspaces,
-                sessions: nextSessions,
-                focus: nextFocus
+                workspaceGroups: snapshot.workspaceGroups,
+                workspaces: snapshot.workspaces,
+                sessions: snapshot.sessions,
+                focus: snapshot.focus
             )
             return true
         } catch {
             // 保留上一份完整快照;断线由 receiveLoop / probe 处理,恢复后会再刷新
             return false
         }
+    }
+
+    private func loadRefreshSnapshot() async throws -> RefreshSnapshot {
+        if let refreshSnapshotProvider { return try await refreshSnapshotProvider() }
+        let workspaceGroups = try await rpc("workspaceGroup.list", as: [WorkspaceGroup].self)
+        let workspaces = try await rpc("workspace.list", as: [Workspace].self)
+        let sessions = try await rpc("session.list", as: [Session].self)
+        let focus = try await rpc("session.focusList", as: [SessionFocus].self)
+        return RefreshSnapshot(
+            workspaceGroups: workspaceGroups,
+            workspaces: workspaces,
+            sessions: sessions,
+            focus: focus
+        )
     }
 
     func commitRefreshSnapshot(
