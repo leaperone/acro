@@ -6,19 +6,19 @@ struct WorkbenchView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
     @Environment(\.openWindow) private var openWindow
-
-    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(
-            get: { model.leftSidebarVisible ? .all : .detailOnly },
-            set: { model.leftSidebarVisible = $0 != .detailOnly }
-        )
-    }
+    // 自绘布局(cmux 模式):NavigationSplitView 会给隐藏的工具栏保留整条高度,
+    // 紧凑模式必须让 tab 条真正贴到窗口顶边。
+    @AppStorage("acro.sidebar.width") private var sidebarWidth = 248.0
 
     var body: some View {
         ZStack(alignment: .top) {
-            NavigationSplitView(columnVisibility: columnVisibility) {
-                SidebarView(model: model, runtime: runtime)
-            } detail: {
+            HStack(spacing: 0) {
+                if model.leftSidebarVisible {
+                    SidebarView(model: model, runtime: runtime)
+                        .frame(width: max(180, min(sidebarWidth, 420)))
+                    sidebarResizeHandle
+                }
+
                 GeometryReader { geometry in
                     HSplitView {
                         TerminalPanesView(model: model, runtime: runtime)
@@ -37,9 +37,11 @@ struct WorkbenchView: View {
                         alignment: .leading
                     )
                 }
-                .navigationTitle(model.windowTitle)
-                .toolbar(.hidden, for: .windowToolbar)
             }
+            .coordinateSpace(name: "workbench-root")
+            .ignoresSafeArea(.container, edges: .top)
+            .background(WindowConfigurator())
+            .animation(.easeOut(duration: 0.18), value: model.leftSidebarVisible)
 
             reconnectBanner
 
@@ -159,6 +161,30 @@ struct WorkbenchView: View {
         }
     }
 
+    private var sidebarResizeHandle: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(width: 1)
+            .overlay(
+                Color.clear
+                    .frame(width: 7)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .named("workbench-root"))
+                            .onChanged { value in
+                                sidebarWidth = Double(min(max(value.location.x, 180), 420))
+                            }
+                    )
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+            )
+    }
+
     // ---- Binding 包装 ----
 
     private var errorPresented: Binding<Bool> {
@@ -212,4 +238,21 @@ struct WorkbenchView: View {
             }
         )
     }
+}
+
+// 无标题栏窗口:内容全幅 + 空白处可拖动窗口
+private struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.styleMask.insert(.fullSizeContentView)
+            window.isMovableByWindowBackground = true
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }

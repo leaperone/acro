@@ -408,7 +408,6 @@ struct SidebarView: View {
                 }
         }
         .background(.bar)
-        .navigationSplitViewColumnWidth(min: 210, ideal: 248, max: 320)
     }
 
     private var header: some View {

@@ -51,7 +51,7 @@ struct TerminalPanesView: View {
 
     var body: some View {
         if let root = model.currentLayout?.root {
-            layoutView(root)
+            layoutView(root, isTopLeft: true)
         } else if let selectedWorkspace = model.selectedWorkspace {
             ContentUnavailableView {
                 Label("没有终端", systemImage: "terminal")
@@ -78,14 +78,17 @@ struct TerminalPanesView: View {
         }
     }
 
-    private func layoutView(_ node: TerminalLayoutNode) -> AnyView {
+    // isTopLeft 沿 first 链传递:只有贴住窗口左上角的窗格需要给红绿灯让位
+    private func layoutView(_ node: TerminalLayoutNode, isTopLeft: Bool = false) -> AnyView {
         switch node {
         case .pane(let group):
-            return AnyView(PaneView(model: model, pane: group))
+            return AnyView(PaneView(model: model, pane: group, isTopLeft: isTopLeft))
         case .split(let splitNode):
             return AnyView(RatioSplitView(
                 node: splitNode,
-                content: { layoutView($0) },
+                content: { child in
+                    layoutView(child, isTopLeft: isTopLeft && child == splitNode.first)
+                },
                 onRatioChange: { ratio in
                     guard let splitId = UUID(uuidString: splitNode.id) else { return }
                     model.setSplitRatio(splitId, ratio: ratio)
@@ -173,6 +176,7 @@ private struct RatioSplitView: View {
 private struct PaneView: View {
     @ObservedObject var model: WorkbenchModel
     let pane: PaneTabGroup
+    var isTopLeft = false
     @State private var dropZone: PaneDropZone?
 
     private var focused: Bool {
@@ -181,7 +185,12 @@ private struct PaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PaneTabBar(model: model, pane: pane, focused: focused)
+            PaneTabBar(
+                model: model,
+                pane: pane,
+                focused: focused,
+                trafficLightClearance: isTopLeft && !model.leftSidebarVisible
+            )
 
             GeometryReader { geometry in
                 ZStack {
@@ -268,9 +277,13 @@ private struct PaneTabBar: View {
     @ObservedObject var model: WorkbenchModel
     let pane: PaneTabGroup
     let focused: Bool
+    var trafficLightClearance = false
 
     var body: some View {
         HStack(spacing: 4) {
+            if trafficLightClearance {
+                Color.clear.frame(width: 70)
+            }
             ScrollView(.horizontal) {
                 HStack(spacing: 3) {
                     ForEach(Array(pane.sessionIds.enumerated()), id: \.element) { index, sessionId in
