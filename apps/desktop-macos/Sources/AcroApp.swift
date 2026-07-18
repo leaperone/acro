@@ -5,14 +5,6 @@
 import AppKit
 import SwiftUI
 
-extension Notification.Name {
-    static let acroClosePaneShortcut = Notification.Name("acro.closePaneShortcut")
-}
-
-final class ClosePaneShortcutCommand {
-    var handled = false
-}
-
 final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     private var keyMonitor: Any?
 
@@ -20,14 +12,18 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard flags == .command,
-                  event.charactersIgnoringModifiers?.lowercased() == "w"
-            else { return event }
-            let command = ClosePaneShortcutCommand()
-            NotificationCenter.default.post(name: .acroClosePaneShortcut, object: command)
-            return command.handled ? nil : event
+            Self.handleKeyDown(event, firstResponder: event.window?.firstResponder)
         }
+    }
+
+    static func handleKeyDown(_ event: NSEvent, firstResponder: NSResponder?) -> NSEvent? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags == .command,
+              event.charactersIgnoringModifiers?.lowercased() == "w"
+        else { return event }
+        guard !event.isARepeat else { return nil }
+        (firstResponder as? AcroTerminalNSView)?.closePaneFromShortcut()
+        return nil
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -348,29 +344,6 @@ struct ContentView: View {
         }
         .onChange(of: inspectorVisible) { _, _ in
             persistLayout()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { notification in
-            guard (notification.object as? NSWindow)?.sheetParent == nil,
-                  !showingCommandPalette,
-                  !showingWorkspaceEditor,
-                  projectPickerWorkspace == nil,
-                  terminalProjectPickerWorkspace == nil
-            else { return }
-            DispatchQueue.main.async { requestTerminalFocus() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .acroClosePaneShortcut)) { notification in
-            guard let command = notification.object as? ClosePaneShortcutCommand,
-                  currentLayout?.root != nil,
-                  !showingCommandPalette,
-                  !showingWorkspaceEditor,
-                  projectPickerWorkspace == nil,
-                  terminalProjectPickerWorkspace == nil,
-                  pendingWorkspaceDeletion == nil,
-                  pendingSessionTermination == nil,
-                  errorMessage == nil
-            else { return }
-            command.handled = true
-            closeFocusedPane()
         }
         .alert(
             editingWorkspaceId == nil ? "新建工作区" : "重命名工作区",
@@ -1323,19 +1296,14 @@ struct ContentView: View {
             ) else { return }
             let workspaceId = string(selectedWorkspace, "id")
             let newSessionId = string(session, "id")
-            var layout = workspaceLayouts[workspaceId] ?? WorkspaceTerminalLayout()
-            if layout.root?.contains(sourceSessionId) == true {
-                layout.root = layout.root?.splitting(
-                    sourceSessionId,
-                    direction: direction,
-                    newSessionId: newSessionId
-                )
-            } else if let fallbackSessionId = layout.focusedSessionId,
-                      layout.root?.contains(fallbackSessionId) == true {
-                layout.root = layout.root?.replacing(fallbackSessionId, with: newSessionId)
-            } else {
-                layout.root = .leaf(newSessionId)
-            }
+            guard var layout = workspaceLayouts[workspaceId],
+                  layout.root?.contains(sourceSessionId) == true
+            else { return }
+            layout.root = layout.root?.splitting(
+                sourceSessionId,
+                direction: direction,
+                newSessionId: newSessionId
+            )
             layout.focusedSessionId = newSessionId
             workspaceLayouts[workspaceId] = layout
             if selectedWorkspaceId == workspaceId {

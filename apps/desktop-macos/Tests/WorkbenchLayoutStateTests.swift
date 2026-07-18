@@ -38,3 +38,42 @@ final class WorkbenchLayoutStateTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(WorkbenchLayoutSnapshot.self, from: data), snapshot)
     }
 }
+
+@MainActor
+final class AcroShortcutTests: XCTestCase {
+    func testCommandWClosesOnceAndConsumesRepeats() throws {
+        let terminal = AcroTerminalNSView(command: "true")
+        var closeCount = 0
+        terminal.onClose = { closeCount += 1 }
+
+        let press = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "w",
+            charactersIgnoringModifiers: "w",
+            isARepeat: false,
+            keyCode: 13
+        ))
+        XCTAssertNil(AcroAppDelegate.handleKeyDown(press, firstResponder: terminal))
+        XCTAssertEqual(closeCount, 1)
+
+        let repeated = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "w",
+            charactersIgnoringModifiers: "w",
+            isARepeat: true,
+            keyCode: 13
+        ))
+        XCTAssertNil(AcroAppDelegate.handleKeyDown(repeated, firstResponder: terminal))
+        XCTAssertEqual(closeCount, 1)
+    }
+}
