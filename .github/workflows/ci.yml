@@ -20,6 +20,7 @@ jobs:
       - run: pnpm -C apps/runtime exec tsc --noEmit
       - run: pnpm -C apps/runtime test
       - run: pnpm -C apps/cli exec tsc --noEmit
+      - run: pnpm -C apps/mobile check
 
   desktop-macos:
     runs-on: macos-15

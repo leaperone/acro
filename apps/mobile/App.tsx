@@ -15,7 +15,13 @@ import * as SecureStore from "expo-secure-store";
 import { WebView } from "react-native-webview";
 import type { Session } from "@acro/protocol";
 import { encodeInFrame, FRAME_BROWSER, FRAME_OUT, FRAME_SIM } from "@acro/protocol";
-import { MobileClient, pairWithOffer, type ServerConfig } from "./src/client.ts";
+import {
+  MobileClient,
+  pairWithOffer,
+  parseServerConfig,
+  type ServerConfig,
+} from "./src/client.ts";
+import { mapContainedPoint } from "./src/surface.ts";
 import { terminalHtml } from "./src/terminal-html.ts";
 
 // ---- 小工具 ----
@@ -51,20 +57,28 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      const raw = await SecureStore.getItemAsync("acro.config");
-      const parsed = raw ? (JSON.parse(raw) as ServerConfig) : null;
-      // 旧版格式(host+token)没有 endpoints/pub,视为未配对
-      setConfig(parsed && Array.isArray(parsed.endpoints) && parsed.pub ? parsed : null);
+      try {
+        const raw = await SecureStore.getItemAsync("acro.config");
+        const parsed = parseServerConfig(raw);
+        if (raw && !parsed) void SecureStore.deleteItemAsync("acro.config").catch(() => {});
+        setConfig(parsed);
+      } catch {
+        setConfig(null);
+      }
     })();
   }, []);
 
   useEffect(() => {
     if (!config) return;
+    setConnected(false);
     const c = new MobileClient(config);
-    c.onStateChange = setConnected;
+    const unsubscribeState = c.subscribeState(setConnected);
     void c.connect().catch(() => {});
     setClient(c);
-    return () => c.close();
+    return () => {
+      unsubscribeState();
+      c.close();
+    };
   }, [config]);
 
   const onPaired = useCallback(async (offer: string) => {
@@ -93,6 +107,7 @@ export default function App() {
             onPress={() => {
               void SecureStore.deleteItemAsync("acro.config");
               client?.close();
+              setConnected(false);
               setClient(null);
               setConfig(null);
             }}
@@ -190,18 +205,23 @@ function HomeScreen({
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sims, setSims] = useState<SimInfo[]>([]);
 
-  const refresh = useCallback(() => {
+  const refreshSessions = useCallback(() => {
     void client.rpc("session.list", {}).then(setSessions).catch(() => {});
+  }, [client]);
+
+  const refreshSimulators = useCallback(() => {
     void client.rpc("simulator.list", {}).then(setSims).catch(() => {});
   }, [client]);
 
   useEffect(() => {
-    refresh();
-    client.onEvent = () => refresh();
-    return () => {
-      client.onEvent = null;
-    };
-  }, [client, refresh]);
+    refreshSessions();
+    refreshSimulators();
+    return client.subscribeEvent((event) => {
+      if (event === "session.created" || event === "session.exit" || event === "session.removed") {
+        refreshSessions();
+      }
+    });
+  }, [client, refreshSessions, refreshSimulators]);
 
   const createSession = (command?: string) => {
     void client
@@ -315,50 +335,52 @@ function TerminalScreen({
     [client, session.id, inject],
   );
 
+  const claimFocus = useCallback(
+    async (force: boolean) => {
+      const { claimed } = await client.rpc("session.claimFocus", {
+        sessionId: session.id,
+        ...(force ? { force: true } : {}),
+      });
+      if (claimed) {
+        setOccupant(null);
+        return;
+      }
+      setOccupant("其他设备");
+      const owners = await client.rpc("session.focusList", {});
+      const owner = owners.find((entry) => entry.sessionId === session.id);
+      setOccupant(
+        owner && owner.deviceId !== client.deviceId ? owner.deviceName || "其他设备" : null,
+      );
+    },
+    [client, session.id],
+  );
+
   useEffect(() => {
-    client.onFrame = (frame) => {
+    const unsubscribeFrame = client.subscribeFrame((frame) => {
       if (frame.type === FRAME_OUT && frame.channel === channelRef.current) {
         inject(`window.__acro.write("${bytesToB64(frame.data)}")`);
       }
-    };
+    });
     // 占用变化实时反映:他人接管 → 遮罩;释放/自己 → 解除
-    client.onEvent = (event, payload) => {
+    const unsubscribeEvent = client.subscribeEvent((event, payload) => {
       if (event !== "session.focusChanged") return;
       const p = payload as { sessionId: string; deviceId: string | null; deviceName: string | null };
       if (p.sessionId !== session.id) return;
-      setOccupant(p.deviceId && p.deviceId !== client.deviceId ? p.deviceName : null);
-    };
-    // 断线重连后重新 attach(快照重画)
-    client.onStateChange = (up) => {
-      if (up && channelRef.current !== null) void attach(0, 0).catch(() => {});
-    };
+      setOccupant(
+        p.deviceId && p.deviceId !== client.deviceId ? p.deviceName || "其他设备" : null,
+      );
+    });
     // 打开即认领:无主则静默拿下;被占用则先遮罩,等用户显式接管
-    void (async () => {
-      try {
-        const owners = await client.rpc("session.focusList", {});
-        const owner = owners.find((o) => o.sessionId === session.id);
-        if (owner && owner.deviceId !== client.deviceId) {
-          setOccupant(owner.deviceName);
-        } else {
-          await client.rpc("session.claimFocus", { sessionId: session.id });
-        }
-      } catch {
-        // 离线时随重连恢复
-      }
-    })();
+    void claimFocus(false).catch(() => {});
     return () => {
-      client.onFrame = null;
-      client.onEvent = null;
-      client.onStateChange = null;
+      unsubscribeFrame();
+      unsubscribeEvent();
       void client.rpc("session.detach", { sessionId: session.id }).catch(() => {});
     };
-  }, [client, session.id, attach, inject]);
+  }, [client, session.id, claimFocus, inject]);
 
   const takeOver = () => {
-    setOccupant(null);
-    void client
-      .rpc("session.claimFocus", { sessionId: session.id, force: true })
-      .catch(() => {});
+    void claimFocus(true).catch(() => {});
   };
 
   const sendBytes = (text: string) => {
@@ -441,7 +463,7 @@ function SurfaceScreen({
   const layoutRef = useRef<{ w: number; h: number }>({ w: 1, h: 1 });
 
   useEffect(() => {
-    client.onFrame = (frame) => {
+    const unsubscribeFrame = client.subscribeFrame((frame) => {
       if (
         (frame.type === FRAME_BROWSER || frame.type === FRAME_SIM) &&
         frame.channel === channelRef.current
@@ -449,7 +471,7 @@ function SurfaceScreen({
         const mime = frame.type === FRAME_BROWSER ? "image/jpeg" : "image/png";
         setFrameUri(`data:${mime};base64,${bytesToB64(frame.data)}`);
       }
-    };
+    });
     void (async () => {
       if (kind === "browser") {
         const res = await client.rpc("browser.attach", { browserId: refId });
@@ -461,7 +483,7 @@ function SurfaceScreen({
       }
     })().catch(() => {});
     return () => {
-      client.onFrame = null;
+      unsubscribeFrame();
       if (kind === "browser") {
         void client.rpc("browser.detach", { browserId: refId }).catch(() => {});
       } else {
@@ -488,14 +510,19 @@ function SurfaceScreen({
         }}
         onPress={(e) => {
           if (kind !== "browser" || !size) return;
-          const scale = size.w / layoutRef.current.w;
+          const point = mapContainedPoint(
+            { x: e.nativeEvent.locationX, y: e.nativeEvent.locationY },
+            layoutRef.current,
+            size,
+          );
+          if (!point) return;
           void client
             .rpc("browser.input", {
               browserId: refId,
               event: {
                 kind: "click",
-                x: e.nativeEvent.locationX * scale,
-                y: e.nativeEvent.locationY * scale,
+                x: point.x,
+                y: point.y,
               },
             })
             .catch(() => {});

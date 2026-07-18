@@ -18,6 +18,43 @@ export interface ServerConfig {
   endpoints: string[]; // host:port,按序尝试
 }
 
+export function parseServerConfig(raw: string | null): ServerConfig | null {
+  if (!raw) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const config = value as Record<string, unknown>;
+  const endpoints = config.endpoints;
+  if (
+    typeof config.name !== "string" ||
+    !config.name ||
+    typeof config.deviceId !== "string" ||
+    !config.deviceId ||
+    typeof config.token !== "string" ||
+    !config.token ||
+    typeof config.pub !== "string" ||
+    !config.pub ||
+    !Array.isArray(endpoints) ||
+    endpoints.length === 0 ||
+    !endpoints.every(
+      (endpoint): endpoint is string => typeof endpoint === "string" && endpoint.length > 0,
+    )
+  ) {
+    return null;
+  }
+  return {
+    name: config.name,
+    deviceId: config.deviceId,
+    token: config.token,
+    pub: config.pub,
+    endpoints,
+  };
+}
+
 const CONNECT_TIMEOUT_MS = 4000;
 const RETRY_DELAY_MS = 1500;
 
@@ -105,9 +142,9 @@ export class MobileClient {
   private nextId = 1;
   private pending = new Map<number, PendingEntry>();
   private closed = false;
-  onFrame: ((frame: Frame) => void) | null = null;
-  onEvent: ((event: string, payload: unknown) => void) | null = null;
-  onStateChange: ((connected: boolean) => void) | null = null;
+  private frameListeners = new Set<(frame: Frame) => void>();
+  private eventListeners = new Set<(event: string, payload: unknown) => void>();
+  private stateListeners = new Set<(connected: boolean) => void>();
   // authed 后写入;终端占用锁用它判断"占用者是不是自己"
   deviceId = "";
 
@@ -115,12 +152,16 @@ export class MobileClient {
     this.config = config;
   }
 
-  // 全部入口失败时内部调度重试,不抛错(连接状态由 onStateChange 通知)
+  // 全部入口失败时内部调度重试,不抛错(连接状态由 subscribeState 通知)
   async connect(): Promise<void> {
     for (const endpoint of this.config.endpoints) {
       if (this.closed) return;
       try {
         const channel = await connectEndpoint(endpoint, this.config);
+        if (this.closed) {
+          channel.ws.close();
+          return;
+        }
         this.attach(channel);
         return;
       } catch {
@@ -136,13 +177,13 @@ export class MobileClient {
     this.ws = channel.ws;
     this.session = channel.session;
     this.deviceId = channel.deviceId;
-    this.onStateChange?.(true);
+    for (const listener of this.stateListeners) listener(true);
     channel.ws.onclose = () => {
       this.ws = null;
       this.session = null;
       for (const p of this.pending.values()) p.reject(new Error("连接断开"));
       this.pending.clear();
-      this.onStateChange?.(false);
+      for (const listener of this.stateListeners) listener(false);
       if (!this.closed) setTimeout(() => void this.connect().catch(() => {}), RETRY_DELAY_MS);
     };
     channel.ws.onmessage = (ev: MessageEvent) => {
@@ -157,7 +198,8 @@ export class MobileClient {
         return;
       }
       if (opened.kind === "binary") {
-        this.onFrame?.(decodeFrame(opened.data));
+        const frame = decodeFrame(opened.data);
+        for (const listener of this.frameListeners) listener(frame);
         return;
       }
       const msg = JSON.parse(opened.text);
@@ -168,9 +210,24 @@ export class MobileClient {
         if (msg.ok) p.resolve(msg.result);
         else p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
       } else if (msg.t === "evt") {
-        this.onEvent?.(msg.event, msg.payload);
+        for (const listener of this.eventListeners) listener(msg.event, msg.payload);
       }
     };
+  }
+
+  subscribeFrame(listener: (frame: Frame) => void): () => void {
+    this.frameListeners.add(listener);
+    return () => this.frameListeners.delete(listener);
+  }
+
+  subscribeEvent(listener: (event: string, payload: unknown) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  subscribeState(listener: (connected: boolean) => void): () => void {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
   }
 
   rpc<M extends MethodName>(method: M, params: MethodParams<M>): Promise<MethodResult<M>> {
