@@ -263,6 +263,7 @@ struct ContentView: View {
     @State private var terminalFocusRequest = 0
     @State private var layoutRestored = false
     @State private var workspaceGroupsInitialized = false
+    @State private var workspaceExpansionInitialized = false
     @State private var expandedWorkspaceGroupIds: Set<String> = []
     @State private var expandedWorkspaceIds: Set<String> = []
     @State private var showingWorkspaceGroupEditor = false
@@ -1333,7 +1334,9 @@ struct ContentView: View {
                         Task { await moveWorkspace(workspace, to: nil) }
                     }
                 }
-                Divider()
+                if !workspaceProjects.isEmpty || !runtime.workspaceGroups.isEmpty {
+                    Divider()
+                }
                 Button("重命名") {
                     presentWorkspaceEditor(
                         workspaceId: workspaceId,
@@ -1881,6 +1884,13 @@ struct ContentView: View {
         }
         let validWorkspaceIds = Set(workspaceIds)
         expandedWorkspaceIds.formIntersection(validWorkspaceIds)
+        if !workspaceExpansionInitialized {
+            workspaceExpansionInitialized = true
+            if let selectedWorkspaceId {
+                expandedWorkspaceIds.insert(selectedWorkspaceId)
+                expandGroupContaining(selectedWorkspaceId)
+            }
+        }
         workspaceLayouts = workspaceLayouts.filter { validWorkspaceIds.contains($0.key) }
 
         for workspace in runtime.workspaces {
@@ -1911,8 +1921,6 @@ struct ContentView: View {
             selectedSessionId = nil
             return
         }
-        expandedWorkspaceIds.insert(selectedWorkspaceId)
-        expandGroupContaining(selectedWorkspaceId)
         guard let focusedSessionId = workspaceLayouts[selectedWorkspaceId]?.focusedSessionId,
               let focusedSession = activeSessions.first(where: {
                   string($0, "id") == focusedSessionId
