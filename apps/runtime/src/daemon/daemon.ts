@@ -29,6 +29,12 @@ import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 
 const SCROLLBACK = 5000;
 const CHECKPOINT_INTERVAL_MS = 20_000;
+// 输出微批(orca daemon-stream-data-batcher 思路):
+// pty 以 ~1KB 粒度吐块,逐块广播会用 5 万条消息发 50MB,吞吐被消息开销钉死。
+// 同一事件循环轮次内聚合,到上限立即发,交互单块仍在 setImmediate 内送出(亚毫秒)。
+const OUT_BATCH_MAX_BYTES = 256 * 1024;
+// 解析队列合并写入:xterm 大串解析远快于 5 万次 1KB await
+const PARSE_MERGE_MAX_CHARS = 1 << 20;
 
 // pnpm 解包会丢 spawn-helper 的可执行位,node-pty 自己不修,这里自愈
 function ensureSpawnHelperExecutable(): void {
@@ -62,6 +68,9 @@ class DaemonSession {
   private queue: QueueItem[] = [];
   private pumping = false;
   private dirty = false;
+  private outChunks: Buffer[] = [];
+  private outBytes = 0;
+  private outFlushScheduled = false;
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
   private onExit: (session: DaemonSession) => void;
@@ -114,11 +123,24 @@ class DaemonSession {
     this.ptyProc.onData((data) => {
       this.seq += 1;
       this.dirty = true;
-      this.onOutput(this.handle, this.seq, Buffer.from(data, "utf8"));
+      const buf = Buffer.from(data, "utf8");
+      this.outChunks.push(buf);
+      this.outBytes += buf.byteLength;
+      if (this.outBytes >= OUT_BATCH_MAX_BYTES) {
+        this.flushOutput();
+      } else if (!this.outFlushScheduled) {
+        this.outFlushScheduled = true;
+        setImmediate(() => {
+          this.outFlushScheduled = false;
+          this.flushOutput();
+        });
+      }
       this.queue.push({ kind: "chunk", data, seq: this.seq });
       void this.pump();
     });
     this.ptyProc.onExit(({ exitCode }) => {
+      // 尾批先于 exit 事件送出,客户端不会丢最后一段输出
+      this.flushOutput();
       this.meta.alive = false;
       this.meta.exitCode = exitCode;
       this.checkpoint();
@@ -126,9 +148,20 @@ class DaemonSession {
     });
   }
 
+  // 把积压的输出块并成一帧广播;帧 seq = 批内最后一块的 seq
+  private flushOutput(): void {
+    if (this.outChunks.length === 0) return;
+    const data = this.outChunks.length === 1 ? this.outChunks[0]! : Buffer.concat(this.outChunks);
+    this.outChunks = [];
+    this.outBytes = 0;
+    this.onOutput(this.handle, this.seq, data);
+  }
+
   // 快照进同一条解析队列,保证 snapshot 恰好覆盖 seq<=snapshotSeq 的输出:
   // 之后的帧 seq 更大,runtime 按 attachSeq 过滤,不重不漏。
+  // 入队前先 flush,保证没有一帧同时携带快照前后的字节。
   snapshot(): Promise<{ seq: number; snapshot: string }> {
+    this.flushOutput();
     return new Promise((resolve) => {
       this.queue.push({ kind: "snapshot", resolve });
       void this.pump();
@@ -139,16 +172,28 @@ class DaemonSession {
     if (this.pumping) return;
     this.pumping = true;
     while (this.queue.length > 0) {
-      const item = this.queue.shift()!;
-      if (item.kind === "chunk") {
-        await new Promise<void>((r) => this.term.write(item.data!, r));
-        this.parsedSeq = item.seq!;
-      } else {
+      if (this.queue[0]!.kind === "snapshot") {
+        const item = this.queue.shift()!;
         item.resolve!({
           seq: this.parsedSeq,
           snapshot: this.serializer.serialize({ scrollback: SCROLLBACK }),
         });
+        continue;
       }
+      // 合并连续输出块一次性解析
+      let merged = "";
+      let lastSeq = this.parsedSeq;
+      while (
+        this.queue.length > 0 &&
+        this.queue[0]!.kind === "chunk" &&
+        merged.length < PARSE_MERGE_MAX_CHARS
+      ) {
+        const item = this.queue.shift()!;
+        merged += item.data!;
+        lastSeq = item.seq!;
+      }
+      await new Promise<void>((r) => this.term.write(merged, r));
+      this.parsedSeq = lastSeq;
     }
     this.pumping = false;
   }
