@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import json
 import subprocess
 import sys
@@ -11,15 +12,15 @@ SCRIPT = Path(__file__).with_name("update-appcast.py")
 
 
 class UpdateAppcastTests(unittest.TestCase):
-    def test_adds_signed_delta_ahead_of_history(self) -> None:
+    def test_separates_versions_and_adds_signed_delta(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             appcast = Path(directory) / "appcast.xml"
             deltas = Path(directory) / "deltas.json"
-            appcast.write_text(self.feed(self.item("0.0.6")), encoding="utf-8")
+            appcast.write_text(self.feed(self.item("0.0.6", "41")), encoding="utf-8")
             deltas.write_text(
                 json.dumps(
                     [{
-                        "from": "0.0.6",
+                        "from": "41",
                         "url": "https://example.invalid/update.delta",
                         "signature": "delta-signature",
                         "length": "123",
@@ -28,31 +29,37 @@ class UpdateAppcastTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            subprocess.run(
-                [
-                    sys.executable,
-                    SCRIPT,
-                    appcast,
-                    "0.0.7-beta.1",
-                    "beta",
-                    "https://example.invalid/update.zip",
-                    "archive-signature",
-                    "456",
-                    deltas,
-                ],
-                check=True,
-            )
+            for build_version in ("42", "43"):
+                subprocess.run(
+                    [
+                        sys.executable,
+                        SCRIPT,
+                        appcast,
+                        "0.0.7-beta.4",
+                        build_version,
+                        "beta",
+                        "https://example.invalid/update.zip",
+                        "archive-signature",
+                        "456",
+                        deltas,
+                    ],
+                    check=True,
+                )
 
             items = ET.parse(appcast).getroot().find("channel").findall("item")
             self.assertEqual(
                 [item.find(f"{{{SPARKLE}}}version").text for item in items],
-                ["0.0.7-beta.1", "0.0.6"],
+                ["43", "41"],
+            )
+            self.assertEqual(
+                items[0].find(f"{{{SPARKLE}}}shortVersionString").text,
+                "0.0.7-beta.4",
             )
             delta = items[0].find(f"{{{SPARKLE}}}deltas/enclosure")
             enclosure = items[0].find("enclosure")
             self.assertEqual(items[0].find(f"{{{SPARKLE}}}channel").text, "beta")
             self.assertEqual(enclosure.get(f"{{{SPARKLE}}}edSignature"), "archive-signature")
-            self.assertEqual(delta.get(f"{{{SPARKLE}}}deltaFrom"), "0.0.6")
+            self.assertEqual(delta.get(f"{{{SPARKLE}}}deltaFrom"), "41")
             self.assertEqual(delta.get(f"{{{SPARKLE}}}edSignature"), "delta-signature")
 
     @staticmethod
@@ -63,9 +70,9 @@ class UpdateAppcastTests(unittest.TestCase):
         )
 
     @staticmethod
-    def item(version: str) -> str:
+    def item(version: str, build_version: str) -> str:
         return (
-            f"<item><title>{version}</title><sparkle:version>{version}</sparkle:version>"
+            f"<item><title>{version}</title><sparkle:version>{build_version}</sparkle:version>"
             f"<sparkle:shortVersionString>{version}</sparkle:shortVersionString>"
             f"<enclosure url=\"{version}.zip\" length=\"456\" "
             f"sparkle:edSignature=\"archive-signature\"/></item>"

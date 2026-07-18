@@ -1,5 +1,5 @@
 #!/bin/bash
-# 打包 Acro.app 与分发 zip/dmg。用法:scripts/package-app.sh [version]
+# 打包 Acro.app 与分发 zip/dmg。用法:scripts/package-app.sh [version] [build_version]
 # 前置:scripts/setup-ghostty.sh 已就绪(GhosttyKit.xcframework + Resources)
 #
 # 签名:ACRO_SIGN_IDENTITY 设为 Developer ID 证书名则正式签名(hardened runtime),
@@ -9,9 +9,12 @@
 set -euo pipefail
 
 VERSION="${1:-0.0.0}"
+BUILD_VERSION="${2:-0}"
 SIGN_IDENTITY="${ACRO_SIGN_IDENTITY:--}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
+
+[[ "$BUILD_VERSION" =~ ^[0-9]+$ ]] || { echo "build_version must be an integer"; exit 1; }
 
 swift build -c release
 
@@ -55,7 +58,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>Acro</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-    <key>CFBundleVersion</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${BUILD_VERSION}</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>

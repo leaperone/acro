@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """往 Sparkle appcast.xml 追加(或替换)完整包与可用的 delta 条目。
 
-用法: update-appcast.py <appcast.xml> <version> <stable|beta>
+用法: update-appcast.py <appcast.xml> <version> <build_version> <stable|beta>
       <download_url> <ed_signature> <length> <deltas_json>
 """
 import json
@@ -14,7 +14,9 @@ SPARKLE = "http://www.sparkle-project.org/xml-namespaces/sparkle"
 ET.register_namespace("sparkle", SPARKLE)
 MAX_ITEMS = 15
 
-path, version, channel, url, signature, length, deltas_path = sys.argv[1:8]
+path, version, build_version, channel, url, signature, length, deltas_path = sys.argv[1:9]
+if not build_version.isdigit():
+    raise SystemExit("build_version must be an integer")
 with open(deltas_path, encoding="utf-8") as deltas_file:
     deltas = json.load(deltas_file)
 
@@ -31,7 +33,7 @@ else:
 feed = rss.find("channel")
 old = []
 for item in feed.findall("item"):
-    existing = item.find(f"{{{SPARKLE}}}version")
+    existing = item.find(f"{{{SPARKLE}}}shortVersionString")
     if existing is None or existing.text != version:
         old.append(item)
     feed.remove(item)
@@ -39,7 +41,7 @@ for item in feed.findall("item"):
 item = ET.Element("item")
 ET.SubElement(item, "title").text = version
 ET.SubElement(item, "pubDate").text = formatdate(usegmt=True)
-ET.SubElement(item, f"{{{SPARKLE}}}version").text = version
+ET.SubElement(item, f"{{{SPARKLE}}}version").text = build_version
 ET.SubElement(item, f"{{{SPARKLE}}}shortVersionString").text = version
 ET.SubElement(item, f"{{{SPARKLE}}}minimumSystemVersion").text = "14.0"
 if channel == "beta":
@@ -67,4 +69,4 @@ for node in old[: MAX_ITEMS - 1]:
 
 ET.indent(tree)
 tree.write(path, encoding="utf-8", xml_declaration=True)
-print(f"appcast updated: {version} channel={channel} deltas={len(deltas)}")
+print(f"appcast updated: {version} build={build_version} channel={channel} deltas={len(deltas)}")
