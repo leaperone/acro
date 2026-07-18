@@ -29,6 +29,27 @@ interface SnapshotResult {
   rows: number;
 }
 
+async function removeDaemonSession(daemon: DaemonClient, sessionId: string): Promise<void> {
+  try {
+    await daemon.request("session.remove", { sessionId });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("unknown method")) {
+      await daemon.request("session.kill", { sessionId });
+      return;
+    }
+    throw error;
+  }
+}
+
+function daemonMayHaveCreatedSession(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("connection lost") ||
+    message.includes("EPIPE") ||
+    message.includes("ECONNRESET")
+  );
+}
+
 async function main(): Promise<void> {
   ensureStateDirs();
   const releaseLock = acquireProcessLock(paths.runtimeLock, "runtime");
@@ -44,22 +65,41 @@ async function main(): Promise<void> {
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
   const workspaces = new WorkspaceRegistry();
+  const creatingSessionIds = new Set<string>();
+  const reconcileWorkspaceSessions = async (): Promise<Session[]> => {
+    const tracked = new Set(workspaces.list().flatMap((workspace) => workspace.sessionIds));
+    const sessions = await daemon.request<Session[]>("session.list");
+    const known = new Set(sessions.map((session) => session.id));
+    const missing = new Set(
+      [...tracked].filter((id) => !known.has(id) && !creatingSessionIds.has(id)),
+    );
+    workspaces.removeSessions(missing);
+    return sessions;
+  };
+  const daemonSessions = await reconcileWorkspaceSessions();
   const storedWorkspaces = workspaces.list();
   const liveSessionIds = new Set(
-    (await daemon.request<Session[]>("session.list"))
-      .filter((session) => session.alive)
-      .map((session) => session.id),
+    daemonSessions.filter((session) => session.alive).map((session) => session.id),
   );
   if (!storedWorkspaces.some((workspace) => workspace.sessionIds.some((id) => liveSessionIds.has(id)))) {
     const workspace = storedWorkspaces[0] ?? workspaces.create();
+    const sessionId = crypto.randomUUID();
+    workspaces.addSession(workspace.id, sessionId);
     try {
-      const { session } = await daemon.request<{ session: Session; handle: number }>(
-        "session.create",
-        { cwd: os.homedir(), cols: 140, rows: 40 },
+      await daemon.request<{ session: Session; handle: number }>(
+        "session.createOwned",
+        { id: sessionId, cwd: os.homedir(), cols: 140, rows: 40 },
       );
-      workspaces.addSession(workspace.id, session.id);
     } catch (error) {
-      if (storedWorkspaces.length === 0) workspaces.remove(workspace.id);
+      if (!daemonMayHaveCreatedSession(error)) {
+        workspaces.removeSession(workspace.id, sessionId);
+        if (storedWorkspaces.length === 0) workspaces.remove(workspace.id);
+      }
+      if ((error as Error).message === "unknown method session.createOwned") {
+        throw new Error(
+          "terminal daemon is outdated; close existing terminals, then restart the server Mac",
+        );
+      }
       throw error;
     }
   }
@@ -136,15 +176,8 @@ async function main(): Promise<void> {
       }
       await Promise.all(
         workspace.sessionIds.map((sessionId) =>
-          // session.remove 会 SIGKILL 兜底强杀并清掉死记录/快照。旧 daemon 尚无此方法
-          // (代码更新后未重启)时退回 session.kill(SIGHUP):普通进程照常退出,工作区能删,
-          // 别的工作区终端不受影响。残留的死记录随旧 daemon 下次重启加载不到而消解。
-          daemon.request("session.remove", { sessionId }).catch((err: unknown) => {
-            if (err instanceof Error && err.message.includes("unknown method")) {
-              return daemon.request("session.kill", { sessionId });
-            }
-            throw err;
-          }),
+          // 旧 daemon 尚无 remove 时退回 kill；普通进程仍会退出，别的工作区不受影响。
+          removeDaemonSession(daemon, sessionId),
         ),
       );
       for (const sessionId of workspace.sessionIds) {
@@ -177,12 +210,37 @@ async function main(): Promise<void> {
         if (!cwd) throw new Error("source terminal working directory is unavailable");
       }
       const { workspaceId, inheritCwdFrom, ...daemonParams } = params;
-      const { session } = await daemon.request<{ session: Session; handle: number }>(
-        "session.create",
-        { ...daemonParams, cwd: cwd ?? os.homedir() },
-      );
-      if (workspaceId) workspaces.addSession(workspaceId, session.id);
-      return session;
+      const sessionId = crypto.randomUUID();
+      let associated = false;
+      creatingSessionIds.add(sessionId);
+      try {
+        if (workspaceId) {
+          workspaces.addSession(workspaceId, sessionId);
+          associated = true;
+        }
+        const daemonCreateParams = {
+          ...daemonParams,
+          id: sessionId,
+          cwd: cwd ?? os.homedir(),
+        };
+        const { session } = await daemon.request<{ session: Session; handle: number }>(
+          "session.createOwned",
+          daemonCreateParams,
+        );
+        return session;
+      } catch (error) {
+        if (workspaceId && associated && !daemonMayHaveCreatedSession(error)) {
+          workspaces.removeSession(workspaceId, sessionId);
+        }
+        if ((error as Error).message === "unknown method session.createOwned") {
+          throw new Error(
+            "terminal daemon is outdated; close existing terminals, then restart the server Mac",
+          );
+        }
+        throw error;
+      } finally {
+        creatingSessionIds.delete(sessionId);
+      }
     },
     "session.list": () => daemon.request<Session[]>("session.list"),
     "session.claimFocus": async (conn, { sessionId, force }) => {
@@ -345,9 +403,14 @@ async function main(): Promise<void> {
     }
   };
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
+  daemon.on("up", () => {
+    void reconcileWorkspaceSessions().catch((error) => {
+      console.warn(`[runtime] failed to reconcile workspace sessions: ${error.message}`);
+    });
+  });
   daemon.on("event", (evt) => {
-    // 会话结束即清占用,不留脏条目
-    if (evt.event === "session.exit") {
+    // 会话结束或删除即清占用,不留脏条目
+    if (evt.event === "session.exit" || evt.event === "session.removed") {
       const sessionId = (evt.payload as { sessionId?: string }).sessionId;
       if (sessionId) {
         focusOwners.delete(sessionId);
