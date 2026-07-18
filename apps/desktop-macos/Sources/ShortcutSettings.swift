@@ -19,6 +19,7 @@ struct StoredShortcut: Codable, Equatable {
         case "right": .rightArrow
         case "up": .upArrow
         case "down": .downArrow
+        case "\t": .tab
         default: key.count == 1 ? KeyEquivalent(Character(key)) : nil
         }
     }
@@ -47,6 +48,7 @@ struct StoredShortcut: Codable, Equatable {
         case "right": "→"
         case "up": "↑"
         case "down": "↓"
+        case "\t": "Tab"
         default: key.uppercased()
         }
         return parts + keyLabel
@@ -157,8 +159,8 @@ final class ShortcutStore: ObservableObject {
         .focusPaneUp: StoredShortcut(key: "k", command: true, shift: true),
         .focusPaneRight: StoredShortcut(key: "l", command: true, shift: true),
         .closeTab: StoredShortcut(key: "w", command: true),
-        .previousTab: StoredShortcut(key: "[", command: true, shift: true),
-        .nextTab: StoredShortcut(key: "]", command: true, shift: true),
+        .previousTab: StoredShortcut(key: "\t", shift: true, control: true),
+        .nextTab: StoredShortcut(key: "\t", control: true),
         .focusTerminal: StoredShortcut(key: "t", command: true, option: true),
         .openSettings: StoredShortcut(key: ",", command: true),
     ]
