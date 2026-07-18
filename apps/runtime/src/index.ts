@@ -10,8 +10,14 @@ import { HelperClient } from "./computer.ts";
 import { listDirectories, ProjectRegistry } from "./projects.ts";
 import { WorkspaceRegistry } from "./workspaces.ts";
 import { createHttpHandler } from "./http.ts";
+import {
+  clearBootstrapOffer,
+  createShareOffer,
+  ServerIdentity,
+  writeBootstrapOffer,
+} from "./share.ts";
 import { Gateway, type Handlers } from "./ws.ts";
-import { ensureStateDirs } from "./paths.ts";
+import { ensureStateDirs, paths } from "./paths.ts";
 
 interface SnapshotResult {
   handle: number;
@@ -25,6 +31,7 @@ async function main(): Promise<void> {
   ensureStateDirs();
   const config = loadConfig();
   const registry = new DeviceRegistry();
+  const identity = new ServerIdentity();
   const daemon = await DaemonClient.connect();
   const browsers = new BrowserManager();
   const simulators = new SimulatorManager();
@@ -34,6 +41,14 @@ async function main(): Promise<void> {
 
   const handlers: Handlers = {
     "device.list": () => registry.list(),
+    "device.share": (_conn, { name, extraEndpoints }) =>
+      createShareOffer(registry, identity, config.port, name, extraEndpoints),
+    "device.revoke": (_conn, { deviceId }) => {
+      const removed = registry.remove(deviceId);
+      if (!removed) throw new Error("device not found");
+      gateway.terminateDevice(deviceId);
+      return { revoked: true };
+    },
     "project.list": () => projects.list(),
     "project.register": (_conn, { path }) => projects.register(path),
     "filesystem.listDirectories": (_conn, { path }) => listDirectories(path),
@@ -186,9 +201,10 @@ async function main(): Promise<void> {
       helper.request<{ activated: boolean }>("app.activate", params),
   };
 
-  const gateway = new Gateway(registry, handlers, (handle, data) =>
+  const gateway = new Gateway(registry, identity.priv, handlers, (handle, data) =>
     daemon.sendInput(handle, data),
   );
+  gateway.onAuthenticated = () => clearBootstrapOffer();
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
   daemon.on("event", (evt) => gateway.broadcastEvent(evt));
   browsers.on("frame", (handle: number, seq: number, data: Buffer) =>
@@ -198,12 +214,13 @@ async function main(): Promise<void> {
     gateway.forwardSimFrame(handle, seq, data),
   );
 
-  const server = http.createServer(createHttpHandler(registry));
+  const server = http.createServer(createHttpHandler());
   server.on("upgrade", (req, socket, head) => gateway.handleUpgrade(req, socket, head));
   server.listen(config.port, () => {
     console.log(`[runtime] listening on http://127.0.0.1:${config.port}`);
-    if (!registry.hasDevices() || process.env.ACRO_PRINT_PAIR === "1") {
-      console.log(`[runtime] pair code: ${registry.newPairCode()}`);
+    if (!registry.hasDevices()) {
+      const { offer } = writeBootstrapOffer(registry, identity, config.port);
+      console.log(`[runtime] 首次启动,配对码(也写入 ${paths.bootstrapOffer}):\n${offer}`);
     }
   });
 

@@ -5,13 +5,18 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./frames": "./src/frames.ts"
+    "./frames": "./src/frames.ts",
+    "./e2ee": "./src/e2ee.ts"
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "codegen:swift": "node scripts/codegen-swift.ts"
+    "codegen:swift": "node scripts/codegen-swift.ts",
+    "test": "node --test src/*.test.ts"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {

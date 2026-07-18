@@ -26,7 +26,10 @@ struct SettingsView: View {
 private struct GeneralSettingsPane: View {
     @ObservedObject var runtime: RuntimeConnection
     @AppStorage(WorkbenchModel.confirmCloseTabKey) private var confirmCloseTab = true
-    private let config = ClientConfig.load()
+    @State private var config = ClientConfig.load()
+    @State private var pairInput = ""
+    @State private var pairError: String?
+    @State private var newEndpoint = ""
 
     var body: some View {
         Form {
@@ -39,13 +42,64 @@ private struct GeneralSettingsPane: View {
                         Text(stateText)
                     }
                 }
-                LabeledContent("地址", value: config?.host ?? "未配对")
+                LabeledContent("服务器", value: config?.activeServer?.name ?? "未配对")
                 LabeledContent("设备 ID") {
-                    Text(config?.deviceId ?? "-")
+                    Text(config?.activeServer?.deviceId ?? "-")
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                 }
                 LabeledContent("工作区 / 终端", value: "\(runtime.workspaces.count) / \(runtime.sessions.count { $0.alive })")
+            }
+
+            Section {
+                if let server = config?.activeServer {
+                    ForEach(server.endpoints, id: \.self) { endpoint in
+                        LabeledContent(endpoint) {
+                            HStack(spacing: 6) {
+                                if runtime.connectedEndpoint == endpoint {
+                                    Text("当前").font(.caption).foregroundStyle(.green)
+                                }
+                                Button {
+                                    removeEndpoint(endpoint)
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(server.endpoints.count <= 1)
+                                .help("删除入口")
+                            }
+                        }
+                        .font(.callout.monospaced())
+                    }
+                    HStack {
+                        TextField("新入口 (如 frp.example.com:7100)", text: $newEndpoint)
+                            .textFieldStyle(.roundedBorder)
+                        Button("添加") { addEndpoint() }
+                            .disabled(newEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                HStack {
+                    TextField(
+                        config?.activeServer == nil ? "粘贴配对码 (acro://pair?c=…)" : "粘贴新配对码可重新配对",
+                        text: $pairInput
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    Button("配对") { pair() }
+                        .disabled(pairInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if let pairError {
+                    Text(pairError).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text("服务器与入口")
+            } footer: {
+                Text("多个入口共用同一凭据,按序尝试:在家走 LAN 直连,出门自动落到 FRP 等公网入口。连上后控制权与工作进度完全一致。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if runtime.connected {
+                ShareAccessSection(runtime: runtime)
             }
 
             Section {
@@ -59,7 +113,7 @@ private struct GeneralSettingsPane: View {
             }
 
             Section("配置文件") {
-                pathRow("配对凭据", path: "\(NSHomeDirectory())/.acro/client.json")
+                pathRow("配对凭据", path: ClientConfig.path)
                 pathRow("快捷键覆写", path: ShortcutStore.settingsFilePath)
                 pathRow("终端外观", path: TerminalAppearance.confPath)
             }
@@ -70,15 +124,62 @@ private struct GeneralSettingsPane: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 380)
+        .frame(height: 560)
     }
 
     private var stateText: String {
         switch runtime.state {
-        case .connected: "已连接"
+        case .connected: "已连接(\(runtime.connectedEndpoint ?? "-"))"
         case .connecting: "正在连接…"
         case .disconnected: "未连接"
         }
+    }
+
+    // 粘贴配对码:落盘 → 立即连接;deviceId 在认证成功后由连接层补写
+    private func pair() {
+        do {
+            let offer = try PairingOffer.decode(pairInput)
+            var next = config ?? ClientConfig(v: 2, servers: [], active: nil)
+            let name = offer.endpoints.first ?? "Runtime"
+            next.servers.removeAll { $0.name == name }
+            let entry = ServerEntry(
+                name: name, deviceId: "", token: offer.token,
+                pub: offer.pub, endpoints: offer.endpoints)
+            next.servers.append(entry)
+            next.save()
+            config = next
+            pairInput = ""
+            pairError = nil
+            runtime.connect(server: entry)
+        } catch {
+            pairError = error.localizedDescription
+        }
+    }
+
+    private func addEndpoint() {
+        let endpoint = newEndpoint.trimmingCharacters(in: .whitespaces)
+        guard !endpoint.isEmpty else { return }
+        mutateActiveServer { server in
+            if !server.endpoints.contains(endpoint) { server.endpoints.append(endpoint) }
+        }
+        newEndpoint = ""
+    }
+
+    private func removeEndpoint(_ endpoint: String) {
+        mutateActiveServer { server in
+            guard server.endpoints.count > 1 else { return }
+            server.endpoints.removeAll { $0 == endpoint }
+        }
+    }
+
+    private func mutateActiveServer(_ change: (inout ServerEntry) -> Void) {
+        guard var next = config, let active = next.activeServer,
+              let idx = next.servers.firstIndex(where: { $0.id == active.id })
+        else { return }
+        change(&next.servers[idx])
+        next.save()
+        config = next
+        runtime.connect(server: next.servers[idx])
     }
 
     private func pathRow(_ label: String, path: String) -> some View {
@@ -101,6 +202,112 @@ private struct GeneralSettingsPane: View {
                 .accessibilityLabel("在 Finder 中显示 \(label)")
             }
         }
+    }
+}
+
+// ---- 共享服务器访问(对标 orca 的 runtime access grants) ----
+
+private struct ShareAccessSection: View {
+    @ObservedObject var runtime: RuntimeConnection
+    @State private var devices: [Device] = []
+    @State private var shareName = ""
+    @State private var shareExtraEndpoint = ""
+    @State private var generatedOffer: String?
+    @State private var shareError: String?
+
+    var body: some View {
+        Section {
+            HStack {
+                TextField("名称(可选)", text: $shareName)
+                    .textFieldStyle(.roundedBorder)
+                TextField("公网入口(可选,如 frp.example.com:7100)", text: $shareExtraEndpoint)
+                    .textFieldStyle(.roundedBorder)
+                Button("新链接") { Task { await createShare() } }
+            }
+            if let generatedOffer {
+                HStack(spacing: 6) {
+                    Text(generatedOffer)
+                        .font(.caption.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(generatedOffer, forType: .string)
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("复制配对码")
+                }
+            }
+            if let shareError {
+                Text(shareError).font(.caption).foregroundStyle(.red)
+            }
+            ForEach(devices) { device in
+                LabeledContent(device.name) {
+                    HStack(spacing: 8) {
+                        Text(device.lastSeenAt.map { "最后使用 \(shortDate($0))" } ?? "未使用")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button {
+                            Task { await revoke(device) }
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(.red)
+                        .help("撤销授权并断开该设备")
+                    }
+                }
+            }
+        } header: {
+            Text("共享服务器访问")
+        } footer: {
+            Text("任何持有效配对码的设备都可以连接,直到撤销为止;撤销会立即断开该设备的活动连接。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .task { await reload() }
+    }
+
+    private func reload() async {
+        devices = (try? await runtime.rpc("device.list", as: [Device].self)) ?? []
+    }
+
+    private func createShare() async {
+        shareError = nil
+        var params: [String: Any] = [:]
+        let name = shareName.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty { params["name"] = name }
+        let extra = shareExtraEndpoint.trimmingCharacters(in: .whitespaces)
+        if !extra.isEmpty { params["extraEndpoints"] = [extra] }
+        do {
+            struct ShareResult: Decodable { let offer: String; let deviceId: String }
+            let result = try await runtime.rpc("device.share", params, as: ShareResult.self)
+            generatedOffer = result.offer
+            await reload()
+        } catch {
+            shareError = error.localizedDescription
+        }
+    }
+
+    private func revoke(_ device: Device) async {
+        shareError = nil
+        do {
+            _ = try await runtime.rpc("device.revoke", ["deviceId": device.id])
+            await reload()
+        } catch {
+            shareError = error.localizedDescription
+        }
+    }
+
+    private func shortDate(_ iso: String) -> String {
+        let formatter = ISO8601DateFormatter()
+        // runtime 侧 toISOString() 带毫秒
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = formatter.date(from: iso) else { return iso }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 

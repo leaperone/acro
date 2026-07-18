@@ -7,40 +7,25 @@ interface StoredDevice extends Device {
   tokenHash: string;
 }
 
-const PAIR_CODE_TTL_MS = 10 * 60 * 1000;
-
 function sha256(s: string): string {
   return crypto.createHash("sha256").update(s).digest("hex");
 }
 
+// 访问授权模型(取自 orca 的 runtime access grant):
+// 每个授权 = 一个设备条目 + 一个 token。token 由配对码带外分发,服务端只存哈希。
+// lastSeenAt === null 表示"配对码已生成但尚未有客户端连上"。
 export class DeviceRegistry {
   private devices: StoredDevice[];
-  private pairCodes = new Map<string, number>(); // code -> expiresAt
 
   constructor() {
     this.devices = readJson<StoredDevice[]>(paths.devices, []);
-    // 测试注入固定配对码
-    if (process.env.ACRO_PAIR_CODE) this.addPairCode(process.env.ACRO_PAIR_CODE);
   }
 
-  newPairCode(): string {
-    const code = crypto.randomBytes(4).toString("hex").toUpperCase();
-    this.addPairCode(code);
-    return code;
-  }
-
-  private addPairCode(code: string): void {
-    this.pairCodes.set(code, Date.now() + PAIR_CODE_TTL_MS);
-  }
-
-  pair(code: string, deviceName: string): { device: Device; token: string } | null {
-    const expiresAt = this.pairCodes.get(code);
-    if (!expiresAt || Date.now() > expiresAt) return null;
-    this.pairCodes.delete(code); // 一次性
+  createGrant(name?: string): { device: Device; token: string } {
     const token = crypto.randomBytes(32).toString("hex");
     const device: StoredDevice = {
       id: crypto.randomUUID(),
-      name: deviceName,
+      name: name ?? `Runtime ${new Date().toISOString().slice(0, 10)}`,
       createdAt: new Date().toISOString(),
       lastSeenAt: null,
       tokenHash: sha256(token),
@@ -48,6 +33,14 @@ export class DeviceRegistry {
     this.devices.push(device);
     this.persist();
     return { device: this.publicView(device), token };
+  }
+
+  remove(deviceId: string): Device | null {
+    const idx = this.devices.findIndex((d) => d.id === deviceId);
+    if (idx < 0) return null;
+    const [removed] = this.devices.splice(idx, 1);
+    this.persist();
+    return this.publicView(removed!);
   }
 
   auth(token: string): Device | null {

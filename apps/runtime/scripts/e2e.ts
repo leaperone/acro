@@ -9,10 +9,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import {
+  b64ToBytes,
+  ClientHandshake,
   decodeFrame,
+  decodePairingOffer,
   type DirectoryListing,
+  type E2eeSession,
   encodeInFrame,
   FRAME_OUT,
+  type PairingOffer,
   type Project,
   type Session,
   type Workspace,
@@ -20,7 +25,6 @@ import {
 } from "@acro/protocol";
 
 const PORT = 18790;
-const PAIR_CODE = "E2ETESTCODE";
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-state-"));
 const projectsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-projects-"));
 const runtimeEntry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
@@ -29,7 +33,6 @@ const env = {
   ...process.env,
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
-  ACRO_PAIR_CODE: PAIR_CODE,
 };
 
 function log(msg: string): void {
@@ -78,24 +81,59 @@ async function waitHealthy(timeoutMs = 15000): Promise<void> {
 
 class Client {
   private ws!: WebSocket;
+  private session!: E2eeSession;
+  deviceId = "";
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   output = ""; // 附着后收到的所有终端输出
   events: Array<{ event: string; payload: any }> = [];
 
-  async connect(token: string): Promise<void> {
-    this.ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${token}`);
+  // E2EE 握手 + 信道内认证。token 缺省取配对码里的
+  async connect(offer: PairingOffer, token?: string): Promise<void> {
+    this.ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+    const handshake = new ClientHandshake(b64ToBytes(offer.pub));
     await new Promise<void>((resolve, reject) => {
-      this.ws.on("open", () => resolve());
+      const timer = setTimeout(() => reject(new Error("handshake timeout")), 8000);
+      this.ws.on("open", () => this.ws.send(JSON.stringify(handshake.helloMessage())));
       this.ws.on("error", reject);
+      this.ws.on("close", () => reject(new Error("closed during handshake")));
+      this.ws.once("message", (raw: Buffer) => {
+        try {
+          this.session = handshake.onReady(JSON.parse(raw.toString("utf8")));
+          this.ws.send(
+            this.session.sealText(JSON.stringify({ t: "auth", token: token ?? offer.token })),
+          );
+          this.ws.once("message", (authRaw: Buffer) => {
+            try {
+              const opened = this.session.open(new Uint8Array(authRaw));
+              if (opened.kind !== "text") throw new Error("expected authed");
+              const msg = JSON.parse(opened.text);
+              if (msg.t !== "authed") throw new Error(`unexpected: ${opened.text}`);
+              this.deviceId = msg.deviceId;
+              clearTimeout(timer);
+              this.ws.removeAllListeners();
+              this.listen();
+              resolve();
+            } catch (err) {
+              reject(err as Error);
+            }
+          });
+        } catch (err) {
+          reject(err as Error);
+        }
+      });
     });
-    this.ws.on("message", (raw: Buffer, isBinary: boolean) => {
-      if (isBinary) {
-        const frame = decodeFrame(raw);
+  }
+
+  private listen(): void {
+    this.ws.on("message", (raw: Buffer) => {
+      const opened = this.session.open(new Uint8Array(raw));
+      if (opened.kind === "binary") {
+        const frame = decodeFrame(opened.data);
         if (frame.type === FRAME_OUT) this.output += Buffer.from(frame.data).toString("utf8");
         return;
       }
-      const msg = JSON.parse(raw.toString("utf8"));
+      const msg = JSON.parse(opened.text);
       if (msg.t === "res") {
         const p = this.pending.get(msg.id);
         if (!p) return;
@@ -110,7 +148,7 @@ class Client {
 
   rpc<T = any>(method: string, params: unknown = {}): Promise<T> {
     const id = this.nextId++;
-    this.ws.send(JSON.stringify({ t: "req", id, method, params }));
+    this.ws.send(this.session.sealText(JSON.stringify({ t: "req", id, method, params })));
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       setTimeout(() => {
@@ -120,7 +158,9 @@ class Client {
   }
 
   sendInput(channel: number, text: string): void {
-    this.ws.send(encodeInFrame(channel, Buffer.from(text, "utf8")), { binary: true });
+    this.ws.send(this.session.sealBinary(encodeInFrame(channel, Buffer.from(text, "utf8"))), {
+      binary: true,
+    });
   }
 
   async waitOutput(needle: string, timeoutMs = 8000): Promise<void> {
@@ -145,36 +185,46 @@ async function main(): Promise<void> {
     await waitHealthy();
     log("runtime healthy");
 
-    // 配对
-    const pairRes = await fetch(`http://127.0.0.1:${PORT}/pair`, {
-      method: "POST",
-      body: JSON.stringify({ code: PAIR_CODE, deviceName: "e2e-device" }),
-    });
-    assert.equal(pairRes.status, 200, "pair should succeed");
-    const { token } = (await pairRes.json()) as { token: string };
-    assert.ok(token.length >= 32);
-    log("paired");
+    // 配对:首启的 bootstrap 配对码写在 state 目录
+    const offerRaw = fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim();
+    const offer = decodePairingOffer(offerRaw);
+    assert.ok(offer.token.length >= 32);
+    assert.ok(offer.endpoints.includes(`127.0.0.1:${PORT}`));
+    log("bootstrap offer ok");
 
-    // 错误配对码要拒绝
-    const badPair = await fetch(`http://127.0.0.1:${PORT}/pair`, {
-      method: "POST",
-      body: JSON.stringify({ code: "WRONGCODE1", deviceName: "bad" }),
-    });
-    assert.equal(badPair.status, 403);
-
-    // 无 token WS 要拒绝
+    // 错误 token 必须被断开
     await assert.rejects(
-      new Promise((resolve, reject) => {
-        const bad = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
-        bad.on("open", resolve);
-        bad.on("error", reject);
-      }),
-      "unauthenticated ws must fail",
+      new Client().connect(offer, "0".repeat(64)),
+      "wrong token must be rejected",
     );
 
     const client = new Client();
-    await client.connect(token);
-    log("ws connected");
+    await client.connect(offer);
+    assert.ok(client.deviceId.length > 0);
+    log("e2ee ws connected");
+
+    // 首个设备认证后 bootstrap 配对码文件必须被清理
+    await sleep(200);
+    assert.ok(!fs.existsSync(path.join(stateDir, "bootstrap-offer.txt")));
+
+    // 授权管理:再 mint 一个,撤销后它的活动连接立即断开
+    const share = await client.rpc<{ offer: string; deviceId: string }>("device.share", {
+      name: "second-device",
+      extraEndpoints: ["frp.example.com:7100"],
+    });
+    const shareOffer = decodePairingOffer(share.offer);
+    assert.ok(shareOffer.endpoints.includes("frp.example.com:7100"));
+    const second = new Client();
+    await second.connect(shareOffer);
+    assert.equal(second.deviceId, share.deviceId);
+    const closedPromise = new Promise<void>((resolve) =>
+      (second as any).ws.on("close", () => resolve()),
+    );
+    await client.rpc("device.revoke", { deviceId: share.deviceId });
+    await closedPromise;
+    // 被撤销的 token 不能再连
+    await assert.rejects(new Client().connect(shareOffer), "revoked token must fail");
+    log("share + revoke ok");
 
     // 项目由用户显式注册；目录浏览发生在 Runtime 文件系统。
     assert.deepEqual(await client.rpc<Project[]>("project.list"), []);
@@ -238,7 +288,7 @@ async function main(): Promise<void> {
     client.close();
     await sleep(500);
     const client2 = new Client();
-    await client2.connect(token);
+    await client2.connect(offer);
     const attach2 = await client2.rpc<{ channel: number; snapshot: string; seq: number }>(
       "session.attach",
       { sessionId: session.id },
@@ -263,7 +313,7 @@ async function main(): Promise<void> {
     runtime = startRuntime();
     await waitHealthy();
     const client3 = new Client();
-    await client3.connect(token);
+    await client3.connect(offer);
     const sessions = await client3.rpc<Session[]>("session.list");
     const survived = sessions.find((s) => s.id === session.id);
     assert.ok(survived?.alive, "session must survive runtime restart");
