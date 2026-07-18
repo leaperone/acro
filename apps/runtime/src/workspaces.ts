@@ -160,11 +160,38 @@ export class WorkspaceRegistry {
   }
 
   addSession(workspaceId: string, sessionId: string): void {
-    const workspace = this.getMutable(workspaceId);
-    if (!workspace.sessionIds.includes(sessionId)) {
-      workspace.sessionIds.push(sessionId);
-      this.saveWorkspaces();
+    const index = this.workspaces.findIndex((workspace) => workspace.id === workspaceId);
+    if (index === -1) throw new Error("workspace not found");
+    if (this.workspaces[index]!.sessionIds.includes(sessionId)) return;
+    const next = this.workspaces.map(cloneWorkspace);
+    next[index]!.sessionIds.push(sessionId);
+    writeJsonAtomic(this.storage.workspaces, next);
+    this.workspaces = next;
+  }
+
+  removeSession(workspaceId: string, sessionId: string): void {
+    const index = this.workspaces.findIndex((workspace) => workspace.id === workspaceId);
+    if (index === -1) throw new Error("workspace not found");
+    if (!this.workspaces[index]!.sessionIds.includes(sessionId)) return;
+    const next = this.workspaces.map(cloneWorkspace);
+    next[index]!.sessionIds = next[index]!.sessionIds.filter((id) => id !== sessionId);
+    writeJsonAtomic(this.storage.workspaces, next);
+    this.workspaces = next;
+  }
+
+  removeSessions(sessionIds: ReadonlySet<string>): void {
+    if (sessionIds.size === 0) return;
+    const next = this.workspaces.map(cloneWorkspace);
+    let changed = false;
+    for (const workspace of next) {
+      const remaining = workspace.sessionIds.filter((id) => !sessionIds.has(id));
+      if (remaining.length === workspace.sessionIds.length) continue;
+      workspace.sessionIds = remaining;
+      changed = true;
     }
+    if (!changed) return;
+    writeJsonAtomic(this.storage.workspaces, next);
+    this.workspaces = next;
   }
 
   remove(workspaceId: string): void {

@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -172,6 +173,96 @@ async function main(): Promise<void> {
       [updatedWorkspace.id],
     );
     log("workspace updated");
+
+    // 首次快照异步写失败也必须回滚 PTY、映射、checkpoint 和未发布事件。
+    process.env.ACRO_STATE_DIR = stateDir;
+    const { DaemonClient } = await import("../src/daemon/client.ts");
+    const directDaemon = await DaemonClient.connect();
+    const snapshotFailureId = crypto.randomUUID();
+    const snapshotFailureDir = path.join(stateDir, "sessions", snapshotFailureId);
+    fs.mkdirSync(path.join(snapshotFailureDir, "snapshot.txt"), { recursive: true });
+    const daemonEvents: Array<{ event: string; payload: unknown }> = [];
+    directDaemon.on("event", (event) => daemonEvents.push(event));
+    await assert.rejects(
+      directDaemon.request("session.createOwned", {
+        id: snapshotFailureId,
+        command: "/bin/sh",
+        cols: 80,
+        rows: 24,
+      }),
+    );
+    assert.equal(
+      (await directDaemon.request<Session[]>("session.list")).some(
+        (item) => item.id === snapshotFailureId,
+      ),
+      false,
+    );
+    assert.equal(fs.existsSync(snapshotFailureDir), false);
+    assert.equal(
+      daemonEvents.some(
+        (event) => {
+          const payload = event.payload as { id?: string; sessionId?: string } | undefined;
+          return payload?.id === snapshotFailureId || payload?.sessionId === snapshotFailureId;
+        },
+      ),
+      false,
+    );
+    directDaemon.close();
+    log("session snapshot rollback ok");
+
+    // daemon 首次 checkpoint 失败时,已启动的 PTY 必须被回滚,不能留下无主会话。
+    const sessionsPath = path.join(stateDir, "sessions");
+    const sessionsBackup = path.join(stateDir, "sessions-backup");
+    const beforeDaemonFailure = await client.rpc<Session[]>("session.list");
+    fs.renameSync(sessionsPath, sessionsBackup);
+    fs.writeFileSync(sessionsPath, "blocked");
+    try {
+      await assert.rejects(
+        client.rpc("session.create", { command: "/bin/sh", cols: 80, rows: 24 }),
+      );
+    } finally {
+      fs.rmSync(sessionsPath, { force: true });
+      fs.renameSync(sessionsBackup, sessionsPath);
+    }
+    assert.deepEqual(
+      (await client.rpc<Session[]>("session.list")).map((item) => item.id).sort(),
+      beforeDaemonFailure.map((item) => item.id).sort(),
+    );
+    log("session checkpoint rollback ok");
+
+    // Workspace 关联写失败时必须在启动 PTY 前拒绝,内存关联保持原值。
+    const workspacesPath = path.join(stateDir, "workspaces.json");
+    const workspacesBackup = path.join(stateDir, "workspaces-backup.json");
+    const beforeWorkspaceFailure = await client.rpc<Session[]>("session.list");
+    const workspaceBeforeFailure = (await client.rpc<Workspace[]>("workspace.list")).find(
+      (item) => item.id === updatedWorkspace.id,
+    );
+    fs.renameSync(workspacesPath, workspacesBackup);
+    fs.mkdirSync(workspacesPath);
+    try {
+      await assert.rejects(
+        client.rpc("session.create", {
+          workspaceId: updatedWorkspace.id,
+          command: "/bin/sh",
+          cols: 80,
+          rows: 24,
+        }),
+      );
+    } finally {
+      fs.rmSync(workspacesPath, { recursive: true, force: true });
+      fs.renameSync(workspacesBackup, workspacesPath);
+    }
+    assert.deepEqual(
+      (await client.rpc<Session[]>("session.list")).map((item) => item.id).sort(),
+      beforeWorkspaceFailure.map((item) => item.id).sort(),
+    );
+    assert.deepEqual(
+      (await client.rpc<Workspace[]>("workspace.list")).find(
+        (item) => item.id === updatedWorkspace.id,
+      )?.sessionIds,
+      workspaceBeforeFailure?.sessionIds,
+    );
+    log("workspace session rollback ok");
 
     // 会话:显式 cwd 指到 fixture 仓库,跑 /bin/sh(避免用户 shell 配置噪音)
     const session = await client.rpc<Session>("session.create", {
@@ -465,11 +556,34 @@ async function main(): Promise<void> {
 
     const cleanupSession = await client4.rpc<Session>("session.create", {
       workspaceId: updatedWorkspace.id,
-      command: "trap '' HUP; while true; do sleep 1; done",
+      command: "echo CLI_REMOVE_READY_XYZ; trap '' HUP; while true; do sleep 1; done",
       cols: 80,
       rows: 24,
     });
+    const removeCli = spawn(
+      process.execPath,
+      [...process.execArgv, cliEntry, "attach", cleanupSession.id],
+      {
+        env: { ...env, ACRO_CLIENT_CONFIG: cliConfig },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let removeCliOut = "";
+    removeCli.stdout!.on("data", (data: Buffer) => {
+      removeCliOut += data.toString("utf8");
+    });
+    const removeCliReadyDeadline = Date.now() + 10000;
+    while (!removeCliOut.includes("CLI_REMOVE_READY_XYZ")) {
+      if (Date.now() > removeCliReadyDeadline) throw new Error("remove CLI did not attach");
+      await sleep(100);
+    }
+    const removeCliExit = new Promise<number | null>((resolve) => removeCli.on("exit", resolve));
     await client4.rpc("workspace.remove", { workspaceId: updatedWorkspace.id, force: true });
+    const removeCliCode = await Promise.race([
+      removeCliExit,
+      sleep(5000).then(() => "timeout" as const),
+    ]);
+    assert.notEqual(removeCliCode, "timeout", "attached CLI must exit when its session is removed");
     assert.equal((await client4.rpc<Workspace[]>("workspace.list")).length, 0);
     const afterRemoval = await client4.rpc<Session[]>("session.list");
     assert.equal(afterRemoval.some((item) => item.id === session.id), false);

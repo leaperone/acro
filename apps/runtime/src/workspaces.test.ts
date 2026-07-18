@@ -121,6 +121,55 @@ test("workspace layout persists opaquely with a monotonic revision", () => {
   }
 });
 
+test("failed session persistence leaves workspace memory unchanged", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-session-failure-"));
+  const storage = {
+    workspaces: path.join(directory, "workspaces.json"),
+    workspaceGroups: path.join(directory, "workspace-groups.json"),
+  };
+
+  try {
+    const registry = new WorkspaceRegistry(storage);
+    const workspace = registry.create("Acro");
+    fs.rmSync(storage.workspaces);
+    fs.mkdirSync(storage.workspaces);
+
+    assert.throws(() => registry.addSession(workspace.id, "session-id"));
+    assert.deepEqual(registry.get(workspace.id)?.sessionIds, []);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("workspace session references reconcile against daemon truth", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-session-reconcile-"));
+  const storage = {
+    workspaces: path.join(directory, "workspaces.json"),
+    workspaceGroups: path.join(directory, "workspace-groups.json"),
+  };
+
+  try {
+    const registry = new WorkspaceRegistry(storage);
+    const workspace = registry.create("Acro");
+    registry.addSession(workspace.id, "live-session");
+    registry.addSession(workspace.id, "missing-session");
+
+    registry.addSession(workspace.id, "concurrent-session");
+    registry.removeSessions(new Set(["missing-session"]));
+
+    assert.deepEqual(registry.get(workspace.id)?.sessionIds, [
+      "live-session",
+      "concurrent-session",
+    ]);
+    assert.deepEqual(new WorkspaceRegistry(storage).get(workspace.id)?.sessionIds, [
+      "live-session",
+      "concurrent-session",
+    ]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("workspace state rejects corruption without normalizing or rewriting it", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-invalid-"));
   const storage = {

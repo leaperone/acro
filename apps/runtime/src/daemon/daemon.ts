@@ -74,6 +74,7 @@ interface QueueItem {
   data?: string;
   seq?: number;
   resolve?: (r: { seq: number; snapshot: string }) => void;
+  reject?: (error: Error) => void;
 }
 
 class DaemonSession {
@@ -98,6 +99,8 @@ class DaemonSession {
   // 输入帧可能切在多字节 UTF-8 字符中间;残留的尾字节缓冲到下一帧再拼
   private inputTail = Buffer.alloc(0);
   private removeOnExit = false;
+  private notifyRemoval = true;
+  private published = false;
   private exited: Promise<void>;
   private resolveExit!: () => void;
   // OSC 标题节流:窗口内已排定尾发时 titleTimer 非空;pendingTitle 记窗口内是否有新值待发
@@ -105,18 +108,19 @@ class DaemonSession {
   private pendingTitle = false;
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
-  private onExit: (session: DaemonSession, removed: boolean) => void;
+  private onExit: (session: DaemonSession, removed: boolean, notifyRemoval: boolean) => void;
   private onTitle: (session: DaemonSession, title: string | null) => void;
 
   constructor(
     opts: {
+      id: string;
       cwd?: string | undefined;
       command?: string | undefined;
       cols: number;
       rows: number;
     },
     onOutput: (handle: number, seq: number, data: Buffer) => void,
-    onExit: (session: DaemonSession, removed: boolean) => void,
+    onExit: (session: DaemonSession, removed: boolean, notifyRemoval: boolean) => void,
     onTitle: (session: DaemonSession, title: string | null) => void,
   ) {
     this.onOutput = onOutput;
@@ -130,7 +134,7 @@ class DaemonSession {
     const cwd = opts.cwd ?? os.homedir();
     const args = opts.command ? ["-lc", opts.command] : ["-l"];
     this.meta = {
-      id: crypto.randomUUID(),
+      id: opts.id,
       cwd,
       command: opts.command ?? shell,
       cols: opts.cols,
@@ -197,8 +201,8 @@ class DaemonSession {
       }
       this.meta.alive = false;
       this.meta.exitCode = exitCode;
-      if (!this.removeOnExit) this.checkpoint();
-      this.onExit(this, this.removeOnExit);
+      if (!this.removeOnExit) this.checkpointBestEffort();
+      this.onExit(this, this.removeOnExit, this.notifyRemoval);
       this.resolveExit();
     });
   }
@@ -218,8 +222,8 @@ class DaemonSession {
   // 入队前先 flush,保证没有一帧同时携带快照前后的字节。
   snapshot(): Promise<{ seq: number; snapshot: string }> {
     this.flushOutput();
-    return new Promise((resolve) => {
-      this.queue.push({ kind: "snapshot", resolve });
+    return new Promise((resolve, reject) => {
+      this.queue.push({ kind: "snapshot", resolve, reject });
       void this.pump();
     });
   }
@@ -227,35 +231,55 @@ class DaemonSession {
   private async pump(): Promise<void> {
     if (this.pumping) return;
     this.pumping = true;
-    while (this.queue.length > 0) {
-      if (this.queue[0]!.kind === "snapshot") {
-        const item = this.queue.shift()!;
-        item.resolve!({
-          seq: this.parsedSeq,
-          snapshot: this.serializer.serialize({ scrollback: SCROLLBACK }),
+    try {
+      while (this.queue.length > 0) {
+        if (this.queue[0]!.kind === "snapshot") {
+          const item = this.queue.shift()!;
+          try {
+            item.resolve!({
+              seq: this.parsedSeq,
+              snapshot: this.serializer.serialize({ scrollback: SCROLLBACK }),
+            });
+          } catch (error) {
+            item.reject!(error instanceof Error ? error : new Error(String(error)));
+          }
+          continue;
+        }
+        // 合并连续输出块一次性解析
+        let merged = "";
+        let mergedChars = 0;
+        let lastSeq = this.parsedSeq;
+        while (
+          this.queue.length > 0 &&
+          this.queue[0]!.kind === "chunk" &&
+          merged.length < PARSE_MERGE_MAX_CHARS
+        ) {
+          const item = this.queue.shift()!;
+          merged += item.data!;
+          mergedChars += item.data!.length;
+          lastSeq = item.seq!;
+        }
+        await new Promise<void>((resolve, reject) => {
+          try {
+            this.term.write(merged, resolve);
+          } catch (error) {
+            reject(error);
+          }
         });
-        continue;
+        this.parseBacklogChars = Math.max(0, this.parseBacklogChars - mergedChars);
+        this.updateParseFlow();
+        this.parsedSeq = lastSeq;
       }
-      // 合并连续输出块一次性解析
-      let merged = "";
-      let mergedChars = 0;
-      let lastSeq = this.parsedSeq;
-      while (
-        this.queue.length > 0 &&
-        this.queue[0]!.kind === "chunk" &&
-        merged.length < PARSE_MERGE_MAX_CHARS
-      ) {
-        const item = this.queue.shift()!;
-        merged += item.data!;
-        mergedChars += item.data!.length;
-        lastSeq = item.seq!;
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      for (const item of this.queue.splice(0)) {
+        if (item.kind === "snapshot") item.reject!(failure);
       }
-      await new Promise<void>((r) => this.term.write(merged, r));
-      this.parseBacklogChars = Math.max(0, this.parseBacklogChars - mergedChars);
+      this.parseBacklogChars = 0;
       this.updateParseFlow();
-      this.parsedSeq = lastSeq;
+    } finally {
+      this.pumping = false;
     }
-    this.pumping = false;
   }
 
   private updateParseFlow(): void {
@@ -320,9 +344,10 @@ class DaemonSession {
     if (this.meta.alive) this.ptyProc.kill();
   }
 
-  async remove(): Promise<void> {
+  async remove(notifyRemoval = true): Promise<void> {
     if (this.removeOnExit) return this.exited;
     this.removeOnExit = true;
+    this.notifyRemoval = notifyRemoval;
     const forceKill = setTimeout(() => {
       if (!this.meta.alive) return;
       try {
@@ -331,37 +356,62 @@ class DaemonSession {
     }, 2000);
     forceKill.unref();
     try {
-      this.kill();
+      try {
+        this.kill();
+      } catch {}
       await this.exited;
     } finally {
       clearTimeout(forceKill);
     }
   }
 
-  checkpoint(): void {
+  publish(): void {
+    this.published = true;
+  }
+
+  checkpoint(): Promise<void> {
     const dir = path.join(paths.sessions, this.meta.id);
     fs.mkdirSync(dir, { recursive: true });
     writeJsonAtomic(path.join(dir, "meta.json"), this.meta);
-    void this.snapshot().then(({ snapshot }) => {
-      if (!this.removeOnExit) fs.writeFileSync(path.join(dir, "snapshot.txt"), snapshot);
-    });
     this.dirty = false;
+    return this.snapshot()
+      .then(({ snapshot }) => {
+        if (!this.removeOnExit) fs.writeFileSync(path.join(dir, "snapshot.txt"), snapshot);
+      })
+      .catch((error) => {
+        this.dirty = true;
+        throw error;
+      });
+  }
+
+  private checkpointBestEffort(): void {
+    try {
+      void this.checkpoint().catch((error) => {
+        console.warn(`[daemon] failed to checkpoint session ${this.meta.id}: ${error.message}`);
+      });
+    } catch (error) {
+      console.warn(
+        `[daemon] failed to checkpoint session ${this.meta.id}: ${(error as Error).message}`,
+      );
+    }
   }
 
   // checkpoint 的 scrollback 序列化是同步重活;只在输出静默后做,
   // 洪峰期间不制造周期性输入卡顿(崩溃窗口略拉长,可接受)
   checkpointIfDirty(): void {
-    if (this.dirty && Date.now() - this.lastOutputAt > 2000) this.checkpoint();
+    if (this.dirty && Date.now() - this.lastOutputAt > 2000) this.checkpointBestEffort();
   }
 
   // OSC 标题变化:内存即时更新(session.list 立刻反映),节流广播压高频刷标题。
   // 落盘交给已有的 checkpointIfDirty(静默 2s),不为标题单独触发重的 scrollback 序列化。
   private updateTitle(raw: string): void {
+    if (this.removeOnExit) return;
     // OSC 清空标题给的是空串;归一为 null,内存态与广播态一致,客户端统一回退 cwd
     const title = raw === "" ? null : raw;
     if (title === this.meta.title) return;
     this.meta.title = title;
     this.dirty = true;
+    if (!this.published) return;
     this.pendingTitle = true;
     if (this.titleTimer) return;
     this.emitTitleNow(); // leading edge
@@ -463,10 +513,16 @@ function handleOutput(handle: number, seq: number, data: Buffer): void {
   broadcastTerminal(handle, packBin(encodeOutFrame(handle, seq, data)));
 }
 
-function handleExit(session: DaemonSession, removed: boolean): void {
+function handleExit(session: DaemonSession, removed: boolean, notifyRemoval: boolean): void {
   live.delete(session.meta.id);
   liveByHandle.delete(session.handle);
-  if (!removed) dead.set(session.meta.id, session.meta);
+  if (removed) {
+    if (notifyRemoval) {
+      emitEvent("session.exit", { sessionId: session.meta.id, exitCode: session.meta.exitCode });
+    }
+    return;
+  }
+  dead.set(session.meta.id, session.meta);
   emitEvent("session.exit", { sessionId: session.meta.id, exitCode: session.meta.exitCode });
 }
 
@@ -475,6 +531,32 @@ function handleTitle(session: DaemonSession, title: string | null): void {
 }
 
 type Handler = (params: any) => Promise<unknown> | unknown;
+interface CreateSessionParams {
+  cwd?: string;
+  command?: string;
+  cols: number;
+  rows: number;
+}
+
+async function createSession(params: CreateSessionParams, id: string): Promise<unknown> {
+  const existing = live.get(id);
+  if (existing) return { session: existing.meta, handle: existing.handle };
+  if (dead.has(id)) throw new Error("session id already exists");
+  const session = new DaemonSession({ ...params, id }, handleOutput, handleExit, handleTitle);
+  live.set(session.meta.id, session);
+  liveByHandle.set(session.handle, session);
+  try {
+    await session.checkpoint();
+  } catch (error) {
+    await session.remove(false);
+    fs.rmSync(path.join(paths.sessions, session.meta.id), { recursive: true, force: true });
+    throw error;
+  }
+  session.publish();
+  emitEvent("session.created", session.meta);
+  return { session: session.meta, handle: session.handle };
+}
+
 interface DaemonRequest {
   t: string;
   id: number;
@@ -484,19 +566,10 @@ interface DaemonRequest {
 
 const handlers: Record<string, Handler> = {
   "daemon.info": () => ({ boot, pid: process.pid }),
-  "session.create": (params: {
-    cwd?: string;
-    command?: string;
-    cols: number;
-    rows: number;
-  }) => {
-    const session = new DaemonSession(params, handleOutput, handleExit, handleTitle);
-    live.set(session.meta.id, session);
-    liveByHandle.set(session.handle, session);
-    session.checkpoint();
-    emitEvent("session.created", session.meta);
-    return { session: session.meta, handle: session.handle };
-  },
+  "session.create": (params: CreateSessionParams) => createSession(params, crypto.randomUUID()),
+  // 新方法名是版本边界：旧 daemon 会在启动 PTY 前返回 unknown method，不能静默忽略 id。
+  "session.createOwned": (params: CreateSessionParams & { id: string }) =>
+    createSession(params, params.id),
   "session.list": () => [
     ...[...live.values()].map((s) => s.meta),
     ...dead.values(),
@@ -508,7 +581,7 @@ const handlers: Record<string, Handler> = {
     if (cwd && cwd !== session.meta.cwd) {
       // 会话档案跟随事实:session.list 逐步反映真实目录
       session.meta.cwd = cwd;
-      session.checkpoint();
+      await session.checkpoint();
     }
     return { cwd };
   },
@@ -663,10 +736,16 @@ function main(): void {
   // 有活会话时保持进程常驻
   setInterval(() => {}, 1 << 30);
 
+  let shuttingDown = false;
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
     process.on(signal, () => {
-      for (const s of live.values()) s.checkpoint();
-      process.exit(0);
+      if (shuttingDown) return;
+      shuttingDown = true;
+      const checkpoints = Promise.allSettled(
+        [...live.values()].map(async (session) => session.checkpoint()),
+      );
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
+      void Promise.race([checkpoints, timeout]).finally(() => process.exit(0));
     });
   }
 }
