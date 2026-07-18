@@ -313,7 +313,8 @@ private struct PaneTabBar: View {
             .help("新建标签(\(ShortcutSettings.stored(.newTerminalTab).displayString))")
             .accessibilityLabel("新建标签")
 
-            Spacer(minLength: 0)
+            WindowDragHandle()
+                .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(height: 28)
         .background(.bar)

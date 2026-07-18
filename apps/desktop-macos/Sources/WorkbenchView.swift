@@ -245,7 +245,31 @@ struct WorkbenchView: View {
     }
 }
 
-// 无标题栏窗口:内容全幅 + 空白处可拖动窗口
+// 顶栏空位的显式窗口拖动(cmux TitlebarAccessoryContainerView 语义):
+// 不开全局 isMovableByWindowBackground,侧边栏/内容区永不拖窗;
+// 单击拖动,双击执行系统缩放
+final class WindowDragNSView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        if event.clickCount >= 2 {
+            window.zoom(nil)
+            return
+        }
+        window.performDrag(with: event)
+    }
+}
+
+struct WindowDragHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> WindowDragNSView {
+        WindowDragNSView()
+    }
+
+    func updateNSView(_ nsView: WindowDragNSView, context: Context) {}
+}
+
+// 无标题栏窗口:内容全幅
 private struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -254,7 +278,6 @@ private struct WindowConfigurator: NSViewRepresentable {
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
-            window.isMovableByWindowBackground = true
         }
         return view
     }

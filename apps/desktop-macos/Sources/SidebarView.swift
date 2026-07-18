@@ -412,10 +412,11 @@ struct SidebarView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("工作区")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
+            WindowDragHandle()
+                .frame(width: 62)
+                .frame(maxHeight: .infinity) // 红绿灯区
+            WindowDragHandle()
+                .frame(minWidth: 4, maxWidth: .infinity, maxHeight: .infinity)
             Picker("侧边栏视图", selection: $model.sidebarViewMode) {
                 ForEach(SidebarViewMode.allCases) { mode in
                     Image(systemName: mode.symbol)
@@ -451,7 +452,6 @@ struct SidebarView: View {
             .help("新建工作区")
             .accessibilityLabel("新建工作区")
         }
-        .padding(.leading, 76) // 红绿灯让位(紧凑模式无标题栏)
         .padding(.trailing, 12)
         .frame(height: 38)
     }
