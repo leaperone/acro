@@ -302,45 +302,24 @@ private struct ConnectServersSection: View {
         }
     }
 
-    // 粘贴配对码:写入前重读磁盘(配置由设置页、CLI、连接层多方写入,
-    // 用 @State 快照 save 会静默覆盖别处的修改);deviceId 认证后由连接层补写
+    // 统一走 ServerDirectory(与侧边栏共用一份"重读磁盘→变更→保存"逻辑)
     private func pair() {
         do {
-            let offer = try PairingOffer.decode(pairInput)
-            var next = ClientConfig.load() ?? ClientConfig(v: 2, servers: [], active: nil)
-            let name = pairName.trimmingCharacters(in: .whitespaces).isEmpty
-                ? (offer.endpoints.first ?? "Runtime")
-                : pairName.trimmingCharacters(in: .whitespaces)
-            // 名称重复直接拒绝,避免静默覆盖另一台服务器的凭据
-            guard !next.servers.contains(where: { $0.name == name }) else {
-                pairError = "名称「\(name)」已存在;换一个名称,或先删除旧服务器。"
-                return
-            }
-            let entry = ServerEntry(
-                name: name, deviceId: "", token: offer.token,
-                pub: offer.pub, endpoints: offer.endpoints)
-            next.servers.append(entry)
-            next.active = entry.id
-            next.save()
-            config = next
+            let entry = try ServerDirectory.pair(offerText: pairInput, name: pairName, hub: hub)
+            config = ClientConfig.load()
             manageServerId = entry.id
             pairInput = ""
             pairName = ""
             pairError = nil
-            hub.reload()
         } catch {
-            pairError = "配对码无法解析:\(error.localizedDescription)"
+            pairError = error.localizedDescription
         }
     }
 
     private func remove(_ server: ServerEntry) {
-        guard var next = ClientConfig.load() else { return }
-        next.servers.removeAll { $0.id == server.id }
-        if next.active == server.id { next.active = next.servers.first?.id }
-        next.save()
-        config = next
-        if manageServerId == server.id { manageServerId = next.servers.first?.id }
-        hub.reload()
+        ServerDirectory.remove(server.id, hub: hub)
+        config = ClientConfig.load()
+        if manageServerId == server.id { manageServerId = config?.servers.first?.id }
     }
 }
 

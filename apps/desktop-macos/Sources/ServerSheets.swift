@@ -62,6 +62,7 @@ struct EditServerSheet: View {
     @State private var name = ""
     @State private var endpoints: [String] = []
     @State private var newEndpoint = ""
+    @State private var error: String?
     @State private var loaded = false
 
     var body: some View {
@@ -117,6 +118,11 @@ struct EditServerSheet: View {
                 .disabled(newEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
             }
 
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }
@@ -139,8 +145,11 @@ struct EditServerSheet: View {
     }
 
     private func save() {
-        ServerDirectory.rename(serverId, to: name, hub: hub)
-        ServerDirectory.setEndpoints(serverId, endpoints: endpoints, hub: hub)
-        dismiss()
+        do {
+            try ServerDirectory.update(serverId, name: name, endpoints: endpoints, hub: hub)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }

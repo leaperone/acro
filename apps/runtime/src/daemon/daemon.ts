@@ -438,6 +438,13 @@ function startServer(): void {
 function main(): void {
   ensureStateDirs();
   ensureSpawnHelperExecutable();
+  // currentCwd() 把"读数 == daemon 自身 cwd"当作 spawn 未就绪的噪音丢弃;
+  // daemon 挪到 state 目录,避免与用户会话目录(常见是家目录)撞车导致误判
+  try {
+    process.chdir(paths.state);
+  } catch {
+    // state 目录不可进入时保持原样,只是误判窗口回归
+  }
 
   // 已有 daemon 在跑就退出,保证单实例
   const probe = net.connect(paths.daemonSocket);

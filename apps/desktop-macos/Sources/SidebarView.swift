@@ -425,6 +425,8 @@ struct SidebarView: View {
                 guard let server = pendingServerRemoval else { return }
                 pendingServerRemoval = nil
                 ServerDirectory.remove(server.id, hub: hub)
+                // 删的是当前查看的服务器时,选中态立即回落,不留悬空 id
+                model.reconcileLayoutState()
             }
             Button("取消", role: .cancel) { pendingServerRemoval = nil }
         } message: {

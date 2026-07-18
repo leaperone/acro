@@ -8,8 +8,15 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chromium, type BrowserContext, type CDPSession, type Page } from "playwright-core";
+import type { BrowserContext, CDPSession, Page } from "playwright-core";
 import { paths } from "./paths.ts";
+
+// 懒加载:打包形态(runtime.cjs)可能不带 playwright-core;
+// 顶层 import 会让整个 runtime 启动即崩,浏览器能力必须只在使用时才要求依赖
+async function loadChromium(): Promise<typeof import("playwright-core").chromium> {
+  const mod = await import("playwright-core");
+  return mod.chromium;
+}
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 800;
@@ -51,6 +58,7 @@ export class BrowserManager extends EventEmitter {
 
   private async ensureContext(): Promise<BrowserContext> {
     if (this.context) return this.context;
+    const chromium = await loadChromium();
     this.context = await chromium.launchPersistentContext(path.join(paths.state, "browser-profile"), {
       executablePath: findChromium(),
       headless: process.env.ACRO_BROWSER_HEADLESS === "1",

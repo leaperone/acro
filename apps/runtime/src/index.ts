@@ -198,7 +198,14 @@ async function main(): Promise<void> {
     gateway.forwardSimFrame(handle, seq, data),
   );
 
-  const server = http.createServer(createHttpHandler());
+  // 本机再配对 offer 显式带回环入口:客户端以"含回环"识别本机条目
+  const server = http.createServer(
+    createHttpHandler(
+      () =>
+        createShareOffer(registry, identity, config.port, "本机", [`127.0.0.1:${config.port}`])
+          .offer,
+    ),
+  );
   server.on("upgrade", (req, socket, head) => gateway.handleUpgrade(req, socket, head));
   server.listen(config.port, () => {
     console.log(`[runtime] listening on http://127.0.0.1:${config.port}`);

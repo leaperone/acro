@@ -39,27 +39,21 @@ enum ServerDirectory {
         return entry
     }
 
-    static func rename(_ serverId: String, to name: String, hub: RuntimeHub) {
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty,
-              var config = ClientConfig.load(),
-              let index = config.servers.firstIndex(where: { $0.id == serverId }),
-              !config.servers.contains(where: { $0.name == trimmed && $0.id != serverId })
-        else { return }
-        config.servers[index].name = trimmed
-        config.save()
-        hub.reload()
-    }
-
-    // 连接方式列表整体覆盖:顺序即用户排序(连接时仍按局域网优先分组内保序)
-    static func setEndpoints(_ serverId: String, endpoints: [String], hub: RuntimeHub) {
+    // 名称 + 连接方式一次事务保存:入口顺序即用户排序(连接时局域网优先、组内保序)
+    static func update(
+        _ serverId: String, name: String, endpoints: [String], hub: RuntimeHub
+    ) throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let cleaned = endpoints
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard !cleaned.isEmpty,
+        guard !trimmedName.isEmpty, !cleaned.isEmpty,
               var config = ClientConfig.load(),
               let index = config.servers.firstIndex(where: { $0.id == serverId })
         else { return }
+        guard !config.servers.contains(where: { $0.name == trimmedName && $0.id != serverId })
+        else { throw ServerDirectoryError.duplicateName(trimmedName) }
+        config.servers[index].name = trimmedName
         config.servers[index].endpoints = cleaned
         config.save()
         hub.reload() // 入口变了,该服务器按新列表重连
