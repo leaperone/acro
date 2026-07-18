@@ -94,6 +94,7 @@ export class SimulatorManager extends EventEmitter {
     if (!state) return;
     clearInterval(state.timer);
     this.attached.delete(udid);
+    this.emit("detached", udid, state.handle);
   }
 
   private capturing = new Set<string>();
