@@ -502,7 +502,7 @@ async function main(): Promise<void> {
 
     const cleanupSession = await client4.rpc<Session>("session.create", {
       workspaceId: updatedWorkspace.id,
-      command: "/bin/sh",
+      command: "trap '' HUP; while true; do sleep 1; done",
       cols: 80,
       rows: 24,
     });

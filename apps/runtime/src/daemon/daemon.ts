@@ -287,9 +287,21 @@ class DaemonSession {
   }
 
   async remove(): Promise<void> {
+    if (this.removeOnExit) return this.exited;
     this.removeOnExit = true;
-    this.kill();
-    await this.exited;
+    const forceKill = setTimeout(() => {
+      if (!this.meta.alive) return;
+      try {
+        this.ptyProc.kill("SIGKILL");
+      } catch {}
+    }, 2000);
+    forceKill.unref();
+    try {
+      this.kill();
+      await this.exited;
+    } finally {
+      clearTimeout(forceKill);
+    }
   }
 
   checkpoint(): void {
