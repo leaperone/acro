@@ -111,6 +111,9 @@ export class AcroClient {
   >();
   onFrame: ((frame: Frame) => void) | null = null;
   onEvent: ((event: string, payload: unknown) => void) | null = null;
+  // 非主动 close 的断线通知(attach 等长连接命令用它退出,避免静默卡死)
+  onDisconnect: (() => void) | null = null;
+  private closedByUser = false;
 
   private constructor(channel: Channel) {
     this.ws = channel.ws;
@@ -135,6 +138,16 @@ export class AcroClient {
   }
 
   private listen(): void {
+    const fail = () => {
+      for (const p of this.pending.values()) {
+        clearTimeout(p.timer);
+        p.reject(new Error("连接断开"));
+      }
+      this.pending.clear();
+      if (!this.closedByUser) this.onDisconnect?.();
+    };
+    this.ws.on("close", fail);
+    this.ws.on("error", fail);
     this.ws.on("message", (raw: Buffer) => {
       let opened;
       try {
@@ -177,6 +190,7 @@ export class AcroClient {
   }
 
   close(): void {
+    this.closedByUser = true;
     this.ws.close();
   }
 }

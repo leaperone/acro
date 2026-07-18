@@ -5,7 +5,12 @@
 //
 // 握手(WS 文本帧,明文):
 //   client → {t:"hello", v:1, pub}   pub = 客户端临时 X25519 公钥
-//   server → {t:"ready", pub}        pub = 服务端静态公钥,客户端必须与配对码里的比对
+//   server → {t:"ready", pub, eph}   pub = 服务端静态公钥(客户端必须与配对码比对,防中间人);
+//                                    eph = 服务端每连接临时公钥(防整条会话重放:
+//                                    没有它,重放 hello 会派生出与被录会话相同的密钥,
+//                                    旧密文全部可重放执行)
+// 密钥:IKM = DH(clientEph, serverStatic) || DH(clientEph, serverEph),
+//       salt = clientPub || serverEphPub,HKDF-SHA256 导出 64 字节。
 // 之后所有消息走二进制帧:ChaCha20-Poly1305(key_dir, nonce=LE64(counter)) 密文。
 // 每方向独立 key 与隐式计数器 nonce(传输层 TCP 保序,不随帧发送)。
 // 明文首字节区分负载:0x00=JSON 文本,0x01=二进制帧(frames.ts 编码)。
@@ -112,14 +117,18 @@ export class E2eeSession {
 
 // HKDF 一次导出 64 字节:[0,32)=client→server,[32,64)=server→client
 function deriveKeys(
-  shared: Uint8Array,
+  sharedStatic: Uint8Array,
+  sharedEph: Uint8Array,
   clientPub: Uint8Array,
-  serverPub: Uint8Array,
+  serverEphPub: Uint8Array,
 ): { c2s: Uint8Array; s2c: Uint8Array } {
+  const ikm = new Uint8Array(64);
+  ikm.set(sharedStatic, 0);
+  ikm.set(sharedEph, 32);
   const salt = new Uint8Array(64);
   salt.set(clientPub, 0);
-  salt.set(serverPub, 32);
-  const okm = hkdf(sha256, shared, salt, HKDF_INFO, 64);
+  salt.set(serverEphPub, 32);
+  const okm = hkdf(sha256, ikm, salt, HKDF_INFO, 64);
   return { c2s: okm.slice(0, 32), s2c: okm.slice(32, 64) };
 }
 
@@ -134,6 +143,7 @@ export interface HelloMessage {
 export interface ReadyMessage {
   t: "ready";
   pub: string;
+  eph: string;
 }
 
 export function generateKeyPair(): { priv: Uint8Array; pub: Uint8Array } {
@@ -166,8 +176,11 @@ export class ClientHandshake {
     ) {
       throw new Error("server public key mismatch");
     }
-    const shared = x25519.getSharedSecret(this.priv, serverPub);
-    const { c2s, s2c } = deriveKeys(shared, this.pub, serverPub);
+    const serverEph = b64ToBytes(msg.eph);
+    if (serverEph.length !== 32) throw new Error("bad server ephemeral key");
+    const sharedStatic = x25519.getSharedSecret(this.priv, serverPub);
+    const sharedEph = x25519.getSharedSecret(this.priv, serverEph);
+    const { c2s, s2c } = deriveKeys(sharedStatic, sharedEph, this.pub, serverEph);
     return new E2eeSession(c2s, s2c);
   }
 }
@@ -186,11 +199,14 @@ export class ServerHandshake {
     if (msg.v !== E2EE_VERSION) throw new Error(`unsupported e2ee version: ${msg.v}`);
     const clientPub = b64ToBytes(msg.pub);
     if (clientPub.length !== 32) throw new Error("bad client public key");
-    const shared = x25519.getSharedSecret(this.priv, clientPub);
-    const { c2s, s2c } = deriveKeys(shared, clientPub, this.pub);
+    // 每连接临时密钥:保证重放的 hello 派生不出旧会话密钥
+    const eph = generateKeyPair();
+    const sharedStatic = x25519.getSharedSecret(this.priv, clientPub);
+    const sharedEph = x25519.getSharedSecret(eph.priv, clientPub);
+    const { c2s, s2c } = deriveKeys(sharedStatic, sharedEph, clientPub, eph.pub);
     // 服务端视角:tx=s2c,rx=c2s
     return {
-      ready: { t: "ready", pub: bytesToB64(this.pub) },
+      ready: { t: "ready", pub: bytesToB64(this.pub), eph: bytesToB64(eph.pub) },
       session: new E2eeSession(s2c, c2s),
     };
   }

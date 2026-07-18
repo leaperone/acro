@@ -44,6 +44,19 @@ test("密文篡改必须抛错", () => {
   assert.throws(() => serverSession.open(box));
 });
 
+test("重放同一 hello 派生不出旧会话密钥(防整条会话重放)", () => {
+  const serverKeys = generateKeyPair();
+  const server = new ServerHandshake(serverKeys.priv);
+  const client = new ClientHandshake(serverKeys.pub);
+  const hello = client.helloMessage();
+  const first = server.onHello(hello);
+  const firstSession = client.onReady(first.ready);
+  const sealed = firstSession.sealText(JSON.stringify({ t: "auth", token: "x".repeat(64) }));
+  // 攻击者重放同一 hello:服务端临时密钥不同,旧密文必须解不开
+  const replayed = server.onHello(hello);
+  assert.throws(() => replayed.session.open(sealed));
+});
+
 test("服务端公钥不匹配必须拒绝(防中间人)", () => {
   const real = generateKeyPair();
   const mitm = new ServerHandshake(generateKeyPair().priv);

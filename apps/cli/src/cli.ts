@@ -150,6 +150,10 @@ async function cmdAttach(client: AcroClient, args: string[]): Promise<void> {
 }
 
 async function attachLoop(client: AcroClient, session: Session): Promise<void> {
+  client.onDisconnect = () => {
+    console.error("\r\n[acro] 连接断开");
+    process.exit(1);
+  };
   const { channel, snapshot } = await client.rpc("session.attach", { sessionId: session.id });
   const isTTY = process.stdin.isTTY === true;
 

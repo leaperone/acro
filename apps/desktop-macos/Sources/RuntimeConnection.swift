@@ -229,7 +229,8 @@ final class RuntimeConnection: ObservableObject {
             guard session == nil, let handshake, let server,
                   let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
                   obj["t"] as? String == "ready", let pub = obj["pub"] as? String,
-                  let newSession = try? handshake.onReady(pubB64: pub),
+                  let eph = obj["eph"] as? String,
+                  let newSession = try? handshake.onReady(pubB64: pub, ephB64: eph),
                   let auth = try? newSession.sealText(#"{"t":"auth","token":"\#(server.token)"}"#)
             else {
                 task?.cancel(with: .policyViolation, reason: nil)

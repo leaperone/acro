@@ -113,22 +113,21 @@ export class MobileClient {
     this.config = config;
   }
 
+  // 全部入口失败时内部调度重试,不抛错(连接状态由 onStateChange 通知)
   async connect(): Promise<void> {
-    let lastErr: Error = new Error("no endpoints");
     for (const endpoint of this.config.endpoints) {
       if (this.closed) return;
       try {
         const channel = await connectEndpoint(endpoint, this.config);
         this.attach(channel);
         return;
-      } catch (err) {
-        lastErr = err as Error;
+      } catch {
+        // 尝试下一个入口
       }
     }
     if (!this.closed) {
-      setTimeout(() => void this.connect().catch(() => {}), RETRY_DELAY_MS);
+      setTimeout(() => void this.connect(), RETRY_DELAY_MS);
     }
-    throw lastErr;
   }
 
   private attach(channel: Channel): void {

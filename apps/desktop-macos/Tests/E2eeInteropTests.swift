@@ -6,24 +6,29 @@ import XCTest
 @testable import AcroDesktop
 
 final class E2eeInteropTests: XCTestCase {
-    // 向量:clientPriv = 32×0x01,serverPriv = 32×0x02(见 e2ee.ts 同参数推导)
+    // 向量:clientPriv = 32×0x01,serverPriv = 32×0x02,serverEphPriv = 32×0x03
+    // (由 packages/protocol 的 @noble 以相同参数推导)
     private let clientPrivBytes = Data(repeating: 1, count: 32)
     private let expectedClientPub = Data(hex: "a4e09292b651c278b9772c569f5fa9bb13d906b46ab68c9df9dc2b4409f8a209")
     private let expectedServerPub = Data(hex: "ce8d3ad1ccb633ec7b70c17814a5c76ecd029685050d344745ba05870e587d59")
-    private let expectedC2S = Data(hex: "d056c2490c13d57707ef5e6a175b6a2a62a69b50329bc0d8eaec5f3818493c52")
-    private let expectedS2C = Data(hex: "f9e8f9cbe5c3794f984977b360cf06290a7236c2ea5f0de732475040cbc2ef8e")
-    private let sealedC2S = Data(hex: "76adc1f8262465c351ecce859031263c93de1ae5e4094f06b7f228c2")
-    private let sealedS2C = Data(hex: "63536ae8111e2044d096d079dd8ec140a7ccb338")
+    private let expectedEphPub = Data(hex: "5dfedd3b6bd47f6fa28ee15d969d5bb0ea53774d488bdaf9df1c6e0124b3ef22")
+    private let expectedC2S = Data(hex: "86fbc5b213bf0fb2390950e8649a0b294de46fade50afb07d3c5239c1d85fce0")
+    private let expectedS2C = Data(hex: "cf1bac08265bff49a391d1ec0a4d81c0119c5e0bf4f35e04b307edde5339c465")
+    private let sealedC2S = Data(hex: "4610a39cc3c1cf846757174d4874ac84e22cf28066fd1719cf0436c1")
+    private let sealedS2C = Data(hex: "80e55c7834dec038c823e7c488ef5e9d7cc5a1a9")
 
     private func deriveKeys() throws -> (c2s: Data, s2c: Data) {
         let priv = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: clientPrivBytes)
         XCTAssertEqual(priv.publicKey.rawRepresentation, expectedClientPub)
-        let serverKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: expectedServerPub)
-        let shared = try priv.sharedSecretFromKeyAgreement(with: serverKey)
-        let okm = shared.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
-            salt: priv.publicKey.rawRepresentation + expectedServerPub,
-            sharedInfo: Data("acro-e2ee-v1".utf8),
+        let staticKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: expectedServerPub)
+        let ephKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: expectedEphPub)
+        let sharedStatic = try priv.sharedSecretFromKeyAgreement(with: staticKey)
+        let sharedEph = try priv.sharedSecretFromKeyAgreement(with: ephKey)
+        let ikm = sharedStatic.withUnsafeBytes { Data($0) } + sharedEph.withUnsafeBytes { Data($0) }
+        let okm = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: priv.publicKey.rawRepresentation + expectedEphPub,
+            info: Data("acro-e2ee-v1".utf8),
             outputByteCount: 64
         )
         let okmData = okm.withUnsafeBytes { Data($0) }

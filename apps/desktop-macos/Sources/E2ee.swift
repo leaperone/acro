@@ -118,18 +118,26 @@ final class E2eeClientHandshake {
         return #"{"t":"hello","v":1,"pub":"\#(pub)"}"#
     }
 
-    func onReady(pubB64: String) throws -> E2eeSession {
+    // 密钥:IKM = DH(clientEph, serverStatic) || DH(clientEph, serverEph),
+    // salt = clientPub || serverEphPub(与 e2ee.ts 一致;服务端临时公钥防整条会话重放)
+    func onReady(pubB64: String, ephB64: String) throws -> E2eeSession {
         guard let serverPub = Data(base64Encoded: pubB64), serverPub == expectedServerPub else {
             throw E2eeError.handshake("服务端公钥与配对码不一致(疑似中间人)")
         }
-        let serverKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: serverPub)
-        let shared = try priv.sharedSecretFromKeyAgreement(with: serverKey)
+        guard let serverEph = Data(base64Encoded: ephB64), serverEph.count == 32 else {
+            throw E2eeError.handshake("服务端临时公钥无效")
+        }
+        let staticKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: serverPub)
+        let ephKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: serverEph)
+        let sharedStatic = try priv.sharedSecretFromKeyAgreement(with: staticKey)
+        let sharedEph = try priv.sharedSecretFromKeyAgreement(with: ephKey)
+        let ikm = sharedStatic.withUnsafeBytes { Data($0) } + sharedEph.withUnsafeBytes { Data($0) }
         let clientPub = priv.publicKey.rawRepresentation
         // HKDF 一次导出 64 字节:[0,32)=client→server,[32,64)=server→client
-        let okm = shared.hkdfDerivedSymmetricKey(
-            using: SHA256.self,
-            salt: clientPub + serverPub,
-            sharedInfo: Data("acro-e2ee-v1".utf8),
+        let okm = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: clientPub + serverEph,
+            info: Data("acro-e2ee-v1".utf8),
             outputByteCount: 64
         )
         let okmData = okm.withUnsafeBytes { Data($0) }
