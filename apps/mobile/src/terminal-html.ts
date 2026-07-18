@@ -1,9 +1,11 @@
 // WebView 内的 xterm.js 终端页。
 // ponytail: xterm 走 CDN,开发阶段够用;离线打包进 assets 等真机验证时做。
-// RN → Web:injectJavaScript 调 window.__acro.write(base64)
-// Web → RN:ReactNativeWebView.postMessage JSON {type:'ready'|'input'|'resize', ...}
+// RN → Web:injectJavaScript 调每个终端实例独有的随机桥对象。
+// Web → RN:postMessage 必须带同一 bridgeToken，导航回调失效时仍不能伪造输入。
 
-export const terminalHtml = `<!DOCTYPE html>
+export function createTerminalHtml(bridgeToken: string): string {
+  const bridgeName = `__acro_${bridgeToken}`;
+  return `<!DOCTYPE html>
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -29,7 +31,15 @@ export const terminalHtml = `<!DOCTYPE html>
   term.open(document.getElementById('term'));
   fit.fit();
 
-  const send = (obj) => window.ReactNativeWebView.postMessage(JSON.stringify(obj));
+  const bridgeToken = ${JSON.stringify(bridgeToken)};
+  const bridgeName = ${JSON.stringify(bridgeName)};
+  const send = (obj) => window.ReactNativeWebView.postMessage(
+    JSON.stringify({ ...obj, bridgeToken })
+  );
+  window.open = (url) => {
+    if (typeof url === 'string') send({ type: 'open', url });
+    return null;
+  };
 
   function b64ToBytes(b64) {
     const bin = atob(b64);
@@ -41,7 +51,7 @@ export const terminalHtml = `<!DOCTYPE html>
     return btoa(unescape(encodeURIComponent(str)));
   }
 
-  window.__acro = {
+  window[bridgeName] = {
     write(b64) { term.write(b64ToBytes(b64)); },
     clear() { term.reset(); },
     focus() { term.focus(); },
@@ -57,3 +67,4 @@ export const terminalHtml = `<!DOCTYPE html>
 </script>
 </body>
 </html>`;
+}
