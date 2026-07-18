@@ -10,28 +10,9 @@ struct Device: Codable, Identifiable, Equatable, Hashable, Sendable {
     let lastSeenAt: String?
 }
 
-struct Project: Codable, Identifiable, Equatable, Hashable, Sendable {
-    let id: String
-    let name: String
-    let path: String
-}
-
-struct DirectoryEntry: Codable, Equatable, Hashable, Sendable {
-    let name: String
-    let path: String
-}
-
-struct DirectoryListing: Codable, Equatable, Hashable, Sendable {
-    let path: String
-    let parent: String?
-    let home: String
-    let entries: [DirectoryEntry]
-}
-
 struct Workspace: Codable, Identifiable, Equatable, Hashable, Sendable {
     let id: String
     let name: String
-    let projectIds: [String]
     let sessionIds: [String]
     let createdAt: String
     let layout: String?
@@ -47,7 +28,6 @@ struct WorkspaceGroup: Codable, Identifiable, Equatable, Hashable, Sendable {
 
 struct Session: Codable, Identifiable, Equatable, Hashable, Sendable {
     let id: String
-    let projectId: String?
     let cwd: String
     let command: String
     let cols: Int

@@ -128,6 +128,7 @@ struct AcroApp: App {
     @NSApplicationDelegateAdaptor(AcroAppDelegate.self) private var appDelegate
     @StateObject private var hub: RuntimeHub
     @StateObject private var model: WorkbenchModel
+    private let localRuntime = LocalRuntimeManager()
 
     init() {
         let hub = RuntimeHub()
@@ -141,6 +142,10 @@ struct AcroApp: App {
                 .onAppear {
                     _ = Ghostty.shared // 初始化 libghostty
                     hub.reload() // 为每台已配对服务器建立常驻连接
+                }
+                .task {
+                    // 本地优先:确保本机 runtime 在跑并已静默配对
+                    await localRuntime.ensureLocalRuntime(hub: hub)
                 }
         }
         // 紧凑模式(cmux compact):无标题栏,内容顶到窗口顶部,tab 条即顶行

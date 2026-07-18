@@ -71,6 +71,15 @@ struct ServerEntry: Codable, Identifiable, Equatable {
             ?? (deviceId.isEmpty ? name : deviceId)
     }
 
+    // 本机条目 = 入口含回环地址。bootstrap 配对码(只在本机可读)总是带 127.0.0.1;
+    // 远程 share 配对码只带 LAN/公网入口(share.ts),不会误判
+    var isLocal: Bool {
+        endpoints.contains { endpoint in
+            let host = endpoint.split(separator: ":").first.map(String.init) ?? endpoint
+            return host == "127.0.0.1" || host == "localhost" || host == "::1"
+        }
+    }
+
     var lanEndpoints: [String] { endpoints.filter { EndpointKind.classify($0) == .lan } }
     var publicEndpoints: [String] { endpoints.filter { EndpointKind.classify($0) == .publicNet } }
     // 连接尝试顺序:局域网直连优先,全部失败再落到公网入口
@@ -123,7 +132,6 @@ final class RuntimeConnection: ObservableObject {
     }
 
     @Published private(set) var state: ConnectionState = .disconnected
-    @Published private(set) var projects: [Project] = []
     @Published private(set) var workspaceGroups: [WorkspaceGroup] = []
     @Published private(set) var workspaces: [Workspace] = []
     @Published private(set) var sessions: [Session] = []
@@ -405,12 +413,10 @@ final class RuntimeConnection: ObservableObject {
         refreshGeneration &+= 1
         let generation = refreshGeneration
         do {
-            let nextProjects = try await rpc("project.list", as: [Project].self)
             let nextWorkspaceGroups = try await rpc("workspaceGroup.list", as: [WorkspaceGroup].self)
             let nextWorkspaces = try await rpc("workspace.list", as: [Workspace].self)
             let nextSessions = try await rpc("session.list", as: [Session].self)
             guard generation == refreshGeneration else { return false }
-            projects = nextProjects
             workspaceGroups = nextWorkspaceGroups
             workspaces = nextWorkspaces
             sessions = nextSessions

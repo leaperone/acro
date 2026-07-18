@@ -129,12 +129,6 @@ struct WorkbenchView: View {
         } message: {
             Text("终端中的运行进程会被结束。")
         }
-        .sheet(isPresented: projectPickerPresented) {
-            ProjectDirectoryPicker(model: model)
-        }
-        .sheet(isPresented: terminalProjectPickerPresented) {
-            TerminalProjectPicker(model: model)
-        }
         .onChange(of: model.settingsOpenRequest) { _, _ in
             openWindow(id: "settings")
         }
@@ -220,29 +214,6 @@ struct WorkbenchView: View {
         )
     }
 
-    private var projectPickerPresented: Binding<Bool> {
-        Binding(
-            get: { model.projectPickerWorkspace != nil },
-            set: {
-                if !$0 {
-                    model.projectPickerWorkspace = nil
-                    model.resetProjectPicker()
-                }
-            }
-        )
-    }
-
-    private var terminalProjectPickerPresented: Binding<Bool> {
-        Binding(
-            get: { model.terminalProjectPickerWorkspace != nil },
-            set: {
-                if !$0 {
-                    model.terminalProjectPickerWorkspace = nil
-                    model.projectQuery = ""
-                }
-            }
-        )
-    }
 }
 
 // 顶栏空位的显式窗口拖动(cmux TitlebarAccessoryContainerView 语义):

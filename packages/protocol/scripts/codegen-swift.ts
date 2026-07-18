@@ -5,21 +5,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import {
-  Device,
-  DirectoryEntry,
-  DirectoryListing,
-  Project,
-  Session,
-  Workspace,
-  WorkspaceGroup,
-} from "../src/models.ts";
+import { Device, Session, Workspace, WorkspaceGroup } from "../src/models.ts";
 
 const models: Record<string, z.ZodType> = {
   Device,
-  Project,
-  DirectoryEntry,
-  DirectoryListing,
   Workspace,
   WorkspaceGroup,
   Session,

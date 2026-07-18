@@ -8,7 +8,6 @@ import { DaemonClient } from "./daemon/client.ts";
 import { BrowserManager } from "./browser.ts";
 import { SimulatorManager } from "./simulator.ts";
 import { HelperClient } from "./computer.ts";
-import { listDirectories, ProjectRegistry } from "./projects.ts";
 import { WorkspaceRegistry } from "./workspaces.ts";
 import { createHttpHandler } from "./http.ts";
 import {
@@ -37,7 +36,6 @@ async function main(): Promise<void> {
   const browsers = new BrowserManager();
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
-  const projects = new ProjectRegistry();
   const workspaces = new WorkspaceRegistry();
 
   const handlers: Handlers = {
@@ -50,37 +48,12 @@ async function main(): Promise<void> {
       gateway.terminateDevice(deviceId);
       return { revoked: true };
     },
-    "project.list": () => projects.list(),
-    "project.register": (_conn, { path }) => projects.register(path),
-    "filesystem.listDirectories": (_conn, { path }) => listDirectories(path),
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>
       workspaces.create(name, workspaceGroupId),
-    "workspace.update": async (
-      _conn,
-      { workspaceId, name, projectIds, workspaceGroupId },
-    ) => {
-      const current = workspaces.get(workspaceId);
-      if (!current) throw new Error("workspace not found");
-      if (projectIds) {
-        const knownProjectIds = new Set(projects.list().map((project) => project.id));
-        const missing = projectIds.find((id) => !knownProjectIds.has(id));
-        if (missing) throw new Error("project not found");
-
-        const removed = new Set(current.projectIds.filter((id) => !projectIds.includes(id)));
-        if (removed.size > 0) {
-          const sessions = await daemon.request<Session[]>("session.list");
-          const hasActiveSession = sessions.some(
-            (session) =>
-              session.alive &&
-              current.sessionIds.includes(session.id) &&
-              session.projectId !== null &&
-              removed.has(session.projectId),
-          );
-          if (hasActiveSession) throw new Error("project has active sessions in this workspace");
-        }
-      }
-      return workspaces.update(workspaceId, { name, projectIds, workspaceGroupId });
+    "workspace.update": (_conn, { workspaceId, name, workspaceGroupId }) => {
+      if (!workspaces.get(workspaceId)) throw new Error("workspace not found");
+      return workspaces.update(workspaceId, { name, workspaceGroupId });
     },
     "workspace.reorder": (_conn, { workspaceId, workspaceGroupId, index }) => {
       workspaces.reorder(workspaceId, workspaceGroupId, index);
@@ -112,20 +85,18 @@ async function main(): Promise<void> {
     "session.create": async (_conn, params) => {
       const workspace = params.workspaceId ? workspaces.get(params.workspaceId) : null;
       if (params.workspaceId && !workspace) throw new Error("workspace not found");
+      // 路径遵循既定事实:显式 cwd > 继承源会话的实时目录 > 家目录
       let cwd = params.cwd;
-      let projectId = params.projectId;
-      if (params.projectId) {
-        const project = projects.get(params.projectId);
-        if (!project) throw new Error("project not found");
-        cwd = project.path;
+      if (!cwd && params.inheritCwdFrom) {
+        cwd = await daemon
+          .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
+          .then((result) => result.cwd ?? undefined)
+          .catch(() => undefined);
       }
-      if (workspace && (!projectId || !workspace.projectIds.includes(projectId))) {
-        throw new Error("project is not in workspace");
-      }
-      const { workspaceId, ...daemonParams } = params;
+      const { workspaceId, inheritCwdFrom, ...daemonParams } = params;
       const { session } = await daemon.request<{ session: Session; handle: number }>(
         "session.create",
-        { ...daemonParams, cwd: cwd ?? os.homedir(), projectId },
+        { ...daemonParams, cwd: cwd ?? os.homedir() },
       );
       if (workspaceId) workspaces.addSession(workspaceId, session.id);
       return session;
@@ -227,7 +198,14 @@ async function main(): Promise<void> {
     gateway.forwardSimFrame(handle, seq, data),
   );
 
-  const server = http.createServer(createHttpHandler());
+  // 本机再配对 offer 显式带回环入口:客户端以"含回环"识别本机条目
+  const server = http.createServer(
+    createHttpHandler(
+      () =>
+        createShareOffer(registry, identity, config.port, "本机", [`127.0.0.1:${config.port}`])
+          .offer,
+    ),
+  );
   server.on("upgrade", (req, socket, head) => gateway.handleUpgrade(req, socket, head));
   server.listen(config.port, () => {
     console.log(`[runtime] listening on http://127.0.0.1:${config.port}`);

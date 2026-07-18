@@ -263,22 +263,20 @@ extension WorkbenchModel {
         ]
 
         if let selectedWorkspace {
-            if !projects(in: selectedWorkspace).isEmpty {
-                items.append(CommandPaletteItem(
-                    id: "command:new-terminal",
-                    title: "新建终端",
-                    subtitle: selectedWorkspace.name,
-                    symbol: "terminal",
-                    kind: "命令",
-                    action: { self.requestNewTerminal(in: selectedWorkspace) }
-                ))
-            }
-            if selectedSession != nil, selectedProject != nil {
+            items.append(CommandPaletteItem(
+                id: "command:new-terminal",
+                title: "新建终端",
+                subtitle: selectedWorkspace.name,
+                symbol: "terminal",
+                kind: "命令",
+                action: { self.requestNewTerminal(in: selectedWorkspace) }
+            ))
+            if selectedSession != nil {
                 items.append(contentsOf: [
                     CommandPaletteItem(
                         id: "command:split-right",
                         title: "向右分屏",
-                        subtitle: "在同一项目中创建终端",
+                        subtitle: "沿用当前终端的路径",
                         symbol: "rectangle.split.2x1",
                         kind: "命令",
                         action: { self.splitTerminal(.horizontal) }
@@ -286,7 +284,7 @@ extension WorkbenchModel {
                     CommandPaletteItem(
                         id: "command:split-down",
                         title: "向下分屏",
-                        subtitle: "在同一项目中创建终端",
+                        subtitle: "沿用当前终端的路径",
                         symbol: "rectangle.split.1x2",
                         kind: "命令",
                         action: { self.splitTerminal(.vertical) }
@@ -312,16 +310,6 @@ extension WorkbenchModel {
                 kind: "工作区",
                 action: { self.selectWorkspace(workspace) }
             ))
-            for project in projects(in: workspace) {
-                items.append(CommandPaletteItem(
-                    id: "project:\(workspace.id):\(project.id)",
-                    title: project.name,
-                    subtitle: "\(workspace.name) · \(project.path)",
-                    symbol: "folder",
-                    kind: "项目",
-                    action: { Task { _ = await self.openTerminal(project: project, workspace: workspace) } }
-                ))
-            }
             for session in sessions(in: workspace) {
                 items.append(CommandPaletteItem(
                     id: "session:\(session.id)",

@@ -56,14 +56,8 @@ struct TerminalPanesView: View {
             ContentUnavailableView {
                 Label("没有终端", systemImage: "terminal")
             } actions: {
-                if model.projects(in: selectedWorkspace).isEmpty {
-                    Button("添加项目") {
-                        model.presentProjectPicker(for: selectedWorkspace)
-                    }
-                } else {
-                    Button("新建终端") {
-                        model.requestNewTerminal(in: selectedWorkspace)
-                    }
+                Button("新建终端") {
+                    model.requestNewTerminal(in: selectedWorkspace)
                 }
             }
         } else if runtime.connected {

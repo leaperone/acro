@@ -1,12 +1,5 @@
 import { z } from "zod";
-import {
-  Device,
-  DirectoryListing,
-  Project,
-  Session,
-  Workspace,
-  WorkspaceGroup,
-} from "./models.ts";
+import { Device, Session, Workspace, WorkspaceGroup } from "./models.ts";
 
 // 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
 
@@ -64,18 +57,6 @@ export const methods = {
     params: z.object({ deviceId: z.string() }),
     result: z.object({ revoked: z.boolean() }),
   },
-  "project.list": {
-    params: z.object({}),
-    result: z.array(Project),
-  },
-  "project.register": {
-    params: z.object({ path: z.string().trim().min(1) }),
-    result: Project,
-  },
-  "filesystem.listDirectories": {
-    params: z.object({ path: z.string().optional() }),
-    result: DirectoryListing,
-  },
   "workspace.list": {
     params: z.object({}),
     result: z.array(Workspace),
@@ -92,18 +73,11 @@ export const methods = {
       .object({
         workspaceId: z.string(),
         name: z.string().trim().min(1).max(80).optional(),
-        projectIds: z.array(z.string()).optional(),
         workspaceGroupId: z.string().nullable().optional(),
       })
-      .refine(
-        (value) =>
-          value.name !== undefined ||
-          value.projectIds !== undefined ||
-          value.workspaceGroupId !== undefined,
-        {
-          message: "name, projectIds, or workspaceGroupId is required",
-        },
-      ),
+      .refine((value) => value.name !== undefined || value.workspaceGroupId !== undefined, {
+        message: "name or workspaceGroupId is required",
+      }),
     result: Workspace,
   },
   // 拖拽重排:移入分组(或 null 表示未分组区)并落在 index 位置
@@ -147,11 +121,13 @@ export const methods = {
     }),
     result: z.object({ rev: z.number().int() }),
   },
+  // 路径遵循既定事实:不传 cwd 时,inheritCwdFrom 指向一个存活会话,
+  // 服务端解析它的实时工作目录作为新终端的 cwd;都没有则用家目录。
   "session.create": {
     params: z.object({
       workspaceId: z.string().optional(),
-      projectId: z.string().optional(),
       cwd: z.string().optional(),
+      inheritCwdFrom: z.string().optional(),
       command: z.string().optional(),
       cols: z.number().int().min(2).max(1000),
       rows: z.number().int().min(2).max(1000),

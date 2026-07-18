@@ -3,9 +3,8 @@
 // 用法:
 //   acro pair [配对码] [--name <label>]   无参数时读本机 bootstrap 配对码
 //   acro endpoints [add|rm <host:port>]
-//   acro projects
 //   acro sessions
-//   acro run [--project <name|id>] [--] [command...]
+//   acro run [--cwd <dir>] [--] [command...]
 //   acro attach <sessionId>
 
 import fs from "node:fs";
@@ -13,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 // 只引二进制帧模块:attach 冷启动不加载 zod(节省 ~150ms 空白期)
 import { encodeInFrame, FRAME_OUT } from "@acro/protocol/frames";
-import type { Project, Session } from "@acro/protocol";
+import type { Session } from "@acro/protocol";
 import {
   AcroClient,
   activeServer,
@@ -29,13 +28,6 @@ const DETACH_KEY = 0x1d; // Ctrl-]
 function fail(msg: string): never {
   console.error(msg);
   process.exit(1);
-}
-
-async function resolveProject(client: AcroClient, ref: string): Promise<Project> {
-  const projects = await client.rpc("project.list", {});
-  const found = projects.find((p) => p.id === ref || p.name === ref);
-  if (!found) fail(`project not found: ${ref}`);
-  return found;
 }
 
 function loadOrEmptyConfig(): ClientConfig {
@@ -109,12 +101,6 @@ function cmdEndpoints(args: string[]): void {
   for (const e of server.endpoints) console.log(e);
 }
 
-async function cmdProjects(client: AcroClient): Promise<void> {
-  for (const p of await client.rpc("project.list", {})) {
-    console.log(`${p.id}  ${p.name}  ${p.path}`);
-  }
-}
-
 async function cmdSessions(client: AcroClient): Promise<void> {
   for (const s of await client.rpc("session.list", {})) {
     const state = s.alive ? "alive" : `exit=${s.exitCode ?? "?"}`;
@@ -127,16 +113,15 @@ function termSize(): { cols: number; rows: number } {
 }
 
 async function cmdRun(client: AcroClient, server: ServerEntry, args: string[]): Promise<void> {
-  const projectRef = flagValue(args, "--project");
+  const cwd = flagValue(args, "--cwd");
   const rest = args.filter((a, i) => {
     if (a.startsWith("--")) return false;
     const prev = args[i - 1];
-    return prev !== "--project";
+    return prev !== "--cwd";
   });
   const command = rest.length > 0 ? rest.join(" ") : undefined;
-  const projectId = projectRef ? (await resolveProject(client, projectRef)).id : undefined;
   const session = await client.rpc("session.create", {
-    ...(projectId ? { projectId } : {}),
+    ...(cwd ? { cwd } : {}),
     ...(command ? { command } : {}),
     ...termSize(),
   });
@@ -312,9 +297,8 @@ async function main(): Promise<void> {
         "acro pair [配对码] [--name <label>]",
         "acro --server <名称|deviceId> <命令>  指定目标服务器",
         "acro endpoints [add|rm <host:port>]",
-        "acro projects",
         "acro sessions",
-        "acro run [--project <p>] [command...]",
+        "acro run [--cwd <dir>] [command...]",
         "acro attach <sessionId>",
       ].join("\n"),
     );
@@ -332,9 +316,6 @@ async function main(): Promise<void> {
   // attach/run 走终端 surface:初连也做退避重试,别把瞬时抖动直接怼到用户脸上
   const client = await connectWithRetry(server, cmd === "attach" || cmd === "run" ? 5 : 1);
   switch (cmd) {
-    case "projects":
-      await cmdProjects(client);
-      break;
     case "sessions":
       await cmdSessions(client);
       break;

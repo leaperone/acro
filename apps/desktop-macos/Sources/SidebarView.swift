@@ -31,12 +31,6 @@ struct SidebarMoveTarget: Equatable {
     let disabled: Bool
 }
 
-struct SidebarRemovableProject: Equatable {
-    let id: String
-    let name: String
-    let disabled: Bool
-}
-
 struct WorkspaceGroupRowSnapshot: Equatable {
     let id: String
     let name: String
@@ -60,11 +54,11 @@ struct WorkspaceRowSnapshot: Equatable {
     let sessionCount: Int
     let showsChevron: Bool
     let isExpanded: Bool
-    let hasProjects: Bool
     let isInGroup: Bool
     let shortcutHint: String?
+    // cmux 式副行:工作区的既定路径(第一个存活终端的目录,~ 缩写)
+    let pathLabel: String?
     let moveTargets: [SidebarMoveTarget]
-    let removableProjects: [SidebarRemovableProject]
 }
 
 struct WorkspaceRowActions {
@@ -74,7 +68,6 @@ struct WorkspaceRowActions {
     let rename: () -> Void
     let delete: () -> Void
     let moveToGroup: (String?) -> Void
-    let removeProject: (String) -> Void
     let beginDrag: () -> NSItemProvider
     let acceptDrop: () -> Bool
     let performDrop: () -> Bool
@@ -86,7 +79,6 @@ struct SessionRowSnapshot: Equatable {
     let cwd: String
     let alive: Bool
     let isSelected: Bool
-    let hasProject: Bool
 }
 
 struct SessionRowActions {
@@ -209,9 +201,19 @@ struct WorkspaceRow: View, Equatable {
                     Image(systemName: "rectangle.3.group")
                         .foregroundStyle(snapshot.isSelected ? Color.accentColor : .secondary)
                         .frame(width: 16)
-                    Text(snapshot.name)
-                        .font(.callout.weight(.semibold))
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(snapshot.name)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        if let pathLabel = snapshot.pathLabel {
+                            // cmux 分支·目录副行的最小版:既定路径,~ 缩写,中间截断
+                            Text(pathLabel)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
                     Spacer(minLength: 6)
                     if snapshot.sessionCount > 0 {
                         Text("\(snapshot.sessionCount)")
@@ -223,24 +225,22 @@ struct WorkspaceRow: View, Equatable {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: 32)
+                .frame(height: snapshot.pathLabel == nil ? 32 : 40)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(snapshot.name)
 
-            if snapshot.hasProjects {
-                Button(action: actions.newTerminal) {
-                    Image(systemName: "plus")
-                }
-                .frame(width: 24, height: 24)
-                .buttonStyle(.plain)
-                .opacity(hovered ? 1 : 0)
-                .allowsHitTesting(hovered)
-                .help("新建终端")
-                .accessibilityLabel("在 \(snapshot.name) 新建终端")
+            Button(action: actions.newTerminal) {
+                Image(systemName: "plus")
             }
+            .frame(width: 24, height: 24)
+            .buttonStyle(.plain)
+            .opacity(hovered ? 1 : 0)
+            .allowsHitTesting(hovered)
+            .help("新建终端")
+            .accessibilityLabel("在 \(snapshot.name) 新建终端")
         }
         .padding(.horizontal, 6)
         .modifier(SidebarRowSurface(selected: snapshot.isSelected))
@@ -263,20 +263,8 @@ struct WorkspaceRow: View, Equatable {
         }
         .onHover { hovered = $0 }
         .contextMenu {
-            if snapshot.hasProjects {
-                Button("新建终端", action: actions.newTerminal)
-                Divider()
-            }
-            if !snapshot.removableProjects.isEmpty {
-                Menu("移除项目") {
-                    ForEach(snapshot.removableProjects, id: \.id) { project in
-                        Button(project.name, role: .destructive) {
-                            actions.removeProject(project.id)
-                        }
-                        .disabled(project.disabled)
-                    }
-                }
-            }
+            Button("新建终端", action: actions.newTerminal)
+            Divider()
             if !snapshot.moveTargets.isEmpty {
                 Menu("移动到分组") {
                     ForEach(snapshot.moveTargets, id: \.id) { target in
@@ -288,7 +276,7 @@ struct WorkspaceRow: View, Equatable {
             if snapshot.isInGroup {
                 Button("移出分组") { actions.moveToGroup(nil) }
             }
-            if !snapshot.removableProjects.isEmpty || !snapshot.moveTargets.isEmpty {
+            if !snapshot.moveTargets.isEmpty {
                 Divider()
             }
             Button("重命名", action: actions.rename)
@@ -347,10 +335,8 @@ struct SessionRow: View, Equatable {
         .accessibilityLabel(snapshot.title)
         .accessibilityValue(snapshot.alive ? "运行中" : "已结束")
         .contextMenu {
-            if snapshot.hasProject {
-                Button("在同一项目新建终端", action: actions.newSibling)
-                Divider()
-            }
+            Button("在同一目录新建终端", action: actions.newSibling)
+            Divider()
             Button("关闭终端", role: .destructive, action: actions.terminate)
         }
     }
@@ -387,6 +373,10 @@ struct SidebarView: View {
     // 多主机:所有已配对服务器同时在线,每台一个手风琴段,各自实时显示各自的工作区。
     // 折叠状态仅本地;选择/操作某台服务器的内容前先 activate 把动作路由过去。
     @State private var collapsedServerIds: Set<String> = []
+    // 服务器接入与编辑(共享配对码的生成仍在设置 → 远程)
+    @State private var connectSheetPresented = false
+    @State private var editingServerId: EditingServerId?
+    @State private var pendingServerRemoval: ServerEntry?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -417,6 +407,31 @@ struct SidebarView: View {
                 }
         }
         .background(.bar)
+        .sheet(isPresented: $connectSheetPresented) {
+            ConnectServerSheet(hub: hub)
+        }
+        .sheet(item: $editingServerId) { editing in
+            EditServerSheet(serverId: editing.id, hub: hub)
+        }
+        .confirmationDialog(
+            "移除服务器「\(pendingServerRemoval?.name ?? "")」?",
+            isPresented: Binding(
+                get: { pendingServerRemoval != nil },
+                set: { if !$0 { pendingServerRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移除(不影响服务器上的会话)", role: .destructive) {
+                guard let server = pendingServerRemoval else { return }
+                pendingServerRemoval = nil
+                ServerDirectory.remove(server.id, hub: hub)
+                // 删的是当前查看的服务器时,选中态立即回落,不留悬空 id
+                model.reconcileLayoutState()
+            }
+            Button("取消", role: .cancel) { pendingServerRemoval = nil }
+        } message: {
+            Text("只删除本机的连接凭据;服务器上的工作区与终端不受影响,可重新配对接入。")
+        }
     }
 
     private var header: some View {
@@ -477,26 +492,49 @@ struct SidebarView: View {
             .help(help)
     }
 
+    // 本地优先:本机内容(回环入口条目)永远无头铺在最前;
+    // 每台远程服务器一个手风琴段。接入/编辑服务器都在这里完成。
     @ViewBuilder
     private var content: some View {
+        let locals = hub.entries.filter { $0.server.isLocal }
+        let remotes = hub.entries.filter { !$0.server.isLocal }
         if hub.entries.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text("未配对任何服务器")
+                Text("本机 Runtime 未就绪")
                     .foregroundStyle(.secondary)
-                Text("在设置(⌘,)→ 远程 里粘贴配对码。")
+                Text("正在自动拉起本地服务;远程服务器用下方「连接服务器…」接入。")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-        } else if hub.entries.count == 1, let only = hub.entries.first {
-            // 单服务器(通常就是本机)不显示分组头,内容直接铺开;多台才需要区分归属
-            serverContent(only)
-        } else {
-            ForEach(hub.entries) { entry in
-                serverSection(entry)
-            }
         }
+        ForEach(locals) { entry in
+            serverContent(entry)
+        }
+        if !locals.isEmpty && !remotes.isEmpty {
+            Divider()
+                .padding(.vertical, 4)
+        }
+        ForEach(remotes) { entry in
+            serverSection(entry)
+        }
+        connectServerRow
+    }
+
+    private var connectServerRow: some View {
+        Button {
+            connectSheetPresented = true
+        } label: {
+            Label("连接服务器…", systemImage: "plus.rectangle.on.rectangle")
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("粘贴另一台服务器的配对码接入")
     }
 
     // 每台服务器一个手风琴段,内容来自它自己的连接,同时在线互不影响
@@ -545,6 +583,9 @@ struct SidebarView: View {
                 model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
             }
             .disabled(!entry.connection.connected)
+            Divider()
+            Button("编辑服务器…") { editingServerId = EditingServerId(id: entry.id) }
+            Button("移除服务器", role: .destructive) { pendingServerRemoval = entry.server }
             Divider()
             Button("远程设置…") { model.requestOpenSettings() }
         }
@@ -679,7 +720,6 @@ struct SidebarView: View {
     ) -> some View {
         let connection = entry.connection
         let expanded = model.expandedWorkspaceIds.contains(workspace.id)
-        let workspaceProjects = model.projects(in: workspace, on: connection)
         let workspaceSessions = model.sessions(in: workspace, on: connection)
         let currentGroup = model.workspaceGroup(containing: workspace.id, on: connection)
         let isSelectedServer = model.selectedServerId == entry.id
@@ -692,20 +732,13 @@ struct SidebarView: View {
                 sessionCount: workspaceSessions.count,
                 showsChevron: model.sidebarViewMode == .sessions,
                 isExpanded: expanded,
-                hasProjects: !workspaceProjects.isEmpty,
                 isInGroup: currentGroup != nil,
                 shortcutHint: model.cmdHeld && isSelectedServer
                     ? model.workspaceShortcutDigit(workspace.id).map { "⌘\($0)" }
                     : nil,
+                pathLabel: workspaceSessions.first.map { SidebarPath.abbreviate($0.cwd) },
                 moveTargets: connection.workspaceGroups.map {
                     SidebarMoveTarget(id: $0.id, name: $0.name, disabled: $0.id == currentGroup?.id)
-                },
-                removableProjects: workspaceProjects.map { project in
-                    SidebarRemovableProject(
-                        id: project.id,
-                        name: project.name,
-                        disabled: workspaceSessions.contains { $0.projectId == project.id }
-                    )
                 }
             ),
             actions: WorkspaceRowActions(
@@ -730,11 +763,6 @@ struct SidebarView: View {
                     model.activate(serverId: entry.id)
                     let target = connection.workspaceGroups.first { $0.id == groupId }
                     Task { await model.moveWorkspace(workspace, to: target) }
-                },
-                removeProject: { projectId in
-                    guard let project = workspaceProjects.first(where: { $0.id == projectId }) else { return }
-                    model.activate(serverId: entry.id)
-                    Task { await model.removeProject(project, from: workspace) }
                 },
                 beginDrag: {
                     model.draggingWorkspaceId = workspace.id
@@ -764,13 +792,39 @@ struct SidebarView: View {
         .padding(.leading, indent)
 
         if model.sidebarViewMode == .sessions && expanded {
-            if workspaceProjects.isEmpty {
+            ForEach(workspaceSessions) { session in
+                SessionRow(
+                    snapshot: SessionRowSnapshot(
+                        id: session.id,
+                        title: model.sessionDisplayName(session, on: connection),
+                        cwd: SidebarPath.abbreviate(session.cwd),
+                        alive: session.alive,
+                        isSelected: isSelectedServer && model.selectedSessionId == session.id
+                    ),
+                    actions: SessionRowActions(
+                        show: {
+                            model.activate(serverId: entry.id)
+                            model.showSession(session)
+                        },
+                        newSibling: {
+                            model.activate(serverId: entry.id)
+                            Task { _ = await model.openTerminal(in: workspace, inheritFrom: session.id) }
+                        },
+                        terminate: {
+                            model.activate(serverId: entry.id)
+                            model.pendingSessionTermination = session
+                        }
+                    )
+                )
+                .equatable()
+                .padding(.leading, indent + 16)
+            }
+            if workspaceSessions.isEmpty {
                 Button {
                     model.activate(serverId: entry.id)
-                    model.selectedWorkspaceId = workspace.id
-                    model.presentProjectPicker(for: workspace)
+                    model.requestNewTerminal(in: workspace)
                 } label: {
-                    Label("添加项目", systemImage: "folder.badge.plus")
+                    Label("新建终端", systemImage: "terminal.badge.plus")
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 8)
                         .frame(height: 32)
@@ -778,51 +832,23 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .padding(.leading, indent + 22)
-            } else {
-                ForEach(workspaceSessions) { session in
-                    SessionRow(
-                        snapshot: SessionRowSnapshot(
-                            id: session.id,
-                            title: model.sessionDisplayName(session, on: connection),
-                            cwd: session.cwd,
-                            alive: session.alive,
-                            isSelected: isSelectedServer && model.selectedSessionId == session.id,
-                            hasProject: model.project(for: session, on: connection) != nil
-                        ),
-                        actions: SessionRowActions(
-                            show: {
-                                model.activate(serverId: entry.id)
-                                model.showSession(session)
-                            },
-                            newSibling: {
-                                guard let project = model.project(for: session, on: connection) else { return }
-                                model.activate(serverId: entry.id)
-                                Task { _ = await model.openTerminal(project: project, workspace: workspace) }
-                            },
-                            terminate: {
-                                model.activate(serverId: entry.id)
-                                model.pendingSessionTermination = session
-                            }
-                        )
-                    )
-                    .equatable()
-                    .padding(.leading, indent + 16)
-                }
-                if workspaceSessions.isEmpty {
-                    Button {
-                        model.activate(serverId: entry.id)
-                        model.requestNewTerminal(in: workspace)
-                    } label: {
-                        Label("新建终端", systemImage: "terminal.badge.plus")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .frame(height: 32)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, indent + 22)
-                }
             }
         }
+    }
+}
+
+
+// 路径缩写(cmux SidebarPathFormatter 的最小版,GPL-3.0-or-later,
+// Copyright (c) 2024-present Manaflow, Inc.):把家目录前缀替换为 ~。
+// 路径来自远端服务器,不能用本机 NSHomeDirectory();按 /Users/<u> 与 /home/<u> 启发式处理
+enum SidebarPath {
+    static func abbreviate(_ path: String) -> String {
+        for prefix in ["/Users/", "/home/"] {
+            guard path.hasPrefix(prefix) else { continue }
+            let rest = path.dropFirst(prefix.count)
+            guard let slash = rest.firstIndex(of: "/") else { return "~" }
+            return "~" + rest[slash...]
+        }
+        return path
     }
 }
