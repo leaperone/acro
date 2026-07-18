@@ -193,6 +193,33 @@ async function main(): Promise<void> {
     await client.waitOutput(fixtureRepo); // pwd 确认跑在指定目录里
     log("session io ok");
 
+    // attach 屏障:持续输出期间新连接拿到的 snapshot + live frames 必须连续不缺号
+    const gapShare = await client.rpc<{ offer: string }>("device.share", {
+      name: "attach-gap",
+    });
+    const gapClient = new Client();
+    await gapClient.connect(decodePairingOffer(gapShare.offer));
+    client.sendInput(
+      attach1.channel,
+      "i=1; while [ $i -le 600 ]; do printf 'ATTACH_GAP_%04d\\n' \"$i\"; i=$((i+1)); sleep 0.002; done\n",
+    );
+    await client.waitOutput("ATTACH_GAP_0001");
+    const gapAttach = await gapClient.rpc<{ snapshot: string }>("session.attach", {
+      sessionId: session.id,
+    });
+    await client.waitOutput("ATTACH_GAP_0600", 15000);
+    await sleep(300);
+    const gapCombined =
+      Buffer.from(gapAttach.snapshot, "base64").toString("utf8") + gapClient.output;
+    const gapNumbers = new Set(
+      [...gapCombined.matchAll(/ATTACH_GAP_(\d{4})/g)].map((match) => Number(match[1])),
+    );
+    for (let i = 1; i <= 600; i += 1) {
+      assert.ok(gapNumbers.has(i), `attach output missing sequence ${i}`);
+    }
+    gapClient.close();
+    log("attach replay barrier ok");
+
     // 路径继承既定事实:源会话 cd 之后,不传 cwd 的新会话应落在它的实时目录
     client.sendInput(attach1.channel, "cd /private/tmp && echo CD_DONE_XYZ\n");
     await client.waitOutput("CD_DONE_XYZ");

@@ -200,8 +200,14 @@ async function main(): Promise<void> {
     "session.focusList": () =>
       [...focusOwners].map(([sessionId, owner]) => ({ sessionId, ...owner })),
     "session.attach": async (conn, { sessionId }) => {
-      const snap = await daemon.request<SnapshotResult>("session.snapshot", { sessionId });
-      conn.attached.set(snap.handle, { sessionId, attachSeq: snap.seq });
+      const snap = await daemon.request<SnapshotResult>(
+        "session.snapshot",
+        { sessionId },
+        (result) => {
+          if (!gateway.hasConnection(conn)) throw new Error("connection closed");
+          conn.attached.set(result.handle, { sessionId, attachSeq: result.seq });
+        },
+      );
       return {
         channel: snap.handle,
         snapshot: snap.snapshot,

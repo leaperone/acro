@@ -13,6 +13,7 @@ import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
+  beforeResolve?: ((value: unknown) => void) | undefined;
 }
 
 export interface DaemonEvent {
@@ -92,20 +93,41 @@ export class DaemonClient extends EventEmitter {
         const p = this.pending.get(parsed.id);
         if (!p) continue;
         this.pending.delete(parsed.id);
-        if (parsed.ok) p.resolve(parsed.result);
-        else p.reject(new Error(parsed.error.message));
+        if (parsed.ok) {
+          try {
+            p.beforeResolve?.(parsed.result);
+            p.resolve(parsed.result);
+          } catch (error) {
+            p.reject(error as Error);
+          }
+        } else p.reject(new Error(parsed.error.message));
       } else if (parsed.t === "evt") {
         this.emit("event", parsed);
       }
     }
   }
 
-  request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    params?: unknown,
+    beforeResolve?: (result: T) => void,
+  ): Promise<T> {
     if (!this.socket) return Promise.reject(new Error("daemon not connected"));
     const id = this.nextId++;
-    this.socket.write(packJson({ t: "req", id, method, params }));
+    const socket = this.socket;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
+      this.pending.set(id, {
+        resolve: resolve as (v: unknown) => void,
+        reject,
+        beforeResolve: beforeResolve as ((value: unknown) => void) | undefined,
+      });
+      socket.write(packJson({ t: "req", id, method, params }), (error) => {
+        if (!error) return;
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        reject(error);
+      });
     });
   }
 
