@@ -31,9 +31,12 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
         // 在菜单分发之前拦截应用快捷键并路由到 model:
         // 系统 Close(⌘W)、终端按键竞争、菜单状态冻结全部绕开。
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard !event.isARepeat else { return event }
             // 设置窗口保持系统语义(⌘W 关窗等)
             if event.window?.title == Self.settingsWindowTitle { return event }
+            // 应用快捷键只执行一次,但按住产生的重复事件也不能落入终端。
+            if event.isARepeat {
+                return ShortcutSettings.isAppShortcut(event) ? nil : event
+            }
             if let digit = ShortcutSettings.workspaceDigit(event) {
                 NotificationCenter.default.post(
                     name: .acroSelectWorkspace, object: nil, userInfo: ["digit": digit]

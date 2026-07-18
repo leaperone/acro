@@ -31,6 +31,13 @@ final class ShortcutSettingsTests: XCTestCase {
         )))
     }
 
+    func testRepeatedAppShortcutStaysReserved() {
+        let repeatedControlTab = keyEvent(modifiers: [.control], isARepeat: true)
+
+        XCTAssertTrue(repeatedControlTab.isARepeat)
+        XCTAssertTrue(ShortcutSettings.isAppShortcut(repeatedControlTab))
+    }
+
     func testNumberedShortcutsUsePhysicalDigitsAndNineMeansLast() {
         let controlTwo = keyEvent(
             modifiers: [.control, .capsLock], charactersIgnoringModifiers: "@", keyCode: 19
@@ -57,7 +64,8 @@ final class ShortcutSettingsTests: XCTestCase {
     private func keyEvent(
         modifiers: NSEvent.ModifierFlags,
         charactersIgnoringModifiers: String = "\t",
-        keyCode: UInt16 = 48
+        keyCode: UInt16 = 48,
+        isARepeat: Bool = false
     ) -> NSEvent {
         NSEvent.keyEvent(
             with: .keyDown,
@@ -68,7 +76,7 @@ final class ShortcutSettingsTests: XCTestCase {
             context: nil,
             characters: charactersIgnoringModifiers,
             charactersIgnoringModifiers: charactersIgnoringModifiers,
-            isARepeat: false,
+            isARepeat: isARepeat,
             keyCode: keyCode
         )!
     }
