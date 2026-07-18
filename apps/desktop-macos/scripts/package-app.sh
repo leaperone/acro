@@ -1,9 +1,15 @@
 #!/bin/bash
-# 打包 Acro.app 与分发 zip。用法:scripts/package-app.sh [version]
+# 打包 Acro.app 与分发 zip/dmg。用法:scripts/package-app.sh [version]
 # 前置:scripts/setup-ghostty.sh 已就绪(GhosttyKit.xcframework + Resources)
+#
+# 签名:ACRO_SIGN_IDENTITY 设为 Developer ID 证书名则正式签名(hardened runtime),
+#      未设则 ad-hoc(本地开发/无证书 CI 回退)。
+# 公证:同时设 ACRO_NOTARY_KEY(p8 路径)、ACRO_NOTARY_KEY_ID、ACRO_NOTARY_ISSUER
+#      则走 notarytool 公证 + staple;缺任一则跳过。
 set -euo pipefail
 
 VERSION="${1:-0.0.0}"
+SIGN_IDENTITY="${ACRO_SIGN_IDENTITY:--}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
 
@@ -35,8 +41,27 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP"
-ditto -c -k --keepParent "$APP" "dist/Acro-v${VERSION}-macos.zip"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    codesign --force --deep --sign - "$APP"
+else
+    echo "==> signing with: $SIGN_IDENTITY"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+fi
+
+ZIP="dist/Acro-v${VERSION}-macos.zip"
+ditto -c -k --keepParent "$APP" "$ZIP"
+
+if [[ -n "${ACRO_NOTARY_KEY:-}" && -n "${ACRO_NOTARY_KEY_ID:-}" && -n "${ACRO_NOTARY_ISSUER:-}" ]]; then
+    echo "==> notarizing"
+    xcrun notarytool submit "$ZIP" \
+        --key "$ACRO_NOTARY_KEY" \
+        --key-id "$ACRO_NOTARY_KEY_ID" \
+        --issuer "$ACRO_NOTARY_ISSUER" \
+        --wait
+    xcrun stapler staple "$APP"
+    rm "$ZIP"
+    ditto -c -k --keepParent "$APP" "$ZIP"
+fi
 
 # DMG:标准拖入 /Applications 安装盘
 STAGE="dist/dmg-stage"
@@ -44,8 +69,20 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/Acro.app"
 ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "Acro" -srcfolder "$STAGE" -ov -format UDZO \
-    "dist/Acro-v${VERSION}-macos.dmg" > /dev/null
+DMG="dist/Acro-v${VERSION}-macos.dmg"
+hdiutil create -volname "Acro" -srcfolder "$STAGE" -ov -format UDZO "$DMG" > /dev/null
 rm -rf "$STAGE"
-echo "==> dist/Acro-v${VERSION}-macos.zip"
-echo "==> dist/Acro-v${VERSION}-macos.dmg"
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+fi
+if [[ -n "${ACRO_NOTARY_KEY:-}" && -n "${ACRO_NOTARY_KEY_ID:-}" && -n "${ACRO_NOTARY_ISSUER:-}" ]]; then
+    xcrun notarytool submit "$DMG" \
+        --key "$ACRO_NOTARY_KEY" \
+        --key-id "$ACRO_NOTARY_KEY_ID" \
+        --issuer "$ACRO_NOTARY_ISSUER" \
+        --wait
+    xcrun stapler staple "$DMG"
+fi
+
+echo "==> $ZIP"
+echo "==> $DMG"
