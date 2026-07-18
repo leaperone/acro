@@ -66,6 +66,12 @@ struct AcroWorkbenchCommands: Commands {
     }
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("检查更新…", systemImage: "arrow.down.circle") {
+                UpdaterController.shared.checkForUpdates()
+            }
+        }
+
         CommandGroup(replacing: .newItem) {
             item("新建标签", "terminal", .newTerminalTab)
             item("新建工作区", "plus", .newWorkspace)
@@ -75,9 +81,6 @@ struct AcroWorkbenchCommands: Commands {
         CommandMenu("工作台") {
             item("设置…", "gearshape", .openSettings)
             item("命令面板", "command", .commandPalette)
-            Button("检查更新…", systemImage: "arrow.down.circle") {
-                UpdaterController.shared.checkForUpdates()
-            }
 
             Divider()
 
