@@ -18,6 +18,13 @@ jobs:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
+      # 打包内置 CLI(cli.cjs)需要 pnpm workspace
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: setup ghostty assets
         env:
           GH_TOKEN: ${{ github.token }}
