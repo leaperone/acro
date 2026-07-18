@@ -126,7 +126,15 @@ async function main(): Promise<void> {
       }
       await Promise.all(
         workspace.sessionIds.map((sessionId) =>
-          daemon.request("session.remove", { sessionId }),
+          // session.remove 会 SIGKILL 兜底强杀并清掉死记录/快照。旧 daemon 尚无此方法
+          // (代码更新后未重启)时退回 session.kill(SIGHUP):普通进程照常退出,工作区能删,
+          // 别的工作区终端不受影响。残留的死记录随旧 daemon 下次重启加载不到而消解。
+          daemon.request("session.remove", { sessionId }).catch((err: unknown) => {
+            if (err instanceof Error && err.message.includes("unknown method")) {
+              return daemon.request("session.kill", { sessionId });
+            }
+            throw err;
+          }),
         ),
       );
       for (const sessionId of workspace.sessionIds) {
