@@ -39,7 +39,7 @@ git push origin desktop-v<version>
 
 ## CI 管线(release.yml,tag push 触发)
 
-自动执行,顺序:swift build → Developer ID 签名(含 Sparkle 嵌套 XPC)→ notarytool 公证 + staple → 创建 GitHub Release(dmg + zip,预发布自动加 `--prerelease`)→ EdDSA 签名 zip → 尝试从最近稳定版和测试版生成、验证、签名 Sparkle delta → 更新 `apps/desktop-macos/appcast.xml` 并以 github-actions[bot] 提交回 main。delta 失败时保留完整 zip 回退,不阻断发布。
+自动执行,顺序:swift build → Developer ID 签名(含 Sparkle 嵌套 XPC)→ notarytool 公证 + staple → 创建 GitHub Release(dmg + zip,预发布自动加 `--prerelease`)→ EdDSA 签名 zip → 从最近稳定版和测试版生成、验证、签名 Sparkle delta → 更新 `apps/desktop-macos/appcast.xml` 并以 github-actions[bot] 提交回 main。旧包先复制并清除代码签名扩展属性用于生成 delta,再用未经修改的原包执行 apply + codesign 验证。delta 失败时保留完整 zip 回退,不阻断发布。
 
 依赖 7 个 GitHub Secrets(Apple 证书/公证 6 个 + SPARKLE_PRIVATE_KEY),已配置。缺任一则对应步骤自动跳过(回退 ad-hoc 签名、不更新 appcast)。
 
@@ -52,7 +52,7 @@ curl -s https://raw.githubusercontent.com/leaperone/acro/main/apps/desktop-macos
 ```
 
 - appcast 最新条目应为本次版本,带 edSignature;beta 版须带 channel 标记。
-- 启用 delta 后的首个版本只建立干净基线;下一版本开始,appcast 最新条目应有 `<sparkle:deltas>`,Release 应有对应 `.delta` 资产。
+- appcast 最新条目应有 `<sparkle:deltas>`,Release 应包含最近稳定版和测试版对应的 `.delta` 资产;某个通道没有历史 Release 时跳过。
 - raw.githubusercontent.com 有约 5 分钟 CDN 缓存,客户端刚发完查不到是正常的。
 - 客户端验证:设置 → 通用 → 检查更新,应弹出新版本;更新重启后终端会话由 runtime daemon 保持,自动重连,不会丢。
 

@@ -113,7 +113,7 @@ jobs:
             [[ -n "$TAG" ]] || continue
             FROM_VERSION="${TAG#desktop-v}"
             SOURCE="$RUNNER_TEMP/source-$FROM_VERSION"
-            mkdir -p "$SOURCE/archive" "$SOURCE/app" "$SOURCE/applied"
+            mkdir -p "$SOURCE/archive" "$SOURCE/app" "$SOURCE/clean" "$SOURCE/applied"
             if ! gh release download "$TAG" --pattern 'Acro-v*-macos.zip' --dir "$SOURCE/archive"; then
               echo "::warning::Could not download $TAG; full update remains available"
               continue
@@ -122,10 +122,14 @@ jobs:
             ditto -x -k "$SOURCE_ZIP" "$SOURCE/app"
             SOURCE_BUILD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
               "$SOURCE/app/Acro.app/Contents/Info.plist")"
+            # Legacy packages contain code-signing xattrs that BinaryDelta refuses to diff.
+            # Generate from a clean copy, then apply to the untouched source below.
+            ditto "$SOURCE/app/Acro.app" "$SOURCE/clean/Acro.app"
+            xattr -cr "$SOURCE/clean/Acro.app"
 
             DELTA="apps/desktop-macos/dist/Acro-v${VERSION}-from-${FROM_VERSION}.delta"
             if ! "$RUNNER_TEMP/sparkle/bin/BinaryDelta" create \
-              "$SOURCE/app/Acro.app" apps/desktop-macos/dist/Acro.app "$DELTA"; then
+              "$SOURCE/clean/Acro.app" apps/desktop-macos/dist/Acro.app "$DELTA"; then
               echo "::warning::Could not create delta from $FROM_VERSION; full update remains available"
               rm -f "$DELTA"
               continue
