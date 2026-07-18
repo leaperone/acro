@@ -43,8 +43,10 @@ export function saveClientConfig(config: ClientConfig): void {
 }
 
 export function activeServer(config: ClientConfig): ServerEntry {
+  // active 存 deviceId;desktop 端在服务器未完成认证时会暂存 name,两者都认
   const server =
-    config.servers.find((s) => s.deviceId === config.active) ?? config.servers[0];
+    config.servers.find((s) => s.deviceId === config.active || s.name === config.active) ??
+    config.servers[0];
   if (!server) {
     console.error("没有已配对的服务器;先运行: acro pair <配对码>");
     process.exit(1);

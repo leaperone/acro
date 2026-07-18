@@ -1,6 +1,7 @@
-// ⌘, 设置窗口:通用 / 快捷键 / 外观。
+// ⌘, 设置窗口:通用 / 远程 / 快捷键 / 外观。
 // 结构与快捷键录制交互取自 cmux 的 Settings 窗口与 KeyboardShortcutRecorder
 // (GPL-3.0-or-later, Copyright (c) 2024-present Manaflow, Inc.),按 acro 精简。
+// 「远程」页对标 orca(MIT, Copyright (c) stablyai)的 Remote Orca Server 设置页。
 
 import AppKit
 import SwiftUI
@@ -12,6 +13,8 @@ struct SettingsView: View {
         TabView {
             GeneralSettingsPane(runtime: runtime)
                 .tabItem { Label("通用", systemImage: "gearshape") }
+            RemoteSettingsPane(runtime: runtime)
+                .tabItem { Label("远程", systemImage: "antenna.radiowaves.left.and.right") }
             ShortcutSettingsPane()
                 .tabItem { Label("快捷键", systemImage: "keyboard") }
             AppearanceSettingsPane()
@@ -26,14 +29,10 @@ struct SettingsView: View {
 private struct GeneralSettingsPane: View {
     @ObservedObject var runtime: RuntimeConnection
     @AppStorage(WorkbenchModel.confirmCloseTabKey) private var confirmCloseTab = true
-    @State private var config = ClientConfig.load()
-    @State private var pairInput = ""
-    @State private var pairError: String?
-    @State private var newEndpoint = ""
 
     var body: some View {
         Form {
-            Section("Runtime 连接") {
+            Section {
                 LabeledContent("状态") {
                     HStack(spacing: 6) {
                         Circle()
@@ -42,64 +41,14 @@ private struct GeneralSettingsPane: View {
                         Text(stateText)
                     }
                 }
-                LabeledContent("服务器", value: config?.activeServer?.name ?? "未配对")
-                LabeledContent("设备 ID") {
-                    Text(config?.activeServer?.deviceId ?? "-")
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                }
+                LabeledContent("服务器", value: ClientConfig.load()?.activeServer?.name ?? "未配对")
                 LabeledContent("工作区 / 终端", value: "\(runtime.workspaces.count) / \(runtime.sessions.count { $0.alive })")
-            }
-
-            Section {
-                if let server = config?.activeServer {
-                    ForEach(server.endpoints, id: \.self) { endpoint in
-                        LabeledContent(endpoint) {
-                            HStack(spacing: 6) {
-                                if runtime.connectedEndpoint == endpoint {
-                                    Text("当前").font(.caption).foregroundStyle(.green)
-                                }
-                                Button {
-                                    removeEndpoint(endpoint)
-                                } label: {
-                                    Image(systemName: "minus.circle")
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(server.endpoints.count <= 1)
-                                .help("删除入口")
-                            }
-                        }
-                        .font(.callout.monospaced())
-                    }
-                    HStack {
-                        TextField("新入口 (如 frp.example.com:7100)", text: $newEndpoint)
-                            .textFieldStyle(.roundedBorder)
-                        Button("添加") { addEndpoint() }
-                            .disabled(newEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-                HStack {
-                    TextField(
-                        config?.activeServer == nil ? "粘贴配对码 (acro://pair?c=…)" : "粘贴新配对码可重新配对",
-                        text: $pairInput
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    Button("配对") { pair() }
-                        .disabled(pairInput.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if let pairError {
-                    Text(pairError).font(.caption).foregroundStyle(.red)
-                }
             } header: {
-                Text("服务器与入口")
+                Text("Runtime 连接")
             } footer: {
-                Text("多个入口共用同一凭据,按序尝试:在家走 LAN 直连,出门自动落到 FRP 等公网入口。连上后控制权与工作进度完全一致。")
+                Text("配对、切换服务器和共享访问在「远程」标签页管理。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            if runtime.connected {
-                ShareAccessSection(runtime: runtime)
             }
 
             Section {
@@ -124,7 +73,7 @@ private struct GeneralSettingsPane: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 560)
+        .frame(height: 420)
     }
 
     private var stateText: String {
@@ -133,53 +82,6 @@ private struct GeneralSettingsPane: View {
         case .connecting: "正在连接…"
         case .disconnected: "未连接"
         }
-    }
-
-    // 粘贴配对码:落盘 → 立即连接;deviceId 在认证成功后由连接层补写
-    private func pair() {
-        do {
-            let offer = try PairingOffer.decode(pairInput)
-            var next = config ?? ClientConfig(v: 2, servers: [], active: nil)
-            let name = offer.endpoints.first ?? "Runtime"
-            next.servers.removeAll { $0.name == name }
-            let entry = ServerEntry(
-                name: name, deviceId: "", token: offer.token,
-                pub: offer.pub, endpoints: offer.endpoints)
-            next.servers.append(entry)
-            next.save()
-            config = next
-            pairInput = ""
-            pairError = nil
-            runtime.connect(server: entry)
-        } catch {
-            pairError = error.localizedDescription
-        }
-    }
-
-    private func addEndpoint() {
-        let endpoint = newEndpoint.trimmingCharacters(in: .whitespaces)
-        guard !endpoint.isEmpty else { return }
-        mutateActiveServer { server in
-            if !server.endpoints.contains(endpoint) { server.endpoints.append(endpoint) }
-        }
-        newEndpoint = ""
-    }
-
-    private func removeEndpoint(_ endpoint: String) {
-        mutateActiveServer { server in
-            guard server.endpoints.count > 1 else { return }
-            server.endpoints.removeAll { $0 == endpoint }
-        }
-    }
-
-    private func mutateActiveServer(_ change: (inout ServerEntry) -> Void) {
-        guard var next = config, let active = next.activeServer,
-              let idx = next.servers.firstIndex(where: { $0.id == active.id })
-        else { return }
-        change(&next.servers[idx])
-        next.save()
-        config = next
-        runtime.connect(server: next.servers[idx])
     }
 
     private func pathRow(_ label: String, path: String) -> some View {
@@ -205,78 +107,359 @@ private struct GeneralSettingsPane: View {
     }
 }
 
-// ---- 共享服务器访问(对标 orca 的 runtime access grants) ----
+// ---- 远程(对标 orca 的 Remote Orca Server 设置页) ----
+// 三块职责:连接到远程服务器(配对/切换/删除)→ 入口地址(LAN + 公网)→ 共享此服务器(生成/撤销授权)。
 
-private struct ShareAccessSection: View {
+private struct RemoteSettingsPane: View {
+    @ObservedObject var runtime: RuntimeConnection
+    @State private var config = ClientConfig.load()
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Runtime(如 Mac mini)持有仓库、终端会话和浏览器;这台设备只是它的一块屏幕。从任何入口连上都是同一批工作区和会话,断线重连不丢进度。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            ConnectServersSection(runtime: runtime, config: $config)
+
+            if config?.activeServer != nil {
+                EndpointsSection(runtime: runtime, config: $config)
+            }
+
+            ShareServerSection(runtime: runtime)
+
+            Section("使用说明") {
+                VStack(alignment: .leading, spacing: 6) {
+                    helpRow("1", "在 Runtime 所在的 Mac 上打开 Acro,进入本页「共享此服务器」,点「生成配对码」。要在外网使用,先把 FRP 等公网地址填进「公网入口」一起打包。")
+                    helpRow("2", "把配对码复制给要连接的设备:MacBook 粘贴在本页「连接到远程服务器」,iPhone 粘贴在 App 首屏。每台设备只需配对一次。")
+                    helpRow("3", "连接自动选路:局域网可达就直连,不可达自动切到公网入口。所有流量端到端加密,不依赖代理提供 TLS。")
+                    helpRow("4", "不再信任某台设备时,在「已授权设备」点撤销,它会立即断线;它持有的配对码同时作废。")
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(height: 620)
+        .onChange(of: runtime.state) { _, _ in
+            // 认证成功后连接层会补写 deviceId,重新读盘保持一致
+            config = ClientConfig.load()
+        }
+    }
+
+    private func helpRow(_ index: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(index)
+                .font(.caption.bold().monospaced())
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(Color.accentColor.opacity(0.15)))
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+// 已配对服务器列表 + 粘贴配对码添加
+private struct ConnectServersSection: View {
+    @ObservedObject var runtime: RuntimeConnection
+    @Binding var config: ClientConfig?
+    @State private var pairInput = ""
+    @State private var pairName = ""
+    @State private var pairError: String?
+
+    var body: some View {
+        Section {
+            if let servers = config?.servers, !servers.isEmpty {
+                ForEach(servers) { server in
+                    serverRow(server)
+                }
+            } else {
+                Text("没有已配对的服务器。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    TextField("粘贴配对码 (acro://pair?c=…)", text: $pairInput)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("名称(可选)", text: $pairName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                    Button("添加并连接") { pair() }
+                        .disabled(pairInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if let pairError {
+                    Text(pairError).font(.caption).foregroundStyle(.red)
+                }
+            }
+        } header: {
+            Text("连接到远程服务器")
+        } footer: {
+            Text("配对码在远程 Mac 的 Acro「设置 → 远程 → 共享此服务器」里生成,包含地址、凭据和加密公钥,配对一次即可。带绿点的是当前服务器。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func serverRow(_ server: ServerEntry) -> some View {
+        let isActive = config?.activeServer?.id == server.id
+        return LabeledContent {
+            HStack(spacing: 8) {
+                if isActive {
+                    Text(stateText)
+                        .font(.caption)
+                        .foregroundStyle(runtime.connected ? .green : .orange)
+                } else {
+                    Button("连接") { switchTo(server) }
+                }
+                Button {
+                    remove(server)
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.red)
+                .help("删除此服务器的本机配对(不影响服务端授权,可在服务端撤销)")
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(isActive ? (runtime.connected ? Color.green : Color.orange) : Color.secondary.opacity(0.3))
+                    .frame(width: 8, height: 8)
+                Text(server.name)
+                Text("\(server.endpoints.count) 个入口")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var stateText: String {
+        switch runtime.state {
+        case .connected: "已连接"
+        case .connecting: "连接中…"
+        case .disconnected: "未连接"
+        }
+    }
+
+    // 粘贴配对码:落盘 → 立即连接;deviceId 在认证成功后由连接层补写
+    private func pair() {
+        do {
+            let offer = try PairingOffer.decode(pairInput)
+            var next = config ?? ClientConfig(v: 2, servers: [], active: nil)
+            let name = pairName.trimmingCharacters(in: .whitespaces).isEmpty
+                ? (offer.endpoints.first ?? "Runtime")
+                : pairName.trimmingCharacters(in: .whitespaces)
+            // 名称重复直接拒绝,避免静默覆盖另一台服务器的凭据
+            guard !next.servers.contains(where: { $0.name == name }) else {
+                pairError = "名称「\(name)」已存在;换一个名称,或先删除旧服务器。"
+                return
+            }
+            let entry = ServerEntry(
+                name: name, deviceId: "", token: offer.token,
+                pub: offer.pub, endpoints: offer.endpoints)
+            next.servers.append(entry)
+            next.active = entry.id
+            next.save()
+            config = next
+            pairInput = ""
+            pairName = ""
+            pairError = nil
+            runtime.connect(server: entry)
+        } catch {
+            pairError = "配对码无法解析:\(error.localizedDescription)"
+        }
+    }
+
+    private func switchTo(_ server: ServerEntry) {
+        guard var next = config else { return }
+        next.active = server.id
+        next.save()
+        config = next
+        runtime.connect(server: server)
+    }
+
+    private func remove(_ server: ServerEntry) {
+        guard var next = config else { return }
+        let wasActive = next.activeServer?.id == server.id
+        next.servers.removeAll { $0.id == server.id }
+        if wasActive { next.active = next.servers.first?.id }
+        next.save()
+        config = next
+        // 只有删掉的是当前服务器才需要动连接,其余情况保持现有连接不中断
+        guard wasActive else { return }
+        if let fallback = next.activeServer {
+            runtime.connect(server: fallback)
+        } else {
+            runtime.disconnect()
+        }
+    }
+}
+
+// 当前服务器的入口地址管理
+private struct EndpointsSection: View {
+    @ObservedObject var runtime: RuntimeConnection
+    @Binding var config: ClientConfig?
+    @State private var newEndpoint = ""
+
+    var body: some View {
+        Section {
+            if let server = config?.activeServer {
+                ForEach(server.endpoints, id: \.self) { endpoint in
+                    LabeledContent {
+                        HStack(spacing: 6) {
+                            if runtime.connectedEndpoint == endpoint {
+                                Text("当前使用").font(.caption).foregroundStyle(.green)
+                            }
+                            Button {
+                                remove(endpoint)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(server.endpoints.count <= 1)
+                            .help(server.endpoints.count <= 1 ? "至少保留一个入口" : "删除入口")
+                        }
+                    } label: {
+                        Text(endpoint).font(.callout.monospaced())
+                    }
+                }
+                HStack {
+                    TextField("添加入口,如 frp.example.com:7100", text: $newEndpoint)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加") { add() }
+                        .disabled(newEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        } header: {
+            Text("入口地址(\(config?.activeServer?.name ?? ""))")
+        } footer: {
+            Text("按从上到下顺序尝试,失败自动切换下一个;所有入口共用同一凭据。在家走局域网直连,出门前把 FRP 等公网映射地址加进来即可,无需再改配置。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func add() {
+        let endpoint = newEndpoint.trimmingCharacters(in: .whitespaces)
+        guard !endpoint.isEmpty else { return }
+        mutate { server in
+            if !server.endpoints.contains(endpoint) { server.endpoints.append(endpoint) }
+        }
+        newEndpoint = ""
+    }
+
+    private func remove(_ endpoint: String) {
+        mutate { server in
+            guard server.endpoints.count > 1 else { return }
+            server.endpoints.removeAll { $0 == endpoint }
+        }
+    }
+
+    private func mutate(_ change: (inout ServerEntry) -> Void) {
+        guard var next = config, let active = next.activeServer,
+              let idx = next.servers.firstIndex(where: { $0.id == active.id })
+        else { return }
+        change(&next.servers[idx])
+        next.save()
+        config = next
+        runtime.connect(server: next.servers[idx])
+    }
+}
+
+// 把当前连接的 Runtime 共享给其他设备(生成配对码 + 授权列表 + 撤销)
+private struct ShareServerSection: View {
     @ObservedObject var runtime: RuntimeConnection
     @State private var devices: [Device] = []
     @State private var shareName = ""
     @State private var shareExtraEndpoint = ""
     @State private var generatedOffer: String?
+    @State private var copied = false
     @State private var shareError: String?
 
     var body: some View {
         Section {
-            HStack {
-                TextField("名称(可选)", text: $shareName)
-                    .textFieldStyle(.roundedBorder)
-                TextField("公网入口(可选,如 frp.example.com:7100)", text: $shareExtraEndpoint)
-                    .textFieldStyle(.roundedBorder)
-                Button("新链接") { Task { await createShare() } }
-            }
-            if let generatedOffer {
-                HStack(spacing: 6) {
-                    Text(generatedOffer)
-                        .font(.caption.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(generatedOffer, forType: .string)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("复制配对码")
+            if !runtime.connected {
+                Text("未连接 Runtime,暂时无法生成配对码或管理授权。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    TextField("设备名称,如 MacBook Air", text: $shareName)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("公网入口(可选)", text: $shareExtraEndpoint)
+                        .textFieldStyle(.roundedBorder)
+                    Button("生成配对码") { Task { await createShare() } }
                 }
-            }
-            if let shareError {
-                Text(shareError).font(.caption).foregroundStyle(.red)
-            }
-            ForEach(devices) { device in
-                LabeledContent(device.name) {
-                    HStack(spacing: 8) {
-                        Text(device.lastSeenAt.map { "最后使用 \(shortDate($0))" } ?? "未使用")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                if let generatedOffer {
+                    HStack(spacing: 6) {
+                        Text(generatedOffer)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
                         Button {
-                            Task { await revoke(device) }
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(generatedOffer, forType: .string)
+                            copied = true
                         } label: {
-                            Image(systemName: "trash")
+                            Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
                         }
                         .buttonStyle(.borderless)
-                        .foregroundStyle(.red)
-                        .help("撤销授权并断开该设备")
+                    }
+                }
+                if let shareError {
+                    Text(shareError).font(.caption).foregroundStyle(.red)
+                }
+                if !devices.isEmpty {
+                    Text("已授权设备")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(devices) { device in
+                    LabeledContent(device.name) {
+                        HStack(spacing: 8) {
+                            Text(deviceStatus(device))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                Task { await revoke(device) }
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.red)
+                            .help("撤销授权并立即断开该设备")
+                        }
                     }
                 }
             }
         } header: {
-            Text("共享服务器访问")
+            Text("共享此服务器")
         } footer: {
-            Text("任何持有效配对码的设备都可以连接,直到撤销为止;撤销会立即断开该设备的活动连接。")
+            Text("配对码是完整的访问凭据:含入口地址、随机 token 和加密公钥,任何拿到它的设备都能连接,请通过可信渠道传输。生成时会自动带上本机局域网地址;「公网入口」填 FRP 等映射地址,让设备在外网也能连。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .task { await reload() }
+        .task(id: runtime.connected) { await reload() }
+    }
+
+    private func deviceStatus(_ device: Device) -> String {
+        guard let lastSeen = device.lastSeenAt else { return "未使用" }
+        return "最后使用 \(shortDate(lastSeen))"
     }
 
     private func reload() async {
+        guard runtime.connected else { return }
         devices = (try? await runtime.rpc("device.list", as: [Device].self)) ?? []
     }
 
     private func createShare() async {
         shareError = nil
+        copied = false
         var params: [String: Any] = [:]
         let name = shareName.trimmingCharacters(in: .whitespaces)
         if !name.isEmpty { params["name"] = name }
