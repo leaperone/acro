@@ -535,7 +535,7 @@ struct SidebarView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("本机 Runtime 未就绪")
                     .foregroundStyle(.secondary)
-                Text("正在自动拉起本地服务;远程服务器用下方「连接服务器…」接入。")
+                Text("正在自动拉起本地服务;远程服务器用底栏的接入按钮连接。")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
