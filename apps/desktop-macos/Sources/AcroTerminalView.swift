@@ -39,6 +39,9 @@ final class AcroTerminalNSView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    // 窗口开了 isMovableByWindowBackground(紧凑模式空白处拖动);
+    // 终端内的拖动属于文字选择,不参与窗口拖动
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
