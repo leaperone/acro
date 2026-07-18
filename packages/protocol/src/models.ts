@@ -24,6 +24,14 @@ export const Workspace = z.object({
 });
 export type Workspace = z.infer<typeof Workspace>;
 
+export const WorkspaceGroup = z.object({
+  id: z.string(),
+  name: z.string(),
+  workspaceIds: z.array(z.string()),
+  createdAt: z.string(),
+});
+export type WorkspaceGroup = z.infer<typeof WorkspaceGroup>;
+
 export const Session = z.object({
   id: z.string(),
   projectId: z.string().nullable(),

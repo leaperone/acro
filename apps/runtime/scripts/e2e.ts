@@ -15,6 +15,7 @@ import {
   type Project,
   type Session,
   type Workspace,
+  type WorkspaceGroup,
 } from "@acro/protocol";
 
 const PORT = 18790;
@@ -181,8 +182,18 @@ async function main(): Promise<void> {
     assert.equal(projects[0]!.name, "demo");
     const project = projects[0]!;
 
-    const workspace = await client.rpc<Workspace>("workspace.create", { name: "E2E" });
+    const workspaceGroup = await client.rpc<WorkspaceGroup>("workspaceGroup.create", {
+      name: "E2E Group",
+    });
+    const workspace = await client.rpc<Workspace>("workspace.create", {
+      name: "E2E",
+      workspaceGroupId: workspaceGroup.id,
+    });
     assert.deepEqual(workspace.projectIds, []);
+    assert.deepEqual(
+      (await client.rpc<WorkspaceGroup[]>("workspaceGroup.list"))[0]?.workspaceIds,
+      [workspace.id],
+    );
     const configuredWorkspace = await client.rpc<Workspace>("workspace.update", {
       workspaceId: workspace.id,
       projectIds: [project.id],
@@ -278,6 +289,8 @@ async function main(): Promise<void> {
 
     await client3.rpc("workspace.remove", { workspaceId: workspace.id });
     assert.equal((await client3.rpc<Workspace[]>("workspace.list")).length, 0);
+    await client3.rpc("workspaceGroup.remove", { workspaceGroupId: workspaceGroup.id });
+    assert.equal((await client3.rpc<WorkspaceGroup[]>("workspaceGroup.list")).length, 0);
     client3.close();
     log("workspace removed");
 

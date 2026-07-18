@@ -35,8 +35,12 @@ async function main(): Promise<void> {
     "device.list": () => registry.list(),
     "project.list": () => discoverProjects(config.projectRoots),
     "workspace.list": () => workspaces.list(),
-    "workspace.create": (_conn, { name }) => workspaces.create(name),
-    "workspace.update": async (_conn, { workspaceId, name, projectIds }) => {
+    "workspace.create": (_conn, { name, workspaceGroupId }) =>
+      workspaces.create(name, workspaceGroupId),
+    "workspace.update": async (
+      _conn,
+      { workspaceId, name, projectIds, workspaceGroupId },
+    ) => {
       const current = workspaces.get(workspaceId);
       if (!current) throw new Error("workspace not found");
       if (projectIds) {
@@ -57,7 +61,15 @@ async function main(): Promise<void> {
           if (hasActiveSession) throw new Error("project has active sessions in this workspace");
         }
       }
-      return workspaces.update(workspaceId, { name, projectIds });
+      return workspaces.update(workspaceId, { name, projectIds, workspaceGroupId });
+    },
+    "workspaceGroup.list": () => workspaces.listGroups(),
+    "workspaceGroup.create": (_conn, { name }) => workspaces.createGroup(name),
+    "workspaceGroup.update": (_conn, { workspaceGroupId, name }) =>
+      workspaces.updateGroup(workspaceGroupId, name),
+    "workspaceGroup.remove": (_conn, { workspaceGroupId }) => {
+      workspaces.removeGroup(workspaceGroupId);
+      return { removed: true };
     },
     "workspace.remove": async (_conn, { workspaceId }) => {
       const workspace = workspaces.get(workspaceId);
