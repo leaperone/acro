@@ -32,6 +32,9 @@ enum SidebarViewMode: String, CaseIterable, Identifiable {
 struct TabDragPayload: Equatable {
     let sessionId: String
     let sourcePaneId: String
+    // 每次拖拽唯一:陈旧 provider 的延迟 deinit(外部 App 异步 loadItem 持有数秒)
+    // 不会误清后来同一标签的新一轮拖拽
+    let token = UUID()
 }
 
 @MainActor
@@ -447,7 +450,24 @@ final class WorkbenchModel: ObservableObject {
         selectTab(next, inPane: pane.id)
     }
 
+    // 拖拽负载有效性:会话必须仍在"当前布局"的来源窗格里。
+    // 防两类脏 drop:拖拽中切了工作区(payload 指向别的布局树,落下会双挂 PTY);
+    // 拖拽取消后残留的陈旧 payload(会话可能已被杀)。
+    func validDrag(_ payload: TabDragPayload?) -> Bool {
+        guard let payload,
+              let source = currentLayout?.root?.pane(withId: payload.sourcePaneId),
+              source.sessionIds.contains(payload.sessionId)
+        else { return false }
+        return true
+    }
+
+    // 拖拽会话结束(drop/取消/拖出窗口)后的兜底清理
+    func endTabDrag(_ payload: TabDragPayload) {
+        if draggingTab == payload { draggingTab = nil }
+    }
+
     func moveTab(_ payload: TabDragPayload, toPane paneId: String, at index: Int?) {
+        guard validDrag(payload) else { return }
         mutateCurrentLayout { $0.moveTab(payload.sessionId, toPane: paneId, at: index) }
         flashPane(payload.sessionId)
         requestTerminalFocus()
@@ -459,6 +479,7 @@ final class WorkbenchModel: ObservableObject {
         direction: TerminalSplitDirection,
         newPaneFirst: Bool
     ) {
+        guard validDrag(payload) else { return }
         mutateCurrentLayout {
             $0.moveTabToSplit(
                 payload.sessionId, ofPane: paneId, direction: direction, newPaneFirst: newPaneFirst

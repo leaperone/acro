@@ -229,7 +229,14 @@ private struct PaneView: View {
                     delegate: PaneBodyDropDelegate(
                         size: { geometry.size },
                         zone: Binding(get: { dropZone }, set: { dropZone = $0 }),
-                        canAccept: { model.draggingTab != nil },
+                        canAccept: {
+                            guard let payload = model.draggingTab, model.validDrag(payload) else {
+                                return false
+                            }
+                            // 单标签窗格拖到自己身上没有可执行动作,不给高亮承诺
+                            return !(payload.sourcePaneId == pane.id
+                                && pane.sessionIds == [payload.sessionId])
+                        },
                         perform: { zone in
                             guard let payload = model.draggingTab else { return false }
                             model.draggingTab = nil
@@ -249,7 +256,8 @@ private struct PaneView: View {
                 )
             }
         }
-        .frame(minWidth: 280, minHeight: 200)
+        // 不设 minWidth/minHeight:RatioSplitView 用定长 frame 排版,
+        // min 约束会顶破分配空间、盖到相邻窗格上;窗格下限由 ratio clamp(0.1)保证
         .attentionFlash(
             token: model.flashToken,
             active: pane.sessionIds.contains(model.flashSessionId ?? "")
@@ -291,11 +299,12 @@ private struct PaneTabBar: View {
                 .onDrop(
                     of: [UTType.text],
                     delegate: TabBarDropDelegate(
-                        canAccept: { model.draggingTab != nil },
+                        canAccept: { model.validDrag(model.draggingTab) },
                         perform: {
                             guard let payload = model.draggingTab else { return false }
                             model.draggingTab = nil
-                            model.moveTab(payload, toPane: pane.id, at: nil)
+                            // 标签条空白 = 显式"排到末尾";nil(反悔语义)留给窗格 body 中心区
+                            model.moveTab(payload, toPane: pane.id, at: pane.sessionIds.count)
                             return true
                         }
                     )
@@ -357,10 +366,15 @@ private struct PaneTabBar: View {
             select: { model.selectTab(sessionId, inPane: pane.id) },
             kill: { model.requestKillTab(sessionId) },
             beginDrag: {
-                model.draggingTab = TabDragPayload(sessionId: sessionId, sourcePaneId: pane.id)
-                return NSItemProvider(object: sessionId as NSString)
+                let payload = TabDragPayload(sessionId: sessionId, sourcePaneId: pane.id)
+                model.draggingTab = payload
+                let provider = TabDragItemProvider(object: sessionId as NSString)
+                provider.onEnd = { Task { @MainActor in model.endTabDrag(payload) } }
+                return provider
             },
-            acceptDrop: { model.draggingTab != nil && model.draggingTab?.sessionId != sessionId },
+            acceptDrop: {
+                model.validDrag(model.draggingTab) && model.draggingTab?.sessionId != sessionId
+            },
             performDrop: {
                 guard let payload = model.draggingTab else { return false }
                 model.draggingTab = nil
@@ -448,6 +462,13 @@ private struct PaneTabItem: View {
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
+}
+
+// SwiftUI onDrag 没有拖拽会话结束回调;借 NSItemProvider 的生命周期兜底清理。
+// 不清的话,ESC 取消/拖出窗口后 draggingTab 残留,会吞掉后续拖进窗格的文本 drop。
+private final class TabDragItemProvider: NSItemProvider {
+    var onEnd: (() -> Void)?
+    deinit { onEnd?() }
 }
 
 // ---- Drop delegates(应用内拖拽读 WorkbenchModel 的拖拽真源,不解析 NSItemProvider) ----
