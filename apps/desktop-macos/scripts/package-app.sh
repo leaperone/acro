@@ -74,6 +74,10 @@ else
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_B/Autoupdate"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_B/Updater.app"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
+    # 内置 runtime 的原生二进制(node-pty 的 .node 与 spawn-helper)必须逐个签,
+    # 否则公证被拒("The staple and validate action failed")
+    find "$APP/Contents/Resources/runtime" -type f \( -name "*.node" -o -name "spawn-helper" \) \
+        -exec codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" {} \;
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 fi
 
