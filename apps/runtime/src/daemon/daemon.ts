@@ -35,8 +35,11 @@ const CHECKPOINT_INTERVAL_MS = 20_000;
 // 洪峰时 256KB 上限主导(立即发),涓流时 4ms 窗口封顶交互延迟。
 const OUT_BATCH_MAX_BYTES = 256 * 1024;
 const OUT_BATCH_WINDOW_MS = 4;
-// 解析队列合并写入:xterm 大串解析远快于 5 万次 1KB await
-const PARSE_MERGE_MAX_CHARS = 1 << 20;
+// 静默超过该值后的第一块走立即路径:打字回显不吃 4ms 窗口
+const OUT_BATCH_IDLE_MS = 30;
+// 解析队列合并写入:xterm 大串解析远快于 5 万次 1KB await;
+// 上限压在 256KB,单次解析不超过 ~10ms,输入帧不会被长时间卡住
+const PARSE_MERGE_MAX_CHARS = 256 * 1024;
 
 // pnpm 解包会丢 spawn-helper 的可执行位,node-pty 自己不修,这里自愈
 function ensureSpawnHelperExecutable(): void {
@@ -73,6 +76,7 @@ class DaemonSession {
   private outChunks: Buffer[] = [];
   private outBytes = 0;
   private outFlushScheduled = false;
+  private lastFlushAt = 0;
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
   private onExit: (session: DaemonSession) => void;
@@ -132,10 +136,16 @@ class DaemonSession {
         this.flushOutput();
       } else if (!this.outFlushScheduled) {
         this.outFlushScheduled = true;
-        setTimeout(() => {
+        const flush = () => {
           this.outFlushScheduled = false;
           this.flushOutput();
-        }, OUT_BATCH_WINDOW_MS);
+        };
+        // 交互快路径 vs 洪峰时间窗
+        if (Date.now() - this.lastFlushAt > OUT_BATCH_IDLE_MS) {
+          setImmediate(flush);
+        } else {
+          setTimeout(flush, OUT_BATCH_WINDOW_MS);
+        }
       }
       this.queue.push({ kind: "chunk", data, seq: this.seq });
       void this.pump();
@@ -156,6 +166,7 @@ class DaemonSession {
     const data = this.outChunks.length === 1 ? this.outChunks[0]! : Buffer.concat(this.outChunks);
     this.outChunks = [];
     this.outBytes = 0;
+    this.lastFlushAt = Date.now();
     this.onOutput(this.handle, this.seq, data);
   }
 
