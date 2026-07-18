@@ -28,7 +28,7 @@ Acro 是团队内部使用的远程开发控制台。它管理工作区、项目
 - ghostty 源码：`.tmp/ghostty`（MIT），上游 `https://github.com/ghostty-org/ghostty`
 - otty 源码：`.tmp/otty`（Apache-2.0），上游 `https://github.com/otty-shell/otty`
 
-参考目录只读。MIT / Apache 项目的代码在理解后可以取用并保留版权声明；cmux 是 GPL-3.0，只作交互设计和架构参考，禁止复制代码。不要复制不理解或不需要的代码。
+参考目录只读。Acro 以 GPL-3.0-or-later 开源，与 cmux 许可证兼容：cmux 代码可以直接取用，保留其版权声明。首次引入 cmux 代码时，在仓库根添加 GPL-3.0-or-later 的 LICENSE。MIT / Apache 项目的代码在理解后同样可以取用并保留版权声明。不要复制不理解或不需要的代码。
 
 ## 规划入口
 
