@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { Device, Project, Session, Workspace, WorkspaceGroup } from "./models.ts";
+import {
+  Device,
+  DirectoryListing,
+  Project,
+  Session,
+  Workspace,
+  WorkspaceGroup,
+} from "./models.ts";
 
 // 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
 
@@ -47,13 +54,21 @@ export const methods = {
     params: z.object({}),
     result: z.array(Project),
   },
+  "project.register": {
+    params: z.object({ path: z.string().trim().min(1) }),
+    result: Project,
+  },
+  "filesystem.listDirectories": {
+    params: z.object({ path: z.string().optional() }),
+    result: DirectoryListing,
+  },
   "workspace.list": {
     params: z.object({}),
     result: z.array(Workspace),
   },
   "workspace.create": {
     params: z.object({
-      name: z.string().trim().min(1).max(80),
+      name: z.string().trim().min(1).max(80).optional(),
       workspaceGroupId: z.string().optional(),
     }),
     result: Workspace,

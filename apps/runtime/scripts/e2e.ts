@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import {
   decodeFrame,
+  type DirectoryListing,
   encodeInFrame,
   FRAME_OUT,
   type Project,
@@ -29,7 +30,6 @@ const env = {
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
   ACRO_PAIR_CODE: PAIR_CODE,
-  ACRO_PROJECT_ROOTS: projectsRoot,
 };
 
 function log(msg: string): void {
@@ -138,7 +138,7 @@ class Client {
 }
 
 async function main(): Promise<void> {
-  makeFixtureRepo();
+  const fixtureRepo = makeFixtureRepo();
   let runtime = startRuntime();
 
   try {
@@ -176,11 +176,15 @@ async function main(): Promise<void> {
     await client.connect(token);
     log("ws connected");
 
-    // 项目发现
-    const projects = await client.rpc<Project[]>("project.list");
-    assert.equal(projects.length, 1);
-    assert.equal(projects[0]!.name, "demo");
-    const project = projects[0]!;
+    // 项目由用户显式注册；目录浏览发生在 Runtime 文件系统。
+    assert.deepEqual(await client.rpc<Project[]>("project.list"), []);
+    const listing = await client.rpc<DirectoryListing>("filesystem.listDirectories", {
+      path: projectsRoot,
+    });
+    assert.equal(listing.entries[0]?.name, "demo");
+    const project = await client.rpc<Project>("project.register", { path: fixtureRepo });
+    assert.equal(project.name, "demo");
+    assert.deepEqual(await client.rpc<Project[]>("project.list"), [project]);
 
     const workspaceGroup = await client.rpc<WorkspaceGroup>("workspaceGroup.create", {
       name: "E2E Group",

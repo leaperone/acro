@@ -15,6 +15,20 @@ export const Project = z.object({
 });
 export type Project = z.infer<typeof Project>;
 
+export const DirectoryEntry = z.object({
+  name: z.string(),
+  path: z.string(),
+});
+export type DirectoryEntry = z.infer<typeof DirectoryEntry>;
+
+export const DirectoryListing = z.object({
+  path: z.string(),
+  parent: z.string().nullable(),
+  home: z.string(),
+  entries: z.array(DirectoryEntry),
+});
+export type DirectoryListing = z.infer<typeof DirectoryListing>;
+
 export const Workspace = z.object({
   id: z.string(),
   name: z.string(),

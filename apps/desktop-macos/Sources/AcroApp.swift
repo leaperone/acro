@@ -269,7 +269,6 @@ struct ContentView: View {
     @State private var showingWorkspaceGroupEditor = false
     @State private var editingWorkspaceGroupId: String?
     @State private var workspaceGroupName = ""
-    @State private var newWorkspaceGroupId: String?
     @State private var showingWorkspaceEditor = false
     @State private var editingWorkspaceId: String?
     @State private var workspaceName = ""
@@ -279,6 +278,13 @@ struct ContentView: View {
     @State private var projectPickerWorkspace: [String: Any]?
     @State private var terminalProjectPickerWorkspace: [String: Any]?
     @State private var projectQuery = ""
+    @State private var projectPathInput = "~"
+    @State private var projectPathPreview = ""
+    @State private var projectDirectoryPath = ""
+    @State private var projectDirectoryParent: String?
+    @State private var projectDirectoryHome = ""
+    @State private var projectDirectoryEntries: [[String: Any]] = []
+    @State private var projectPickerLoading = false
     @State private var showingCommandPalette = false
     @State private var hoveredWorkspaceGroupId: String?
     @State private var hoveredWorkspaceId: String?
@@ -293,7 +299,7 @@ struct ContentView: View {
                 GeometryReader { geometry in
                     HSplitView {
                         terminalContent
-                            .frame(minWidth: 440, maxHeight: .infinity)
+                            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
 
                         if inspectorVisible, geometry.size.width >= 720 {
@@ -302,6 +308,11 @@ struct ContentView: View {
                                 .frame(maxHeight: .infinity)
                         }
                     }
+                    .frame(
+                        width: geometry.size.width,
+                        height: geometry.size.height,
+                        alignment: .leading
+                    )
                 }
                 .navigationTitle(windowTitle)
                 .toolbar {
@@ -372,13 +383,13 @@ struct ContentView: View {
             .disabled(workspaceGroupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .alert(
-            editingWorkspaceId == nil ? "新建工作区" : "重命名工作区",
+            "重命名工作区",
             isPresented: $showingWorkspaceEditor
         ) {
             TextField("名称", text: $workspaceName)
             Button("取消", role: .cancel) {}
-            Button(editingWorkspaceId == nil ? "创建" : "保存") {
-                Task { await saveWorkspace() }
+            Button("保存") {
+                Task { await saveWorkspaceName() }
             }
             .disabled(workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
@@ -438,21 +449,27 @@ struct ContentView: View {
                     .frame(width: 7, height: 7)
                     .help(runtime.connected ? "Runtime 已连接" : "Runtime 未连接")
                 Menu {
-                    Button("新建工作区", systemImage: "square.stack.3d.up.badge.plus") {
-                        presentWorkspaceEditor(workspaceId: nil, name: "")
-                    }
                     Button("新建分组", systemImage: "folder.badge.plus") {
                         presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
                     }
                 } label: {
-                    Image(systemName: "plus")
+                    Image(systemName: "ellipsis.circle")
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .help("新建")
-                .accessibilityLabel("新建")
+                .help("工作区管理")
+                .accessibilityLabel("工作区管理")
+                Button {
+                    Task { await createWorkspace() }
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .help("新建工作区")
+                .accessibilityLabel("新建工作区")
             }
             .padding(.horizontal, 12)
             .frame(height: 38)
@@ -463,9 +480,9 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     if runtime.workspaceGroups.isEmpty && runtime.workspaces.isEmpty {
                         Button {
-                            presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
+                            Task { await createWorkspace() }
                         } label: {
-                            Label("新建分组", systemImage: "folder.badge.plus")
+                            Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10)
                                 .frame(height: 34)
@@ -506,7 +523,7 @@ struct ContentView: View {
             newWorkspaceGroup: {
                 presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
             },
-            newWorkspace: { presentWorkspaceEditor(workspaceId: nil, name: "") },
+            newWorkspace: { Task { await createWorkspace() } },
             newTerminal: {
                 if let selectedWorkspace { requestNewTerminal(in: selectedWorkspace) }
             },
@@ -594,7 +611,7 @@ struct ContentView: View {
             } actions: {
                 if projects(in: selectedWorkspace).isEmpty {
                     Button("添加项目") {
-                        projectPickerWorkspace = selectedWorkspace
+                        presentProjectPicker(for: selectedWorkspace)
                     }
                 } else {
                     Button("新建终端") {
@@ -866,7 +883,7 @@ struct ContentView: View {
             set: {
                 if !$0 {
                     projectPickerWorkspace = nil
-                    projectQuery = ""
+                    resetProjectPicker()
                 }
             }
         )
@@ -893,46 +910,132 @@ struct ContentView: View {
 
     private var projectPicker: some View {
         NavigationStack {
-            List {
-                ForEach(filteredPickerProjects.indices, id: \.self) { index in
-                    let project = filteredPickerProjects[index]
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
                     Button {
-                        if let workspace = projectPickerWorkspace {
-                            Task {
-                                await addProject(project, to: workspace)
-                                projectPickerWorkspace = nil
-                                projectQuery = ""
-                            }
+                        Task { await loadProjectDirectory(projectDirectoryHome) }
+                    } label: {
+                        Image(systemName: "house")
+                    }
+                    .disabled(projectDirectoryHome.isEmpty)
+                    .help("主目录")
+                    .accessibilityLabel("主目录")
+
+                    Button {
+                        Task { await loadProjectDirectory("/") }
+                    } label: {
+                        Image(systemName: "internaldrive")
+                    }
+                    .help("根目录")
+                    .accessibilityLabel("根目录")
+
+                    Button {
+                        if let projectDirectoryParent {
+                            Task { await loadProjectDirectory(projectDirectoryParent) }
                         }
                     } label: {
-                        Label(string(project, "name"), systemImage: "folder")
+                        Image(systemName: "arrow.up")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(string(project, "name"))
+                    .disabled(projectDirectoryParent == nil)
+                    .help("上一级")
+                    .accessibilityLabel("上一级")
+
+                    TextField("路径", text: $projectPathInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            Task { await loadProjectDirectory(projectPathInput) }
+                        }
+
+                    Button {
+                        Task { await loadProjectDirectory(projectPathInput) }
+                    } label: {
+                        Image(systemName: "arrow.right.circle")
+                    }
+                    .help("打开路径")
+                    .accessibilityLabel("打开路径")
+                }
+                .padding(12)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("路径预览")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(projectPathPreview.isEmpty ? "正在读取…" : projectPathPreview)
+                        .font(.callout.monospaced())
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
+
+                Divider()
+
+                if projectPickerLoading && projectDirectoryEntries.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(projectDirectoryEntries.indices, id: \.self) { index in
+                            let entry = projectDirectoryEntries[index]
+                            let entryPath = string(entry, "path")
+                            HStack(spacing: 8) {
+                                Button {
+                                    projectPathInput = entryPath
+                                    projectPathPreview = entryPath
+                                } label: {
+                                    Label(string(entry, "name"), systemImage: "folder")
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    Task { await loadProjectDirectory(entryPath) }
+                                } label: {
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help("打开文件夹")
+                                .accessibilityLabel("打开 \(string(entry, "name"))")
+                            }
+                            .listRowBackground(
+                                projectPathPreview == entryPath
+                                    ? Color.accentColor.opacity(0.12)
+                                    : Color.clear
+                            )
+                        }
+                    }
+                    .overlay {
+                        if projectDirectoryEntries.isEmpty && !projectPickerLoading {
+                            ContentUnavailableView("没有子目录", systemImage: "folder")
+                        }
+                    }
                 }
             }
-            .searchable(text: $projectQuery, prompt: "搜索项目")
-            .navigationTitle("添加项目")
+            .navigationTitle("选择项目目录")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") {
                         projectPickerWorkspace = nil
-                        projectQuery = ""
+                        resetProjectPicker()
                     }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("添加并打开终端") {
+                        Task { await registerProjectAndOpenTerminal() }
+                    }
+                    .disabled(projectPathPreview.isEmpty || projectPickerLoading)
                 }
             }
         }
-        .frame(minWidth: 420, minHeight: 480)
-    }
-
-    private var filteredPickerProjects: [[String: Any]] {
-        guard let workspace = projectPickerWorkspace else { return [] }
-        let projects = availableProjects(for: workspace)
-        let query = projectQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return projects }
-        return projects.filter {
-            string($0, "name").localizedCaseInsensitiveContains(query)
-                || string($0, "path").localizedCaseInsensitiveContains(query)
+        .frame(minWidth: 560, minHeight: 520)
+        .onAppear {
+            if projectDirectoryPath.isEmpty {
+                Task { await loadProjectDirectory("~") }
+            }
         }
     }
 
@@ -998,7 +1101,7 @@ struct ContentView: View {
                 title: "新建工作区",
                 subtitle: "创建新的工作上下文",
                 symbol: "square.stack.3d.up.badge.plus",
-                action: { presentWorkspaceEditor(workspaceId: nil, name: "") }
+                action: { Task { await createWorkspace() } }
             ),
             CommandPaletteItem(
                 id: "command:toggle-sidebar",
@@ -1168,11 +1271,7 @@ struct ContentView: View {
                 .accessibilityValue(expanded ? "已展开" : "已折叠")
 
                 Button {
-                    presentWorkspaceEditor(
-                        workspaceId: nil,
-                        name: "",
-                        workspaceGroupId: groupId
-                    )
+                    Task { await createWorkspace(in: groupId) }
                 } label: {
                     Image(systemName: "plus")
                         .frame(width: 22, height: 22)
@@ -1190,11 +1289,7 @@ struct ContentView: View {
             }
             .contextMenu {
                 Button("新建工作区") {
-                    presentWorkspaceEditor(
-                        workspaceId: nil,
-                        name: "",
-                        workspaceGroupId: groupId
-                    )
+                    Task { await createWorkspace(in: groupId) }
                 }
                 Divider()
                 Button("重命名") {
@@ -1211,11 +1306,7 @@ struct ContentView: View {
             if expanded {
                 if groupWorkspaces.isEmpty {
                     Button {
-                        presentWorkspaceEditor(
-                            workspaceId: nil,
-                            name: "",
-                            workspaceGroupId: groupId
-                        )
+                        Task { await createWorkspace(in: groupId) }
                     } label: {
                         Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1338,10 +1429,9 @@ struct ContentView: View {
                     Divider()
                 }
                 Button("重命名") {
-                    presentWorkspaceEditor(
+                    presentWorkspaceRename(
                         workspaceId: workspaceId,
-                        name: string(workspace, "name"),
-                        workspaceGroupId: nil
+                        name: string(workspace, "name")
                     )
                 }
                 Button("删除工作区", role: .destructive) {
@@ -1352,8 +1442,7 @@ struct ContentView: View {
                 if workspaceProjects.isEmpty {
                     Button {
                         selectedWorkspaceId = workspaceId
-                        projectPickerWorkspace = workspace
-                        projectQuery = ""
+                        presentProjectPicker(for: workspace)
                     } label: {
                         Label("添加项目", systemImage: "folder.badge.plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1511,8 +1600,7 @@ struct ContentView: View {
         expandedWorkspaceIds.insert(workspaceId)
         switch workspaceProjects.count {
         case 0:
-            projectPickerWorkspace = workspace
-            projectQuery = ""
+            presentProjectPicker(for: workspace)
         case 1:
             Task { _ = await openTerminal(project: workspaceProjects[0], workspace: workspace) }
         default:
@@ -1655,13 +1743,72 @@ struct ContentView: View {
         showingWorkspaceGroupEditor = true
     }
 
-    private func presentWorkspaceEditor(
-        workspaceId: String?,
-        name: String,
-        workspaceGroupId: String? = nil
-    ) {
+    private func presentProjectPicker(for workspace: [String: Any]) {
+        resetProjectPicker()
+        projectPickerWorkspace = workspace
+    }
+
+    private func resetProjectPicker() {
+        projectPathInput = "~"
+        projectPathPreview = ""
+        projectDirectoryPath = ""
+        projectDirectoryParent = nil
+        projectDirectoryHome = ""
+        projectDirectoryEntries = []
+        projectPickerLoading = false
+    }
+
+    private func loadProjectDirectory(_ requestedPath: String) async {
+        guard projectPickerWorkspace != nil else { return }
+        projectPickerLoading = true
+        defer { projectPickerLoading = false }
+        do {
+            guard let listing = try await runtime.rpc(
+                "filesystem.listDirectories",
+                ["path": requestedPath]
+            ) as? [String: Any]
+            else { return }
+            let resolvedPath = string(listing, "path")
+            projectPathInput = resolvedPath
+            projectPathPreview = resolvedPath
+            projectDirectoryPath = resolvedPath
+            projectDirectoryParent = listing["parent"] as? String
+            projectDirectoryHome = string(listing, "home")
+            projectDirectoryEntries = listing["entries"] as? [[String: Any]] ?? []
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func registerProjectAndOpenTerminal() async {
+        guard let workspace = projectPickerWorkspace,
+              !projectPathPreview.isEmpty
+        else { return }
+        projectPickerLoading = true
+        do {
+            guard let project = try await runtime.rpc(
+                "project.register",
+                ["path": projectPathPreview]
+            ) as? [String: Any]
+            else {
+                projectPickerLoading = false
+                return
+            }
+            guard await addProject(project, to: workspace) else {
+                projectPickerLoading = false
+                return
+            }
+            projectPickerWorkspace = nil
+            resetProjectPicker()
+            _ = await openTerminal(project: project, workspace: workspace)
+        } catch {
+            projectPickerLoading = false
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func presentWorkspaceRename(workspaceId: String, name: String) {
         editingWorkspaceId = workspaceId
-        newWorkspaceGroupId = workspaceId == nil ? workspaceGroupId : nil
         workspaceName = name
         showingWorkspaceEditor = true
     }
@@ -1686,39 +1833,40 @@ struct ContentView: View {
         }
     }
 
-    private func saveWorkspace() async {
+    private func createWorkspace(in workspaceGroupId: String? = nil) async {
         do {
-            let name = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let editingWorkspaceId {
-                _ = try await runtime.rpc("workspace.update", [
-                    "workspaceId": editingWorkspaceId,
-                    "name": name,
-                ])
-            } else {
-                var params: [String: Any] = ["name": name]
-                if let newWorkspaceGroupId {
-                    params["workspaceGroupId"] = newWorkspaceGroupId
-                }
-                guard let workspace = try await runtime.rpc("workspace.create", params)
-                    as? [String: Any]
-                else { return }
-                let workspaceId = string(workspace, "id")
-                if let newWorkspaceGroupId {
-                    expandedWorkspaceGroupIds.insert(newWorkspaceGroupId)
-                }
-                expandedWorkspaceIds.insert(workspaceId)
-                selectedWorkspaceId = workspaceId
-                selectedProjectId = nil
-                selectedSessionId = nil
-            }
-            newWorkspaceGroupId = nil
+            var params: [String: Any] = [:]
+            if let workspaceGroupId { params["workspaceGroupId"] = workspaceGroupId }
+            guard let workspace = try await runtime.rpc("workspace.create", params)
+                as? [String: Any]
+            else { return }
+            let workspaceId = string(workspace, "id")
+            if let workspaceGroupId { expandedWorkspaceGroupIds.insert(workspaceGroupId) }
+            expandedWorkspaceIds.insert(workspaceId)
+            selectedWorkspaceId = workspaceId
+            selectedProjectId = nil
+            selectedSessionId = nil
             await runtime.refresh()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func addProject(_ project: [String: Any], to workspace: [String: Any]) async {
+    private func saveWorkspaceName() async {
+        guard let editingWorkspaceId else { return }
+        do {
+            _ = try await runtime.rpc("workspace.update", [
+                "workspaceId": editingWorkspaceId,
+                "name": workspaceName.trimmingCharacters(in: .whitespacesAndNewlines),
+            ])
+            await runtime.refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    private func addProject(_ project: [String: Any], to workspace: [String: Any]) async -> Bool {
         do {
             var projectIds = strings(workspace["projectIds"])
             projectIds.append(string(project, "id"))
@@ -1731,8 +1879,10 @@ struct ContentView: View {
             selectedSessionId = nil
             expandedWorkspaceIds.insert(string(workspace, "id"))
             await runtime.refresh()
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -1884,13 +2034,8 @@ struct ContentView: View {
         }
         let validWorkspaceIds = Set(workspaceIds)
         expandedWorkspaceIds.formIntersection(validWorkspaceIds)
-        if !workspaceExpansionInitialized {
-            workspaceExpansionInitialized = true
-            if let selectedWorkspaceId {
-                expandedWorkspaceIds.insert(selectedWorkspaceId)
-                expandGroupContaining(selectedWorkspaceId)
-            }
-        }
+        let shouldInitializeWorkspaceExpansion = !workspaceExpansionInitialized
+        workspaceExpansionInitialized = true
         workspaceLayouts = workspaceLayouts.filter { validWorkspaceIds.contains($0.key) }
 
         for workspace in runtime.workspaces {
@@ -1920,6 +2065,10 @@ struct ContentView: View {
             selectedProjectId = nil
             selectedSessionId = nil
             return
+        }
+        if shouldInitializeWorkspaceExpansion {
+            expandedWorkspaceIds.insert(selectedWorkspaceId)
+            expandGroupContaining(selectedWorkspaceId)
         }
         guard let focusedSessionId = workspaceLayouts[selectedWorkspaceId]?.focusedSessionId,
               let focusedSession = activeSessions.first(where: {

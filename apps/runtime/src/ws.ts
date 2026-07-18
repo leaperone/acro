@@ -114,7 +114,7 @@ export class Gateway {
     try {
       const handler = this.handlers[req.method as keyof typeof methods];
       const result = await handler(conn, parsed.data as never);
-      send({ t: "res", id: req.id, ok: true, result });
+      send({ t: "res", id: req.id, ok: true, result: method.result.parse(result) });
     } catch (err) {
       send({
         t: "res",

@@ -51,11 +51,11 @@ export class WorkspaceRegistry {
     return group ? cloneWorkspaceGroup(group) : null;
   }
 
-  create(name: string, workspaceGroupId?: string): Workspace {
+  create(name?: string, workspaceGroupId?: string): Workspace {
     const group = workspaceGroupId ? this.getGroupMutable(workspaceGroupId) : null;
     const workspace: Workspace = {
       id: crypto.randomUUID(),
-      name: name.trim(),
+      name: name?.trim() || this.nextWorkspaceName(),
       projectIds: [],
       sessionIds: [],
       createdAt: new Date().toISOString(),
@@ -64,6 +64,13 @@ export class WorkspaceRegistry {
     group?.workspaceIds.push(workspace.id);
     this.saveAll();
     return cloneWorkspace(workspace);
+  }
+
+  private nextWorkspaceName(): string {
+    const names = new Set(this.workspaces.map((workspace) => workspace.name));
+    let index = 1;
+    while (names.has(`工作区 ${index}`)) index += 1;
+    return `工作区 ${index}`;
   }
 
   update(

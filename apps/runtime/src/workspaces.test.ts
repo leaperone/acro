@@ -5,6 +5,24 @@ import path from "node:path";
 import test from "node:test";
 import { WorkspaceRegistry } from "./workspaces.ts";
 
+test("workspace names are generated when clients omit them", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-names-"));
+  const storage = {
+    workspaces: path.join(directory, "workspaces.json"),
+    workspaceGroups: path.join(directory, "workspace-groups.json"),
+  };
+
+  try {
+    const registry = new WorkspaceRegistry(storage);
+    assert.equal(registry.create().name, "工作区 1");
+    assert.equal(registry.create().name, "工作区 2");
+    registry.update(registry.list()[0]!.id, { name: "已重命名" });
+    assert.equal(registry.create().name, "工作区 1");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("workspace groups persist membership and preserve workspaces when removed", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspaces-"));
   const storage = {
