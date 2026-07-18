@@ -98,15 +98,27 @@ struct WorkbenchView: View {
         } message: {
             Text(model.errorMessage ?? "未知错误")
         }
-        .confirmationDialog("删除工作区？", isPresented: deletionPresented) {
-            Button("删除", role: .destructive) {
+        .confirmationDialog(
+            model.pendingWorkspaceDeletionSessionCount > 0 ? "删除工作区和终端？" : "删除工作区？",
+            isPresented: deletionPresented
+        ) {
+            Button(
+                model.pendingWorkspaceDeletionSessionCount > 0 ? "关闭终端并删除" : "删除",
+                role: .destructive
+            ) {
                 if let workspace = model.pendingWorkspaceDeletion {
                     Task { await model.deleteWorkspace(workspace) }
                 }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("运行中的会话会阻止删除。")
+            if model.pendingWorkspaceDeletionSessionCount > 0 {
+                Text(
+                    "这个工作区还有 \(model.pendingWorkspaceDeletionSessionCount) 个活跃终端会话。继续会结束其中运行的进程，关闭全部终端，并删除工作区。此操作无法撤销。"
+                )
+            } else {
+                Text("此操作无法撤销。")
+            }
         }
         .confirmationDialog("解散分组？", isPresented: groupRemovalPresented) {
             Button("解散", role: .destructive) {

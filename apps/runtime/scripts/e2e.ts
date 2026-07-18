@@ -500,8 +500,29 @@ async function main(): Promise<void> {
     assert.equal(after.find((s) => s.id === session.id)?.alive, false);
     log("kill + exit event ok");
 
-    await client4.rpc("workspace.remove", { workspaceId: updatedWorkspace.id });
+    const cleanupSession = await client4.rpc<Session>("session.create", {
+      workspaceId: updatedWorkspace.id,
+      command: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    await client4.rpc("workspace.remove", { workspaceId: updatedWorkspace.id, force: true });
     assert.equal((await client4.rpc<Workspace[]>("workspace.list")).length, 0);
+    const afterRemoval = await client4.rpc<Session[]>("session.list");
+    assert.equal(afterRemoval.some((item) => item.id === session.id), false);
+    assert.equal(afterRemoval.some((item) => item.id === inherited.id), false);
+    assert.equal(afterRemoval.some((item) => item.id === cleanupSession.id), false);
+    for (const sessionId of [session.id, inherited.id, cleanupSession.id]) {
+      assert.equal(fs.existsSync(path.join(stateDir, "sessions", sessionId)), false);
+    }
+    assert.ok(
+      client4.events.some(
+        (event) =>
+          event.event === "workspace.removed" &&
+          event.payload.workspaceId === updatedWorkspace.id,
+      ),
+      "must receive workspace.removed after cleanup",
+    );
     await client4.rpc("workspaceGroup.remove", { workspaceGroupId: workspaceGroup.id });
     assert.equal((await client4.rpc<WorkspaceGroup[]>("workspaceGroup.list")).length, 0);
     client4.close();

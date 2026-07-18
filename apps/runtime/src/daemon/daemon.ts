@@ -91,9 +91,12 @@ class DaemonSession {
   private lastOutputAt = 0;
   // 输入帧可能切在多字节 UTF-8 字符中间;残留的尾字节缓冲到下一帧再拼
   private inputTail = Buffer.alloc(0);
+  private removeOnExit = false;
+  private exited: Promise<void>;
+  private resolveExit!: () => void;
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
-  private onExit: (session: DaemonSession) => void;
+  private onExit: (session: DaemonSession, removed: boolean) => void;
 
   constructor(
     opts: {
@@ -103,10 +106,13 @@ class DaemonSession {
       rows: number;
     },
     onOutput: (handle: number, seq: number, data: Buffer) => void,
-    onExit: (session: DaemonSession) => void,
+    onExit: (session: DaemonSession, removed: boolean) => void,
   ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
+    this.exited = new Promise((resolve) => {
+      this.resolveExit = resolve;
+    });
     this.hasCommand = opts.command !== undefined;
     const shell = process.env.SHELL ?? "/bin/zsh";
     const cwd = opts.cwd ?? os.homedir();
@@ -169,8 +175,9 @@ class DaemonSession {
       this.flushOutput();
       this.meta.alive = false;
       this.meta.exitCode = exitCode;
-      this.checkpoint();
-      this.onExit(this);
+      if (!this.removeOnExit) this.checkpoint();
+      this.onExit(this, this.removeOnExit);
+      this.resolveExit();
     });
   }
 
@@ -279,12 +286,18 @@ class DaemonSession {
     if (this.meta.alive) this.ptyProc.kill();
   }
 
+  async remove(): Promise<void> {
+    this.removeOnExit = true;
+    this.kill();
+    await this.exited;
+  }
+
   checkpoint(): void {
     const dir = path.join(paths.sessions, this.meta.id);
     fs.mkdirSync(dir, { recursive: true });
     writeJsonAtomic(path.join(dir, "meta.json"), this.meta);
     void this.snapshot().then(({ snapshot }) => {
-      fs.writeFileSync(path.join(dir, "snapshot.txt"), snapshot);
+      if (!this.removeOnExit) fs.writeFileSync(path.join(dir, "snapshot.txt"), snapshot);
     });
     this.dirty = false;
   }
@@ -337,9 +350,9 @@ function handleOutput(handle: number, seq: number, data: Buffer): void {
   broadcast(packBin(encodeOutFrame(handle, seq, data)));
 }
 
-function handleExit(session: DaemonSession): void {
+function handleExit(session: DaemonSession, removed: boolean): void {
   live.delete(session.meta.id);
-  dead.set(session.meta.id, session.meta);
+  if (!removed) dead.set(session.meta.id, session.meta);
   emitEvent("session.exit", { sessionId: session.meta.id, exitCode: session.meta.exitCode });
 }
 
@@ -392,6 +405,12 @@ const handlers: Record<string, Handler> = {
   },
   "session.kill": (params: { sessionId: string }) => {
     live.get(params.sessionId)?.kill();
+    return {};
+  },
+  "session.remove": async (params: { sessionId: string }) => {
+    await live.get(params.sessionId)?.remove();
+    dead.delete(params.sessionId);
+    fs.rmSync(path.join(paths.sessions, params.sessionId), { recursive: true, force: true });
     return {};
   },
 };

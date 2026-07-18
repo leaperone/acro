@@ -109,7 +109,7 @@ export const methods = {
     result: z.object({ removed: z.boolean() }),
   },
   "workspace.remove": {
-    params: z.object({ workspaceId: z.string() }),
+    params: z.object({ workspaceId: z.string(), force: z.boolean().optional() }),
     result: z.object({ removed: z.boolean() }),
   },
   // 布局同步:整棵布局作为 opaque JSON 上传,服务端存储并广播 layoutChanged。
