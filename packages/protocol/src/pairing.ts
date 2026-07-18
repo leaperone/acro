@@ -20,12 +20,17 @@ export type PairingOffer = z.infer<typeof PairingOffer>;
 const PREFIX = "acro://pair?c=";
 
 function toB64Url(s: string): string {
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return bytesToB64(new TextEncoder().encode(s))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 }
 
 function fromB64Url(s: string): string {
   const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
-  return atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  return new TextDecoder().decode(
+    b64ToBytes(b64 + "=".repeat((4 - (b64.length % 4)) % 4)),
+  );
 }
 
 export function encodePairingOffer(offer: PairingOffer): string {

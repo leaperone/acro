@@ -14,6 +14,7 @@ export const paths = {
   devices: path.join(stateDir, "devices.json"),
   serverKey: path.join(stateDir, "server-key.json"),
   bootstrapOffer: path.join(stateDir, "bootstrap-offer.txt"),
+  localOffer: path.join(stateDir, "local-offer.txt"),
   projects: path.join(stateDir, "projects.json"),
   workspaces: path.join(stateDir, "workspaces.json"),
   workspaceGroups: path.join(stateDir, "workspace-groups.json"),

@@ -84,6 +84,16 @@ async function main(): Promise<void> {
     assert.equal(fs.statSync(path.join(stateDir, "daemon.sock")).mode & 0o777, 0o600);
     log("state permissions ok");
 
+    const localOfferPath = path.join(stateDir, "local-offer.txt");
+    assert.equal(fs.statSync(localOfferPath).mode & 0o777, 0o600);
+    const localOffer = decodePairingOffer(fs.readFileSync(localOfferPath, "utf8").trim());
+    assert.ok(localOffer.endpoints.includes(`127.0.0.1:${PORT}`));
+    const localOfferResponse = await fetch(`http://127.0.0.1:${PORT}/local-offer`, {
+      method: "POST",
+    });
+    assert.equal(localOfferResponse.status, 404);
+    log("local offer file boundary ok");
+
     // 配对:首启的 bootstrap 配对码写在 state 目录
     const offerRaw = fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim();
     const offer = decodePairingOffer(offerRaw);

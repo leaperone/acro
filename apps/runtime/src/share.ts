@@ -6,12 +6,13 @@ import os from "node:os";
 import {
   b64ToBytes,
   bytesToB64,
+  decodePairingOffer,
   encodePairingOffer,
   generateKeyPair,
   ServerHandshake,
 } from "@acro/protocol";
 import { z } from "zod";
-import { paths } from "./paths.ts";
+import { paths, PRIVATE_FILE_MODE } from "./paths.ts";
 import type { DeviceRegistry } from "./devices.ts";
 import { readJson, writeJsonAtomic } from "./store.ts";
 
@@ -62,30 +63,125 @@ export function createShareOffer(
   port: number,
   name?: string,
   extraEndpoints: string[] = [],
+  local = false,
 ): { offer: string; deviceId: string } {
-  const { device, token } = registry.createGrant(name);
-  const endpoints = [...new Set([...lanEndpoints(port), ...extraEndpoints])];
-  const offer = encodePairingOffer({
-    v: 1,
-    endpoints: endpoints.length > 0 ? endpoints : [`127.0.0.1:${port}`],
-    token,
-    pub: bytesToB64(identity.pub),
-  });
-  return { offer, deviceId: device.id };
+  const { device, token } = registry.createGrant(name, local);
+  try {
+    const endpoints = [...new Set([...lanEndpoints(port), ...extraEndpoints])];
+    const offer = encodePairingOffer({
+      v: 1,
+      endpoints: endpoints.length > 0 ? endpoints : [`127.0.0.1:${port}`],
+      token,
+      pub: bytesToB64(identity.pub),
+    });
+    return { offer, deviceId: device.id };
+  } catch (error) {
+    return rollbackGrant(registry, device.id, error);
+  }
 }
 
-// 首次启动无任何设备时的引导:mint 一个授权,配对码写入 0600 文件并打印。
+function rollbackGrant(registry: DeviceRegistry, deviceId: string, error: unknown): never {
+  try {
+    registry.remove(deviceId);
+  } catch (rollbackError) {
+    throw new AggregateError(
+      [error, rollbackError],
+      "failed to publish pairing offer and roll back its device grant",
+    );
+  }
+  throw error;
+}
+
+function writeOfferFile(
+  registry: DeviceRegistry,
+  result: { offer: string; deviceId: string },
+  file: string,
+): void {
+  try {
+    fs.writeFileSync(file, `${result.offer}\n`, { mode: PRIVATE_FILE_MODE });
+    fs.chmodSync(file, PRIVATE_FILE_MODE);
+  } catch (error) {
+    rollbackGrant(registry, result.deviceId, error);
+  }
+}
+
+function readOfferFile(
+  registry: DeviceRegistry,
+  identity: ServerIdentity,
+  port: number,
+  file: string,
+): { offer: string; deviceId: string } | null {
+  try {
+    const offer = fs.readFileSync(file, "utf8").trim();
+    const decoded = decodePairingOffer(offer);
+    const device = registry.findByToken(decoded.token);
+    if (
+      device &&
+      decoded.pub === bytesToB64(identity.pub) &&
+      decoded.endpoints.includes(`127.0.0.1:${port}`)
+    ) {
+      fs.chmodSync(file, PRIVATE_FILE_MODE);
+      return { offer, deviceId: device.id };
+    }
+  } catch {
+    // 调用方会生成替代授权。
+  }
+  return null;
+}
+
+// Desktop 与 Runtime 同属一个登录用户，本机授权直接走 ~/.acro 的 0700/0600
+// 文件边界。回环 HTTP 只能证明“同一台 Mac”，不能区分本机其他账号。
+export function ensureLocalOffer(
+  registry: DeviceRegistry,
+  identity: ServerIdentity,
+  port: number,
+  file = paths.localOffer,
+): { offer: string; deviceId: string } {
+  const existing = readOfferFile(registry, identity, port, file);
+  if (existing) {
+    registry.markLocal(existing.deviceId);
+    registry.removeLocalGrants(existing.deviceId);
+    return existing;
+  }
+
+  registry.removeLocalGrants();
+  const result = createShareOffer(
+    registry,
+    identity,
+    port,
+    "本机",
+    [`127.0.0.1:${port}`],
+    true,
+  );
+  writeOfferFile(registry, result, file);
+  return result;
+}
+
+// 尚无设备成功认证时的引导:mint 一个授权,配对码写入 0600 文件并打印。
 // 该设备首次认证成功后删除文件(见 index.ts)。
 export function writeBootstrapOffer(
   registry: DeviceRegistry,
   identity: ServerIdentity,
   port: number,
+  file = paths.bootstrapOffer,
 ): { offer: string; deviceId: string } {
   const result = createShareOffer(registry, identity, port, "bootstrap", [
     `127.0.0.1:${port}`,
   ]);
-  fs.writeFileSync(paths.bootstrapOffer, `${result.offer}\n`, { mode: 0o600 });
+  writeOfferFile(registry, result, file);
   return result;
+}
+
+export function ensureBootstrapOffer(
+  registry: DeviceRegistry,
+  identity: ServerIdentity,
+  port: number,
+  file = paths.bootstrapOffer,
+): { offer: string; deviceId: string } {
+  return (
+    readOfferFile(registry, identity, port, file) ??
+    writeBootstrapOffer(registry, identity, port, file)
+  );
 }
 
 export function clearBootstrapOffer(): void {

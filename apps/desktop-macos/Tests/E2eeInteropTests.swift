@@ -66,13 +66,13 @@ final class E2eeInteropTests: XCTestCase {
 
     func testPairingOfferDecode() throws {
         // packages/protocol encodePairingOffer 生成的样例
-        let json = #"{"v":1,"endpoints":["192.168.1.10:8790"],"token":"\#(String(repeating: "t", count: 64))","pub":"\#(expectedServerPub.base64EncodedString())"}"#
+        let json = #"{"v":1,"endpoints":["例子.test:8790"],"token":"\#(String(repeating: "t", count: 64))","pub":"\#(expectedServerPub.base64EncodedString())"}"#
         let b64 = Data(json.utf8).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
         let offer = try PairingOffer.decode("acro://pair?c=\(b64)")
-        XCTAssertEqual(offer.endpoints, ["192.168.1.10:8790"])
+        XCTAssertEqual(offer.endpoints, ["例子.test:8790"])
         XCTAssertEqual(Data(base64Encoded: offer.pub), expectedServerPub)
     }
 }

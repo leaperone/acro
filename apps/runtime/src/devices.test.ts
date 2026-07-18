@@ -43,3 +43,30 @@ test("device state rejects a malformed entry without rewriting it", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("legacy device state without a local marker remains readable", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-devices-legacy-"));
+  const file = path.join(directory, "devices.json");
+  const device = {
+    id: "device",
+    name: "Legacy",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastSeenAt: null,
+    tokenHash: "0".repeat(64),
+  };
+  try {
+    fs.writeFileSync(file, JSON.stringify([device]));
+    const registry = new DeviceRegistry(file);
+    assert.deepEqual(registry.list(), [
+      {
+        id: device.id,
+        name: device.name,
+        createdAt: device.createdAt,
+        lastSeenAt: null,
+      },
+    ]);
+    assert.deepEqual(registry.removeLocalGrants(), []);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
