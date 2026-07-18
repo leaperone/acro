@@ -421,6 +421,33 @@ async function main(): Promise<void> {
     assert.ok(snapshot3.includes("AFTER_RECONNECT_XYZ"));
     client3.sendInput(attach3.channel, "echo AFTER_RUNTIME_RESTART_XYZ\n");
     await client3.waitOutput("AFTER_RUNTIME_RESTART_XYZ");
+    client3.sendInput(attach3.channel, `cd ${stateDir} && echo CWD_UNAVAILABLE_XYZ\n`);
+    await client3.waitOutput("CWD_UNAVAILABLE_XYZ");
+    await assert.rejects(
+      client3.rpc("session.create", {
+        workspaceId: updatedWorkspace.id,
+        inheritCwdFrom: session.id,
+        command: "/bin/sh",
+        cols: 80,
+        rows: 24,
+      }),
+      /source terminal working directory is unavailable/,
+    );
+    client3.sendInput(attach3.channel, "cd /private/tmp && echo CWD_RESTORED_XYZ\n");
+    await client3.waitOutput("CWD_RESTORED_XYZ");
+    const inheritedAfterRestart = await client3.rpc<Session>("session.create", {
+      workspaceId: updatedWorkspace.id,
+      inheritCwdFrom: session.id,
+      command: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    assert.equal(
+      inheritedAfterRestart.cwd,
+      "/private/tmp",
+      "cwd inheritance must survive a runtime restart with the same daemon",
+    );
+    await client3.rpc("session.kill", { sessionId: inheritedAfterRestart.id });
     log("runtime restart survival ok");
 
     // 真实 CLI attach:断线(runtime 重启)后必须自动重挂载,而不是退出
@@ -511,8 +538,14 @@ async function main(): Promise<void> {
     const afterRemoval = await client4.rpc<Session[]>("session.list");
     assert.equal(afterRemoval.some((item) => item.id === session.id), false);
     assert.equal(afterRemoval.some((item) => item.id === inherited.id), false);
+    assert.equal(afterRemoval.some((item) => item.id === inheritedAfterRestart.id), false);
     assert.equal(afterRemoval.some((item) => item.id === cleanupSession.id), false);
-    for (const sessionId of [session.id, inherited.id, cleanupSession.id]) {
+    for (const sessionId of [
+      session.id,
+      inherited.id,
+      inheritedAfterRestart.id,
+      cleanupSession.id,
+    ]) {
       assert.equal(fs.existsSync(path.join(stateDir, "sessions", sessionId)), false);
     }
     assert.ok(

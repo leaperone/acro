@@ -144,10 +144,19 @@ async function main(): Promise<void> {
       // 路径遵循既定事实:显式 cwd > 继承源会话的实时目录 > 家目录
       let cwd = params.cwd;
       if (!cwd && params.inheritCwdFrom) {
-        cwd = await daemon
-          .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
-          .then((result) => result.cwd ?? undefined)
-          .catch(() => undefined);
+        try {
+          cwd = await daemon
+            .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
+            .then((result) => result.cwd ?? undefined);
+        } catch (error) {
+          if ((error as Error).message === "unknown method session.cwd") {
+            throw new Error(
+              "terminal daemon is outdated; close existing terminals, then restart the server Mac",
+            );
+          }
+          throw error;
+        }
+        if (!cwd) throw new Error("source terminal working directory is unavailable");
       }
       const { workspaceId, inheritCwdFrom, ...daemonParams } = params;
       const { session } = await daemon.request<{ session: Session; handle: number }>(

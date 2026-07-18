@@ -397,7 +397,7 @@ const handlers: Record<string, Handler> = {
       session.meta.cwd = cwd;
       session.checkpoint();
     }
-    return { cwd: cwd ?? session.meta.cwd };
+    return { cwd };
   },
   "session.snapshot": async (params: { sessionId: string }) => {
     const session = live.get(params.sessionId);
