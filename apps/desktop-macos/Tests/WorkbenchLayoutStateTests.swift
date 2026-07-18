@@ -1,6 +1,14 @@
 import XCTest
 @testable import AcroDesktop
 
+private struct LegacyWorkbenchLayoutSnapshot: Encodable {
+    let selectedServerId: String?
+    let selectedWorkspaceId: String?
+    let workspaceLayouts: [String: WorkspaceTerminalLayout]
+    let leftSidebarVisible: Bool
+    let inspectorVisible: Bool
+}
+
 final class WorkbenchLayoutStateTests: XCTestCase {
     func testTabAdoptSelectCloseAndSplit() throws {
         var layout = WorkspaceTerminalLayout()
@@ -169,12 +177,179 @@ final class WorkbenchLayoutStateTests: XCTestCase {
         XCTAssertNotNil(layout.focusedSessionId)
 
         let snapshot = WorkbenchLayoutSnapshot(
+            selectedServerId: "server",
             selectedWorkspaceId: "workspace",
-            workspaceLayouts: ["workspace": layout],
+            workspaceLayouts: [
+                ScopedResourceID(serverId: "server", resourceId: "workspace"): layout,
+            ],
             leftSidebarVisible: true,
             inspectorVisible: false
         )
         let data = try JSONEncoder().encode(snapshot)
         XCTAssertEqual(try JSONDecoder().decode(WorkbenchLayoutSnapshot.self, from: data), snapshot)
+    }
+
+    func testSnapshotKeepsSameWorkspaceIdSeparateAcrossServers() throws {
+        var first = WorkspaceTerminalLayout()
+        first.adopt("session-a")
+        var second = WorkspaceTerminalLayout()
+        second.adopt("session-b")
+        let firstKey = ScopedResourceID(serverId: "server-a", resourceId: "workspace")
+        let secondKey = ScopedResourceID(serverId: "server-b", resourceId: "workspace")
+        let snapshot = WorkbenchLayoutSnapshot(
+            selectedServerId: "server-a",
+            selectedWorkspaceId: "workspace",
+            workspaceLayouts: [firstKey: first, secondKey: second],
+            leftSidebarVisible: true,
+            inspectorVisible: true
+        )
+
+        let decoded = try JSONDecoder().decode(
+            WorkbenchLayoutSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+
+        XCTAssertEqual(decoded.workspaceLayouts[firstKey]?.root?.sessionIds, ["session-a"])
+        XCTAssertEqual(decoded.workspaceLayouts[secondKey]?.root?.sessionIds, ["session-b"])
+    }
+
+    func testLegacySnapshotScopesLayoutsToSelectedServer() throws {
+        var layout = WorkspaceTerminalLayout()
+        layout.adopt("session")
+        let legacy = LegacyWorkbenchLayoutSnapshot(
+            selectedServerId: "server-a",
+            selectedWorkspaceId: "workspace",
+            workspaceLayouts: ["workspace": layout],
+            leftSidebarVisible: true,
+            inspectorVisible: false
+        )
+
+        let decoded = try JSONDecoder().decode(
+            WorkbenchLayoutSnapshot.self,
+            from: JSONEncoder().encode(legacy)
+        )
+
+        XCTAssertEqual(
+            decoded.workspaceLayouts[
+                ScopedResourceID(serverId: "server-a", resourceId: "workspace")
+            ],
+            layout
+        )
+    }
+
+    @MainActor
+    func testWorkbenchModelSelectsLayoutWithinCurrentServer() throws {
+        var first = WorkspaceTerminalLayout()
+        first.adopt("session-a")
+        var second = WorkspaceTerminalLayout()
+        second.adopt("session-b")
+        let model = WorkbenchModel(hub: RuntimeHub())
+        model.workspaceLayouts = [
+            ScopedResourceID(serverId: "server-a", resourceId: "workspace"): first,
+            ScopedResourceID(serverId: "server-b", resourceId: "workspace"): second,
+        ]
+        model.selectedWorkspaceId = "workspace"
+
+        model.selectedServerId = "server-a"
+        XCTAssertEqual(model.currentLayout?.root?.sessionIds, ["session-a"])
+
+        model.selectedServerId = "server-b"
+        XCTAssertEqual(model.currentLayout?.root?.sessionIds, ["session-b"])
+    }
+
+    @MainActor
+    func testTerminalCloseMutatesOriginServerAfterSelectionChanges() throws {
+        var first = WorkspaceTerminalLayout()
+        first.adopt("shared-session")
+        var second = WorkspaceTerminalLayout()
+        second.adopt("shared-session")
+        second.adopt("server-b-only")
+        let firstKey = ScopedResourceID(serverId: "server-a", resourceId: "workspace")
+        let secondKey = ScopedResourceID(serverId: "server-b", resourceId: "workspace")
+        let model = WorkbenchModel(hub: RuntimeHub())
+        model.workspaceLayouts = [firstKey: first, secondKey: second]
+        model.selectedServerId = "server-b"
+        model.selectedWorkspaceId = "workspace"
+
+        model.closeTab(
+            "shared-session",
+            workspaceId: "workspace",
+            serverId: "server-a"
+        )
+
+        XCTAssertNil(model.workspaceLayouts[firstKey]?.root)
+        XCTAssertEqual(
+            model.workspaceLayouts[secondKey]?.root?.sessionIds,
+            ["shared-session", "server-b-only"]
+        )
+        XCTAssertEqual(model.currentLayout?.focusedSessionId, "server-b-only")
+    }
+
+    @MainActor
+    func testWorkspaceExpansionIsScopedToServer() throws {
+        let model = WorkbenchModel(hub: RuntimeHub())
+        let firstKey = ScopedResourceID(serverId: "server-a", resourceId: "workspace")
+        let secondKey = ScopedResourceID(serverId: "server-b", resourceId: "workspace")
+
+        model.toggleWorkspace("workspace", serverId: "server-a")
+        XCTAssertTrue(model.expandedWorkspaceIds.contains(firstKey))
+        XCTAssertFalse(model.expandedWorkspaceIds.contains(secondKey))
+
+        model.toggleWorkspace("workspace", serverId: "server-b")
+        XCTAssertTrue(model.expandedWorkspaceIds.contains(firstKey))
+        XCTAssertTrue(model.expandedWorkspaceIds.contains(secondKey))
+
+        model.toggleWorkspace("workspace", serverId: "server-a")
+        XCTAssertFalse(model.expandedWorkspaceIds.contains(firstKey))
+        XCTAssertTrue(model.expandedWorkspaceIds.contains(secondKey))
+    }
+
+    @MainActor
+    func testPendingDestructiveActionFailsClosedWhenOriginServerDisappears() async throws {
+        let model = WorkbenchModel(hub: RuntimeHub())
+        let session = Session(
+            id: "shared-session",
+            cwd: "/tmp",
+            command: "zsh",
+            cols: 80,
+            rows: 24,
+            createdAt: "2026-07-18T00:00:00Z",
+            alive: true,
+            exitCode: nil,
+            title: nil
+        )
+        model.selectedServerId = "server-a"
+        model.pendingSessionTermination = session
+        model.selectedServerId = "server-b"
+
+        await model.terminateSession(session)
+
+        XCTAssertNil(model.pendingSessionTermination)
+        XCTAssertEqual(model.errorMessage, "目标服务器已移除，操作已取消")
+    }
+
+    @MainActor
+    func testTerminalSurfaceCacheSeparatesSameSessionIdAcrossServers() throws {
+        let cache = TerminalSurfaceCache.shared
+        let suffix = UUID().uuidString
+        let serverA = "server-a-\(suffix)"
+        let serverB = "server-b-\(suffix)"
+        let sessionId = "session-\(suffix)"
+        defer {
+            cache.evict(serverId: serverA, sessionId: sessionId)
+            cache.evict(serverId: serverB, sessionId: sessionId)
+        }
+
+        let first = cache.view(serverId: serverA, sessionId: sessionId, command: "attach-a")
+        let second = cache.view(serverId: serverB, sessionId: sessionId, command: "attach-b")
+
+        XCTAssertFalse(first === second)
+        XCTAssertTrue(
+            first === cache.view(serverId: serverA, sessionId: sessionId, command: "ignored")
+        )
+        XCTAssertNotEqual(
+            AttachCommand.resolve(sessionId: sessionId, serverId: serverA),
+            AttachCommand.resolve(sessionId: sessionId, serverId: serverB)
+        )
     }
 }

@@ -532,11 +532,94 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
     }
 }
 
+struct ScopedResourceID: Hashable {
+    let serverId: String
+    let resourceId: String
+}
+
 struct WorkbenchLayoutSnapshot: Codable, Equatable {
     // 多主机:记住上次查看的服务器(旧快照无此字段,解码为 nil)
     var selectedServerId: String?
     var selectedWorkspaceId: String?
-    var workspaceLayouts: [String: WorkspaceTerminalLayout]
+    var workspaceLayouts: [ScopedResourceID: WorkspaceTerminalLayout]
     var leftSidebarVisible: Bool
     var inspectorVisible: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case selectedServerId, selectedWorkspaceId, workspaceLayouts
+        case leftSidebarVisible, inspectorVisible
+    }
+
+    init(
+        selectedServerId: String?,
+        selectedWorkspaceId: String?,
+        workspaceLayouts: [ScopedResourceID: WorkspaceTerminalLayout],
+        leftSidebarVisible: Bool,
+        inspectorVisible: Bool
+    ) {
+        self.selectedServerId = selectedServerId
+        self.selectedWorkspaceId = selectedWorkspaceId
+        self.workspaceLayouts = workspaceLayouts
+        self.leftSidebarVisible = leftSidebarVisible
+        self.inspectorVisible = inspectorVisible
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        selectedServerId = try container.decodeIfPresent(String.self, forKey: .selectedServerId)
+        selectedWorkspaceId = try container.decodeIfPresent(String.self, forKey: .selectedWorkspaceId)
+        leftSidebarVisible = try container.decode(Bool.self, forKey: .leftSidebarVisible)
+        inspectorVisible = try container.decode(Bool.self, forKey: .inspectorVisible)
+
+        if let layoutsByServer = try? container.decode(
+            [String: [String: WorkspaceTerminalLayout]].self,
+            forKey: .workspaceLayouts
+        ) {
+            workspaceLayouts = layoutsByServer.reduce(into: [:]) { result, server in
+                for (workspaceId, layout) in server.value {
+                    result[ScopedResourceID(serverId: server.key, resourceId: workspaceId)] = layout
+                }
+            }
+        } else {
+            // v2 旧快照只有裸 workspaceId。先挂到快照记录的服务器；
+            // 更老的快照没有 selectedServerId，restore 时再归到当前服务器。
+            let legacy = try container.decode(
+                [String: WorkspaceTerminalLayout].self,
+                forKey: .workspaceLayouts
+            )
+            let legacyServerId = selectedServerId ?? ""
+            workspaceLayouts = legacy.reduce(into: [:]) { result, item in
+                result[ScopedResourceID(
+                    serverId: legacyServerId,
+                    resourceId: item.key
+                )] = item.value
+            }
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(selectedServerId, forKey: .selectedServerId)
+        try container.encodeIfPresent(selectedWorkspaceId, forKey: .selectedWorkspaceId)
+        try container.encode(leftSidebarVisible, forKey: .leftSidebarVisible)
+        try container.encode(inspectorVisible, forKey: .inspectorVisible)
+        let layoutsByServer = workspaceLayouts.reduce(
+            into: [String: [String: WorkspaceTerminalLayout]]()
+        ) { result, item in
+            result[item.key.serverId, default: [:]][item.key.resourceId] = item.value
+        }
+        try container.encode(layoutsByServer, forKey: .workspaceLayouts)
+    }
+
+    func workspaceLayouts(scopedTo fallbackServerId: String?) -> [
+        ScopedResourceID: WorkspaceTerminalLayout
+    ] {
+        guard let fallbackServerId, !fallbackServerId.isEmpty else { return workspaceLayouts }
+        return workspaceLayouts.reduce(into: [:]) { result, item in
+            let key = item.key.serverId.isEmpty
+                ? ScopedResourceID(serverId: fallbackServerId, resourceId: item.key.resourceId)
+                : item.key
+            result[key] = item.value
+        }
+    }
 }
