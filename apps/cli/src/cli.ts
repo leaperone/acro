@@ -21,6 +21,7 @@ import {
   loadClientConfig,
   pickServer,
   saveClientConfig,
+  type ServerEntry,
 } from "./client.ts";
 
 const DETACH_KEY = 0x1d; // Ctrl-]
@@ -125,7 +126,7 @@ function termSize(): { cols: number; rows: number } {
   return { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 };
 }
 
-async function cmdRun(client: AcroClient, args: string[]): Promise<void> {
+async function cmdRun(client: AcroClient, server: ServerEntry, args: string[]): Promise<void> {
   const projectRef = flagValue(args, "--project");
   const rest = args.filter((a, i) => {
     if (a.startsWith("--")) return false;
@@ -139,54 +140,127 @@ async function cmdRun(client: AcroClient, args: string[]): Promise<void> {
     ...(command ? { command } : {}),
     ...termSize(),
   });
-  await attachLoop(client, session);
+  await attachLoop(client, session, server);
 }
 
-async function cmdAttach(client: AcroClient, args: string[]): Promise<void> {
+async function cmdAttach(client: AcroClient, server: ServerEntry, args: string[]): Promise<void> {
   const sessionId = args[0] ?? fail("usage: acro attach <sessionId>");
   const sessions = await client.rpc("session.list", {});
   const session = sessions.find((s) => s.id === sessionId || s.id.startsWith(sessionId));
   if (!session) fail(`session not found: ${sessionId}`);
   if (!session.alive) fail("session is dead");
-  await attachLoop(client, session);
+  await attachLoop(client, session, server);
 }
 
-async function attachLoop(client: AcroClient, session: Session): Promise<void> {
-  client.onDisconnect = () => {
-    console.error("\r\n[acro] 连接断开");
-    process.exit(1);
-  };
-  const { channel, snapshot } = await client.rpc("session.attach", { sessionId: session.id });
+const RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 8000];
+const MAX_RECONNECT_ATTEMPTS = 15;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 连接抖动的退避重试:瞬时失败不该让终端 surface 直接报错退出
+async function connectWithRetry(server: ServerEntry, attempts: number): Promise<AcroClient> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i += 1) {
+    if (i > 0) await sleep(RETRY_DELAYS_MS[Math.min(i - 1, RETRY_DELAYS_MS.length - 1)]!);
+    try {
+      return await AcroClient.connect(server);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("connect failed");
+}
+
+async function attachLoop(client: AcroClient, session: Session, server: ServerEntry): Promise<void> {
   const isTTY = process.stdin.isTTY === true;
-
-  process.stdout.write(Buffer.from(snapshot, "base64"));
-
-  client.onFrame = (frame) => {
-    if (frame.type === FRAME_OUT && frame.channel === channel) {
-      process.stdout.write(frame.data);
-    }
-  };
-
-  let done: (code: number) => void;
-  const finished = new Promise<number>((resolve) => {
-    done = resolve;
+  let current = client;
+  let channel = -1;
+  let finished = false;
+  let reconnecting = false;
+  let done!: (code: number) => void;
+  const exitCode = new Promise<number>((resolve) => {
+    done = (code) => {
+      finished = true;
+      resolve(code);
+    };
   });
-  client.onEvent = (event, payload) => {
-    if (event === "session.exit" && (payload as { sessionId: string }).sessionId === session.id) {
-      done((payload as { exitCode: number | null }).exitCode ?? 0);
+
+  const syncSize = async (c: AcroClient) => {
+    if (!isTTY) return;
+    await c.rpc("session.resize", { sessionId: session.id, ...termSize() }).catch(() => {});
+  };
+
+  const wire = (c: AcroClient) => {
+    c.onFrame = (frame) => {
+      if (frame.type === FRAME_OUT && frame.channel === channel) {
+        process.stdout.write(frame.data);
+      }
+    };
+    c.onEvent = (event, payload) => {
+      if (event === "session.exit" && (payload as { sessionId: string }).sessionId === session.id) {
+        done((payload as { exitCode: number | null }).exitCode ?? 0);
+      }
+    };
+    // close 和 error 都会触发;reconnecting 去重,断线自动重挂载而不是退出
+    c.onDisconnect = () => {
+      if (finished || reconnecting) return;
+      reconnecting = true;
+      console.error("\r\n[acro] 连接断开,正在重连…");
+      void reattach();
+    };
+  };
+
+  // 断线重挂载:重连 → 确认会话仍活着 → 重新 attach。
+  // 快照含完整 scrollback,清屏回放即内容恢复,客户端不做增量补偿(orca 同款)
+  const reattach = async (): Promise<void> => {
+    for (let attempt = 0; attempt < MAX_RECONNECT_ATTEMPTS && !finished; attempt += 1) {
+      await sleep(RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)]!);
+      if (finished) return;
+      try {
+        const next = await AcroClient.connect(server);
+        const sessions = await next.rpc("session.list", {});
+        const live = sessions.find((s) => s.id === session.id);
+        if (!live) {
+          next.close();
+          console.error("\r\n[acro] 会话已不存在");
+          done(1);
+          return;
+        }
+        if (!live.alive) {
+          next.close();
+          done(live.exitCode ?? 0);
+          return;
+        }
+        const attached = await next.rpc("session.attach", { sessionId: session.id });
+        current = next;
+        channel = attached.channel;
+        wire(next);
+        process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+        process.stdout.write(Buffer.from(attached.snapshot, "base64"));
+        await syncSize(next);
+        reconnecting = false;
+        return;
+      } catch {
+        // 下一轮退避重试
+      }
+    }
+    if (!finished) {
+      console.error("\r\n[acro] 无法重连,放弃");
+      done(1);
     }
   };
+
+  wire(current);
+  const attached = await current.rpc("session.attach", { sessionId: session.id });
+  channel = attached.channel;
+  process.stdout.write(Buffer.from(attached.snapshot, "base64"));
 
   if (isTTY) {
     process.stdin.setRawMode(true);
     // 尺寸跟随本端
     const { cols, rows } = termSize();
-    if (cols !== session.cols || rows !== session.rows) {
-      await client.rpc("session.resize", { sessionId: session.id, cols, rows });
-    }
-    process.on("SIGWINCH", () => {
-      void client.rpc("session.resize", { sessionId: session.id, ...termSize() });
-    });
+    if (cols !== session.cols || rows !== session.rows) await syncSize(current);
+    process.on("SIGWINCH", () => void syncSize(current));
   }
   process.stdin.resume();
   process.stdin.on("data", (data: Buffer) => {
@@ -194,16 +268,18 @@ async function attachLoop(client: AcroClient, session: Session): Promise<void> {
       done(-1);
       return;
     }
-    client.sendBinary(encodeInFrame(channel, data));
+    // 重连窗口内的输入丢弃:channel 已失效,重挂载后快照会呈现服务端真实状态
+    if (!reconnecting) current.sendBinary(encodeInFrame(channel, data));
   });
   process.stdin.on("end", () => {
     // 管道输入结束不代表会话结束;保持附着直到会话退出
   });
 
-  const code = await finished;
+  const code = await exitCode;
   if (isTTY) process.stdin.setRawMode(false);
   process.stdin.pause();
-  await client.rpc("session.detach", { sessionId: session.id }).catch(() => {});
+  await current.rpc("session.detach", { sessionId: session.id }).catch(() => {});
+  current.close();
   if (code === -1) console.error("\r\n[acro] detached");
   process.exit(code === -1 ? 0 : code);
 }
@@ -240,7 +316,9 @@ async function main(): Promise<void> {
     cmdEndpoints(args);
     return;
   }
-  const client = await AcroClient.connect(pickServer(loadClientConfig(), serverRef));
+  const server = pickServer(loadClientConfig(), serverRef);
+  // attach/run 走终端 surface:初连也做退避重试,别把瞬时抖动直接怼到用户脸上
+  const client = await connectWithRetry(server, cmd === "attach" || cmd === "run" ? 5 : 1);
   switch (cmd) {
     case "projects":
       await cmdProjects(client);
@@ -249,10 +327,10 @@ async function main(): Promise<void> {
       await cmdSessions(client);
       break;
     case "run":
-      await cmdRun(client, args);
+      await cmdRun(client, server, args);
       return; // attachLoop 自己 exit
     case "attach":
-      await cmdAttach(client, args);
+      await cmdAttach(client, server, args);
       return;
     default:
       fail(`unknown command: ${cmd}`);
