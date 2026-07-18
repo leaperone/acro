@@ -655,6 +655,8 @@ final class WorkbenchModel: ObservableObject {
             selectedWorkspaceId = workspace.id
             selectedSessionId = nil
             await runtime.refresh()
+            // 终端应用的工作区开箱即用:直接带上第一个终端,不要求再点一次
+            _ = await openTerminal(in: workspace)
         } catch {
             errorMessage = error.localizedDescription
         }
