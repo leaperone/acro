@@ -378,8 +378,10 @@ private struct SidebarRowDropDelegate: DropDelegate {
 struct SidebarView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
-    // 目标服务器列表(手风琴分组):内容属于哪台机器一目了然,点别的服务器即切换目标
-    @State private var config = ClientConfig.load()
+    // 目标服务器列表(手风琴分组):内容属于哪台机器一目了然,点别的服务器即切换目标。
+    // 不持有快照:配置文件由设置页、CLI 和连接层多方写入,每次渲染实时读盘,
+    // 避免用过期副本 save() 把别处的删除/修改静默覆盖掉。
+    private var config: ClientConfig? { ClientConfig.load() }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -410,10 +412,6 @@ struct SidebarView: View {
                 }
         }
         .background(.bar)
-        .onChange(of: runtime.state) { _, _ in
-            // 认证/切换后连接层可能补写了 client.json,保持侧边栏与磁盘一致
-            config = ClientConfig.load()
-        }
     }
 
     private var header: some View {
@@ -544,11 +542,13 @@ struct SidebarView: View {
     }
 
     private func switchTo(_ server: ServerEntry) {
-        guard var next = config else { return }
-        next.active = server.id
+        // 写入前重新读盘,并确认目标还存在(可能已在设置页被删除)
+        guard var next = ClientConfig.load(),
+              let fresh = next.servers.first(where: { $0.id == server.id })
+        else { return }
+        next.active = fresh.id
         next.save()
-        config = next
-        runtime.connect(server: server)
+        runtime.connect(server: fresh)
     }
 
     @ViewBuilder
