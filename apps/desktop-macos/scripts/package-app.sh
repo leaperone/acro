@@ -17,10 +17,14 @@ swift build -c release
 
 APP="dist/Acro.app"
 rm -rf dist
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp .build/release/AcroDesktop "$APP/Contents/MacOS/AcroDesktop"
 cp -RL Resources/ghostty "$APP/Contents/Resources/ghostty"
 cp -RL Resources/terminfo "$APP/Contents/Resources/terminfo"
+
+# Sparkle 自动更新框架(可执行文件 rpath 指向 ../Frameworks)
+SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -37,6 +41,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+    <key>SUFeedURL</key><string>https://raw.githubusercontent.com/leaperone/acro/main/apps/desktop-macos/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>L8iCdFM8cKQvAwF1kOrLzL62X0pXlq248t3Bz3F8yPs=</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>86400</integer>
 </dict>
 </plist>
 PLIST
@@ -45,6 +53,14 @@ if [[ "$SIGN_IDENTITY" == "-" ]]; then
     codesign --force --deep --sign - "$APP"
 else
     echo "==> signing with: $SIGN_IDENTITY"
+    # Sparkle 嵌套组件先签(官方手工签名顺序);Downloader.xpc 保留 sandbox entitlements
+    SPARKLE_B="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+    codesign --force --options runtime --timestamp --preserve-metadata=entitlements \
+        --sign "$SIGN_IDENTITY" "$SPARKLE_B/XPCServices/Downloader.xpc"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_B/XPCServices/Installer.xpc"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_B/Autoupdate"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_B/Updater.app"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 fi
 

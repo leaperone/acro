@@ -15,6 +15,7 @@ jobs:
       APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - name: setup ghostty assets
@@ -52,6 +53,40 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 版本号带 - 视为预发布(测试通道),如 0.1.0-beta.1
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          FLAGS=(--generate-notes)
+          [[ "$VERSION" == *-* ]] && FLAGS+=(--prerelease)
           ASSETS=(apps/desktop-macos/dist/Acro-v*-macos.dmg apps/desktop-macos/dist/Acro-v*-macos.zip)
-          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" --generate-notes \
+          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" "${FLAGS[@]}" \
             || gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber
+      - name: update appcast
+        if: ${{ env.SPARKLE_PRIVATE_KEY != '' }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          CHANNEL=stable
+          [[ "$VERSION" == *-* ]] && CHANNEL=beta
+          ZIP="apps/desktop-macos/dist/Acro-v${VERSION}-macos.zip"
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Acro-v${VERSION}-macos.zip"
+
+          curl -sL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.9.0/Sparkle-2.9.0.tar.xz
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_ed.key"
+          SIG_OUT="$("$RUNNER_TEMP/sparkle/bin/sign_update" --ed-key-file "$RUNNER_TEMP/sparkle_ed.key" "$ZIP")"
+          rm "$RUNNER_TEMP/sparkle_ed.key"
+          SIGNATURE=$(sed -n 's/.*edSignature="\([^"]*\)".*/\1/p' <<< "$SIG_OUT")
+          LENGTH=$(sed -n 's/.*length="\([^"]*\)".*/\1/p' <<< "$SIG_OUT")
+          [[ -n "$SIGNATURE" && -n "$LENGTH" ]] || { echo "sign_update output unusable: $SIG_OUT"; exit 1; }
+
+          # appcast 提交到 main,客户端经 raw.githubusercontent.com 读取
+          git fetch origin main
+          git checkout main
+          python3 apps/desktop-macos/scripts/update-appcast.py \
+            apps/desktop-macos/appcast.xml "$VERSION" "$CHANNEL" "$URL" "$SIGNATURE" "$LENGTH"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/desktop-macos/appcast.xml
+          git commit -m "chore(release): appcast entry for desktop-v${VERSION}"
+          git push origin main

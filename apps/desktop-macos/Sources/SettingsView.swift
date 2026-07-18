@@ -61,6 +61,8 @@ private struct GeneralSettingsPane: View {
                     .foregroundStyle(.secondary)
             }
 
+            UpdateSection()
+
             Section("配置文件") {
                 pathRow("配对凭据", path: ClientConfig.path)
                 pathRow("快捷键覆写", path: ShortcutStore.settingsFilePath)
@@ -73,7 +75,7 @@ private struct GeneralSettingsPane: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 420)
+        .frame(height: 560)
     }
 
     private var stateText: String {
@@ -103,6 +105,47 @@ private struct GeneralSettingsPane: View {
                 .help("在 Finder 中显示")
                 .accessibilityLabel("在 Finder 中显示 \(label)")
             }
+        }
+    }
+}
+
+// ---- 更新(Sparkle) ----
+
+private struct UpdateSection: View {
+    @AppStorage(UpdaterController.channelKey) private var channel = "stable"
+    @State private var autoCheck = UpdaterController.shared.automaticallyChecksForUpdates
+
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发构建"
+    }
+
+    var body: some View {
+        Section {
+            LabeledContent("当前版本") {
+                HStack(spacing: 8) {
+                    Text(version)
+                    Button("检查更新…") { UpdaterController.shared.checkForUpdates() }
+                        .disabled(!UpdaterController.shared.available)
+                }
+            }
+            Picker("更新通道", selection: $channel) {
+                Text("稳定").tag("stable")
+                Text("测试").tag("beta")
+            }
+            .pickerStyle(.segmented)
+            Toggle("自动检查更新", isOn: $autoCheck)
+                .disabled(!UpdaterController.shared.available)
+                .onChange(of: autoCheck) { _, value in
+                    UpdaterController.shared.automaticallyChecksForUpdates = value
+                }
+        } header: {
+            Text("更新")
+        } footer: {
+            Text(UpdaterController.shared.available
+                ? "从 GitHub Releases 拉取新版本;安装只重启桌面 App,终端会话保存在 Runtime 中不受影响。「测试」通道会收到预发布版本。"
+                : "开发构建(非打包 app)不支持自动更新。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

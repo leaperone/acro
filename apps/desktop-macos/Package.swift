@@ -11,6 +11,7 @@ let package = Package(
         .package(path: "Vendor/bonsplit"),
         .package(path: "Vendor/CmuxPanes"),
         .package(path: "Vendor/CmuxCommandPalette"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.0"),
     ],
     targets: [
         .target(
@@ -25,6 +26,7 @@ let package = Package(
                 .product(name: "Bonsplit", package: "bonsplit"),
                 .product(name: "CmuxPanes", package: "CmuxPanes"),
                 .product(name: "CmuxCommandPalette", package: "CmuxCommandPalette"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources",
             linkerSettings: [
@@ -46,6 +48,8 @@ let package = Package(
                 .linkedFramework("UserNotifications"),
                 .linkedLibrary("c++"),
                 .linkedLibrary("sqlite3"),
+                // Sparkle.framework 打包时嵌入 Contents/Frameworks
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
             ]
         ),
         .testTarget(

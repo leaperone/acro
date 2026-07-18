@@ -75,6 +75,9 @@ struct AcroWorkbenchCommands: Commands {
         CommandMenu("工作台") {
             item("设置…", "gearshape", .openSettings)
             item("命令面板", "command", .commandPalette)
+            Button("检查更新…", systemImage: "arrow.down.circle") {
+                UpdaterController.shared.checkForUpdates()
+            }
 
             Divider()
 
