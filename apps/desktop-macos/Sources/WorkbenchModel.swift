@@ -519,6 +519,7 @@ final class WorkbenchModel: ObservableObject {
             let workspaceId = workspace(containing: session.id)?.id
             _ = try await runtime.rpc("session.kill", ["sessionId": session.id])
             pendingSessionTermination = nil
+            TerminalSurfaceCache.shared.evict(session.id)
             await runtime.refresh()
             if let workspaceId, var layout = workspaceLayouts[workspaceId] {
                 layout.removeTab(session.id)
@@ -807,6 +808,7 @@ final class WorkbenchModel: ObservableObject {
             expandedWorkspaceGroupIds = validWorkspaceGroupIds
         }
         let validWorkspaceIds = Set(runtime.workspaces.map(\.id))
+        TerminalSurfaceCache.shared.retainOnly(Set(activeSessions.map(\.id)))
         expandedWorkspaceIds.formIntersection(validWorkspaceIds)
         let shouldInitializeWorkspaceExpansion = !workspaceExpansionInitialized
         workspaceExpansionInitialized = true

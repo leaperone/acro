@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
 import type { MethodName, MethodParams, MethodResult } from "@acro/protocol";
-import { decodeFrame, type Frame } from "@acro/protocol";
+import { decodeFrame, type Frame } from "@acro/protocol/frames";
 
 const configFile =
   process.env.ACRO_CLIENT_CONFIG ?? path.join(os.homedir(), ".acro", "client.json");

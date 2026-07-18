@@ -260,6 +260,7 @@ private struct PaneView: View {
     private func terminal(sessionId: String) -> some View {
         if model.session(sessionId) != nil {
             AcroTerminalView(
+                sessionId: sessionId,
                 command: AttachCommand.resolve(sessionId: sessionId),
                 focusRequest: focused && pane.selectedSessionId == sessionId
                     ? model.terminalFocusRequest

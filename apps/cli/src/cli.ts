@@ -8,7 +8,9 @@
 //   acro attach <sessionId>
 
 import readline from "node:readline";
-import { encodeInFrame, FRAME_OUT, type Project, type Session } from "@acro/protocol";
+// 只引二进制帧模块:attach 冷启动不加载 zod(节省 ~150ms 空白期)
+import { encodeInFrame, FRAME_OUT } from "@acro/protocol/frames";
+import type { Project, Session } from "@acro/protocol";
 import { AcroClient, loadClientConfig, saveClientConfig } from "./client.ts";
 
 const DETACH_KEY = 0x1d; // Ctrl-]

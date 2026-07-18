@@ -11,6 +11,7 @@ final class AcroTerminalNSView: NSView {
     private var cStrings: [UnsafeMutablePointer<CChar>] = []
     private var requestedFocusRequest = 0
     private var appliedFocusRequest = 0
+    let sessionId: String
     private let command: String
     private var markedText = ""
     private var _markedRange = NSRange(location: NSNotFound, length: 0)
@@ -21,7 +22,8 @@ final class AcroTerminalNSView: NSView {
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?
 
-    init(command: String) {
+    init(sessionId: String, command: String) {
+        self.sessionId = sessionId
         self.command = command
         super.init(frame: .zero)
         wantsLayer = true
@@ -107,7 +109,17 @@ final class AcroTerminalNSView: NSView {
             ghostty_surface_free(surface)
             self.surface = nil
         }
+        TerminalSurfaceCache.shared.evict(sessionId, teardown: false)
         onClose?()
+    }
+
+    // 缓存逐出时显式释放;deinit 兜底
+    func teardown() {
+        if let surface {
+            ghostty_surface_free(surface)
+            self.surface = nil
+        }
+        removeFromSuperview()
     }
 
     func applyFocusRequest(_ request: Int) {
@@ -470,23 +482,56 @@ extension AcroTerminalNSView: NSTextInputClient {
     }
 }
 
+// 会话级 surface 缓存(cmux TerminalWindowPortal 的精简版):
+// SwiftUI 布局树重建(分屏/移动标签)时 NSView 只是被重新收养,
+// ghostty surface 与 attach 进程全程存活,旧窗格不再闪空白重载。
+@MainActor
+final class TerminalSurfaceCache {
+    static let shared = TerminalSurfaceCache()
+
+    private var views: [String: AcroTerminalNSView] = [:]
+
+    func view(for sessionId: String, command: String) -> AcroTerminalNSView {
+        if let view = views[sessionId] { return view }
+        let view = AcroTerminalNSView(sessionId: sessionId, command: command)
+        views[sessionId] = view
+        return view
+    }
+
+    func evict(_ sessionId: String, teardown: Bool = true) {
+        guard let view = views.removeValue(forKey: sessionId) else { return }
+        if teardown { view.teardown() }
+    }
+
+    // 对账:只保留仍然存活的会话
+    func retainOnly(_ sessionIds: Set<String>) {
+        for key in views.keys where !sessionIds.contains(key) {
+            evict(key)
+        }
+    }
+}
+
 struct AcroTerminalView: NSViewRepresentable {
+    let sessionId: String
     let command: String
     let focusRequest: Int
     var onClose: (() -> Void)? = nil
     var onFocus: (() -> Void)? = nil
 
-    func makeNSView(context: Context) -> AcroTerminalNSView {
-        let view = AcroTerminalNSView(command: command)
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ container: NSView, context: Context) {
+        let view = TerminalSurfaceCache.shared.view(for: sessionId, command: command)
+        if view.superview !== container {
+            view.removeFromSuperview()
+            view.frame = container.bounds
+            view.autoresizingMask = [.width, .height]
+            container.addSubview(view)
+        }
         view.onClose = onClose
         view.onFocus = onFocus
         view.applyFocusRequest(focusRequest)
-        return view
-    }
-
-    func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {
-        nsView.onClose = onClose
-        nsView.onFocus = onFocus
-        nsView.applyFocusRequest(focusRequest)
     }
 }
