@@ -54,25 +54,34 @@ interface BrowserSurface {
 
 export class BrowserManager extends EventEmitter {
   private context: BrowserContext | null = null;
+  private contextStarting: Promise<BrowserContext> | null = null;
   private surfaces = new Map<string, BrowserSurface>();
   private nextHandle = 1;
 
-  private async ensureContext(): Promise<BrowserContext> {
-    if (this.context) return this.context;
+  private ensureContext(): Promise<BrowserContext> {
+    if (this.context) return Promise.resolve(this.context);
+    this.contextStarting ??= this.startContext().finally(() => {
+      this.contextStarting = null;
+    });
+    return this.contextStarting;
+  }
+
+  private async startContext(): Promise<BrowserContext> {
     const chromium = await loadChromium();
-    this.context = await chromium.launchPersistentContext(path.join(paths.state, "browser-profile"), {
+    const context = await chromium.launchPersistentContext(path.join(paths.state, "browser-profile"), {
       executablePath: findChromium(),
       headless: process.env.ACRO_BROWSER_HEADLESS === "1",
       viewport: null,
     });
-    this.context.on("close", () => {
-      this.context = null;
+    this.context = context;
+    context.on("close", () => {
+      if (this.context === context) this.context = null;
       for (const surface of this.surfaces.values()) {
         this.emit("closed", surface.id, surface.handle);
       }
       this.surfaces.clear();
     });
-    return this.context;
+    return context;
   }
 
   async open(opts: {
@@ -204,7 +213,9 @@ export class BrowserManager extends EventEmitter {
   }
 
   async shutdown(): Promise<void> {
-    await this.context?.close().catch(() => {});
-    this.context = null;
+    const starting = this.contextStarting;
+    const context = this.context ?? (starting ? await starting.catch(() => null) : null);
+    await context?.close().catch(() => {});
+    if (this.context === context) this.context = null;
   }
 }

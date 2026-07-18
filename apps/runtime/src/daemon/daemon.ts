@@ -28,6 +28,7 @@ import { paths, ensureStateDirs } from "../paths.ts";
 import { readJson, writeJsonAtomic } from "../store.ts";
 import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 import { utf8SafeCut } from "./utf8.ts";
+import { daemonClientBufferExceeded, shouldPausePty } from "./backpressure.ts";
 
 const SCROLLBACK = 5000;
 const CHECKPOINT_INTERVAL_MS = 20_000;
@@ -84,6 +85,8 @@ class DaemonSession {
   private seq = 0;
   private parsedSeq = 0;
   private queue: QueueItem[] = [];
+  private parseBacklogChars = 0;
+  private parsePaused = false;
   private pumping = false;
   private dirty = false;
   private outChunks: Buffer[] = [];
@@ -179,6 +182,8 @@ class DaemonSession {
         }
       }
       this.queue.push({ kind: "chunk", data, seq: this.seq });
+      this.parseBacklogChars += data.length;
+      this.updateParseFlow();
       void this.pump();
     });
     this.ptyProc.onExit(({ exitCode }) => {
@@ -232,6 +237,7 @@ class DaemonSession {
       }
       // 合并连续输出块一次性解析
       let merged = "";
+      let mergedChars = 0;
       let lastSeq = this.parsedSeq;
       while (
         this.queue.length > 0 &&
@@ -240,12 +246,23 @@ class DaemonSession {
       ) {
         const item = this.queue.shift()!;
         merged += item.data!;
+        mergedChars += item.data!.length;
         lastSeq = item.seq!;
       }
       await new Promise<void>((r) => this.term.write(merged, r));
+      this.parseBacklogChars = Math.max(0, this.parseBacklogChars - mergedChars);
+      this.updateParseFlow();
       this.parsedSeq = lastSeq;
     }
     this.pumping = false;
+  }
+
+  private updateParseFlow(): void {
+    const paused = shouldPausePty(this.parsePaused, this.parseBacklogChars);
+    if (paused === this.parsePaused) return;
+    this.parsePaused = paused;
+    if (paused) this.ptyProc.pause();
+    else if (this.meta.alive) this.ptyProc.resume();
   }
 
   // 命令型会话(zsh -lc cmd)的 cd 发生在 zsh 的子进程里,向下解析一层;
@@ -362,6 +379,7 @@ class DaemonSession {
 // ---- 会话表:活会话 + 上一个 boot 留下的死会话记录 ----
 
 const live = new Map<string, DaemonSession>();
+const liveByHandle = new Map<number, DaemonSession>();
 const dead = new Map<string, Session>();
 
 function loadDeadSessions(): void {
@@ -388,7 +406,14 @@ function loadDeadSessions(): void {
 const clients = new Set<net.Socket>();
 
 function broadcast(buf: Buffer): void {
-  for (const c of clients) c.write(buf);
+  for (const client of clients) {
+    if (client.destroyed || daemonClientBufferExceeded(client.writableLength, buf.byteLength)) {
+      clients.delete(client);
+      client.destroy();
+      continue;
+    }
+    client.write(buf);
+  }
 }
 
 function emitEvent(event: string, payload: unknown): void {
@@ -402,6 +427,7 @@ function handleOutput(handle: number, seq: number, data: Buffer): void {
 
 function handleExit(session: DaemonSession, removed: boolean): void {
   live.delete(session.meta.id);
+  liveByHandle.delete(session.handle);
   if (!removed) dead.set(session.meta.id, session.meta);
   emitEvent("session.exit", { sessionId: session.meta.id, exitCode: session.meta.exitCode });
 }
@@ -422,6 +448,7 @@ const handlers: Record<string, Handler> = {
   }) => {
     const session = new DaemonSession(params, handleOutput, handleExit, handleTitle);
     live.set(session.meta.id, session);
+    liveByHandle.set(session.handle, session);
     session.checkpoint();
     emitEvent("session.created", session.meta);
     return { session: session.meta, handle: session.handle };
@@ -480,9 +507,7 @@ function startServer(): void {
           if (msg.kind === KIND_BIN) {
             const frame = decodeFrame(msg.body);
             if (frame.type === FRAME_IN) {
-              for (const s of live.values()) {
-                if (s.handle === frame.channel) s.write(Buffer.from(frame.data));
-              }
+              liveByHandle.get(frame.channel)?.write(Buffer.from(frame.data));
             }
             continue;
           }

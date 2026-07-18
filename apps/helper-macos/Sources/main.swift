@@ -13,6 +13,7 @@ let socketPath =
     ?? ("\(NSHomeDirectory())/.acro/helper.sock")
 let usesDefaultSocket = ProcessInfo.processInfo.environment["ACRO_HELPER_SOCKET"] == nil
 let maxRequestBytes = 2 * 1024 * 1024
+let maxTypeScalars = 2048
 
 // ---- 方法实现 ----
 
@@ -96,10 +97,13 @@ func typeText(_ text: String) throws {
 }
 
 func pressKey(keyCode: Int, command: Bool, option: Bool, control: Bool, shift: Bool) throws {
+    guard let keyCode = CGKeyCode(exactly: keyCode) else {
+        throw HelperError.message("keyCode out of range")
+    }
     guard
         let down = CGEvent(
-            keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: true),
-        let up = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: false)
+            keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
+        let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)
     else { throw HelperError.message("event create failed") }
     var flags: CGEventFlags = []
     if command { flags.insert(.maskCommand) }
@@ -150,6 +154,9 @@ func handle(method: String, params: [String: Any]) async throws -> [String: Any]
         return [:]
     case "input.type":
         guard let text = params["text"] as? String else { throw HelperError.message("text required") }
+        guard text.unicodeScalars.count <= maxTypeScalars else {
+            throw HelperError.message("text too long")
+        }
         try typeText(text)
         return [:]
     case "input.key":
@@ -209,6 +216,14 @@ func serve() throws {
     while true {
         let client = accept(fd, nil, nil)
         guard client >= 0 else { continue }
+        var noSigPipe: Int32 = 1
+        guard setsockopt(
+            client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe,
+            socklen_t(MemoryLayout.size(ofValue: noSigPipe))) == 0
+        else {
+            close(client)
+            continue
+        }
         Task.detached { await serveClient(fd: client) }
     }
 }
