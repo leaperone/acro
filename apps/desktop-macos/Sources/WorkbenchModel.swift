@@ -1,6 +1,7 @@
 // 工作台状态与动作。视图层保持薄;所有选择、布局、对话框与 RPC 动作集中在这里。
 // 结构对应 cmux 的 TabManager/Workspace 聚合根思路(GPL-3.0-or-later,
 // Copyright (c) 2024-present Manaflow, Inc.),按 acro 的远程 Runtime 模型精简重写。
+// 布局叶子是标签组窗格(Bonsplit 模型):标签、分屏、拖拽都在 WorkspaceTerminalLayout 上操作。
 
 import AppKit
 import SwiftUI
@@ -26,6 +27,13 @@ enum SidebarViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+// 应用内拖拽的真源(cmux SidebarWorkspaceDragRegistry 模式):
+// NSItemProvider 异步且跨进程,应用内直接读这里,同步且无歧义。
+struct TabDragPayload: Equatable {
+    let sessionId: String
+    let sourcePaneId: String
+}
+
 @MainActor
 final class WorkbenchModel: ObservableObject {
     let runtime: RuntimeConnection
@@ -47,6 +55,11 @@ final class WorkbenchModel: ObservableObject {
     @Published private(set) var terminalFocusRequest = 0
     @Published private(set) var flashSessionId: String?
     @Published private(set) var flashToken = 0
+
+    // ---- 拖拽与快捷键提示 ----
+    @Published var draggingTab: TabDragPayload?
+    @Published var draggingWorkspaceId: String?
+    @Published private(set) var cmdHeld = false
 
     // ---- 对话框与浮层 ----
     @Published var showingCommandPalette = false
@@ -76,13 +89,26 @@ final class WorkbenchModel: ObservableObject {
     private var layoutRestored = false
     private var workspaceGroupsInitialized = false
     private var workspaceExpansionInitialized = false
-    private static let layoutKey = "acro.desktop.workbench.layout.v1"
+    private var flagsMonitor: Any?
+    private static let layoutKey = "acro.desktop.workbench.layout.v2"
     private static let sidebarModeKey = "acro.desktop.sidebar.view-mode"
 
     init(runtime: RuntimeConnection) {
         self.runtime = runtime
         sidebarViewMode = UserDefaults.standard.string(forKey: Self.sidebarModeKey)
             .flatMap(SidebarViewMode.init(rawValue:)) ?? .workspaces
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            let held = event.modifierFlags
+                .intersection(.deviceIndependentFlagsMask) == .command
+            Task { @MainActor in
+                if self?.cmdHeld != held { self?.cmdHeld = held }
+            }
+            return event
+        }
+    }
+
+    deinit {
+        if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
     }
 
     // ---- 派生数据(全部走 codegen 类型) ----
@@ -125,6 +151,18 @@ final class WorkbenchModel: ObservableObject {
         return runtime.workspaces.filter { !groupedIds.contains($0.id) }
     }
 
+    // 侧边栏显示序 = ⌘数字序:分组内工作区在前,未分组在后
+    var orderedWorkspaces: [Workspace] {
+        runtime.workspaceGroups.flatMap(workspaces(in:)) + ungroupedWorkspaces
+    }
+
+    func workspaceShortcutDigit(_ workspaceId: String) -> Int? {
+        guard let index = orderedWorkspaces.firstIndex(where: { $0.id == workspaceId }),
+              index < 9
+        else { return nil }
+        return index + 1
+    }
+
     func workspaces(in group: WorkspaceGroup) -> [Workspace] {
         group.workspaceIds.compactMap { id in runtime.workspaces.first { $0.id == id } }
     }
@@ -157,6 +195,10 @@ final class WorkbenchModel: ObservableObject {
         runtime.workspaces.first { $0.sessionIds.contains(sessionId) }
     }
 
+    func session(_ sessionId: String) -> Session? {
+        activeSessions.first { $0.id == sessionId }
+    }
+
     func sessionDisplayName(_ session: Session) -> String {
         let projectName = project(for: session)?.name ?? "终端"
         guard let workspace = workspace(containing: session.id) else { return projectName }
@@ -164,6 +206,30 @@ final class WorkbenchModel: ObservableObject {
         guard related.count > 1, let index = related.firstIndex(where: { $0.id == session.id })
         else { return projectName }
         return "\(projectName) · \(index + 1)"
+    }
+
+    // ---- 布局变更入口(集中同步选中态与持久化) ----
+
+    private func mutateCurrentLayout(_ transform: (inout WorkspaceTerminalLayout) -> Void) {
+        guard let selectedWorkspaceId else { return }
+        var layout = workspaceLayouts[selectedWorkspaceId] ?? WorkspaceTerminalLayout()
+        transform(&layout)
+        workspaceLayouts[selectedWorkspaceId] = layout
+        syncSelectionFromLayout()
+    }
+
+    private func syncSelectionFromLayout() {
+        guard let focusedSessionId = currentLayout?.focusedSessionId,
+              let session = session(focusedSessionId)
+        else {
+            if currentLayout?.root == nil {
+                selectedSessionId = nil
+                selectedProjectId = nil
+            }
+            return
+        }
+        if selectedSessionId != session.id { selectedSessionId = session.id }
+        if selectedProjectId != session.projectId { selectedProjectId = session.projectId }
     }
 
     // ---- 焦点与导航 ----
@@ -181,18 +247,7 @@ final class WorkbenchModel: ObservableObject {
     func showSession(_ session: Session, flash: Bool = true) {
         guard let workspace = workspace(containing: session.id) else { return }
         selectedWorkspaceId = workspace.id
-        selectedProjectId = session.projectId
-        selectedSessionId = session.id
-        var layout = workspaceLayouts[workspace.id] ?? WorkspaceTerminalLayout()
-        if layout.root?.contains(session.id) == true {
-            layout.focusedSessionId = session.id
-        } else if let focusedSessionId = layout.focusedSessionId, layout.root != nil {
-            layout.root = layout.root?.replacing(focusedSessionId, with: session.id)
-            layout.focusedSessionId = session.id
-        } else {
-            layout = WorkspaceTerminalLayout(root: .leaf(session.id), focusedSessionId: session.id)
-        }
-        workspaceLayouts[workspace.id] = layout
+        mutateCurrentLayout { $0.adopt(session.id) }
         expandGroupContaining(workspace.id)
         expandedWorkspaceIds.insert(workspace.id)
         if flash { flashPane(session.id) }
@@ -203,97 +258,123 @@ final class WorkbenchModel: ObservableObject {
         selectedWorkspaceId = workspace.id
         expandGroupContaining(workspace.id)
         expandedWorkspaceIds.insert(workspace.id)
-        if let sessionId = workspaceLayouts[workspace.id]?.focusedSessionId,
-           let session = sessions(in: workspace).first(where: { $0.id == sessionId }) {
-            showSession(session)
-        } else if let session = sessions(in: workspace).first {
-            showSession(session)
-        } else {
-            selectedProjectId = nil
-            selectedSessionId = nil
-            workspaceLayouts[workspace.id] = WorkspaceTerminalLayout()
+        if workspaceLayouts[workspace.id]?.root == nil,
+           let session = sessions(in: workspace).first {
+            mutateCurrentLayout { $0.adopt(session.id) }
         }
+        syncSelectionFromLayout()
+        if let focusedSessionId = currentLayout?.focusedSessionId {
+            flashPane(focusedSessionId)
+            requestTerminalFocus()
+        }
+    }
+
+    func selectWorkspace(at index: Int) {
+        let ordered = orderedWorkspaces
+        guard ordered.indices.contains(index) else { return }
+        selectWorkspace(ordered[index])
     }
 
     func focusSession(_ session: Session, flash: Bool = false) {
         guard let workspace = workspace(containing: session.id) else { return }
         if selectedWorkspaceId != workspace.id { selectedWorkspaceId = workspace.id }
-        if selectedProjectId != session.projectId { selectedProjectId = session.projectId }
-        if selectedSessionId != session.id { selectedSessionId = session.id }
-        var layout = workspaceLayouts[workspace.id] ?? WorkspaceTerminalLayout(root: .leaf(session.id))
-        if layout.focusedSessionId != session.id {
-            layout.focusedSessionId = session.id
-            workspaceLayouts[workspace.id] = layout
-        }
+        mutateCurrentLayout { $0.adopt(session.id) }
         expandedWorkspaceIds.insert(workspace.id)
         expandGroupContaining(workspace.id)
         if flash { flashPane(session.id) }
     }
 
     func focusSessionId(_ sessionId: String) {
-        guard let session = activeSessions.first(where: { $0.id == sessionId }) else { return }
+        guard let session = session(sessionId) else { return }
         focusSession(session)
     }
 
-    func focusAdjacentPane(offset: Int) {
-        guard let ids = currentLayout?.root?.sessionIds, ids.count > 1 else { return }
-        let currentIndex = ids.firstIndex(of: currentLayout?.focusedSessionId ?? "") ?? 0
-        let index = (currentIndex + offset + ids.count) % ids.count
-        guard let session = activeSessions.first(where: { $0.id == ids[index] }) else { return }
-        focusSession(session, flash: true)
+    // ---- 标签动作 ----
+
+    func selectTab(_ sessionId: String, inPane paneId: String) {
+        mutateCurrentLayout { $0.selectTab(sessionId, inPane: paneId) }
+        flashPane(sessionId)
         requestTerminalFocus()
     }
 
-    func selectAdjacentSession(offset: Int) {
-        let sessions = currentWorkspaceSessions
-        guard !sessions.isEmpty else { return }
-        let currentIndex = sessions.firstIndex { $0.id == selectedSessionId }
-            ?? (offset > 0 ? -1 : 0)
-        let nextIndex = (currentIndex + offset + sessions.count) % sessions.count
-        showSession(sessions[nextIndex])
+    func closeTab(_ sessionId: String) {
+        mutateCurrentLayout { $0.removeTab(sessionId) }
+        requestTerminalFocus()
     }
 
-    func selectSession(at index: Int) {
-        guard currentWorkspaceSessions.indices.contains(index) else { return }
-        showSession(currentWorkspaceSessions[index])
+    func closeFocusedTab() {
+        guard let sessionId = currentLayout?.focusedSessionId else { return }
+        closeTab(sessionId)
     }
 
-    func toggleWorkspaceGroup(_ workspaceGroupId: String) {
-        if expandedWorkspaceGroupIds.contains(workspaceGroupId) {
-            expandedWorkspaceGroupIds.remove(workspaceGroupId)
-        } else {
-            expandedWorkspaceGroupIds.insert(workspaceGroupId)
+    func selectAdjacentTab(offset: Int) {
+        guard let pane = currentLayout?.focusedPane, pane.sessionIds.count > 1,
+              let selected = pane.selectedSessionId,
+              let index = pane.sessionIds.firstIndex(of: selected)
+        else { return }
+        let next = pane.sessionIds[(index + offset + pane.sessionIds.count) % pane.sessionIds.count]
+        selectTab(next, inPane: pane.id)
+    }
+
+    func moveTab(_ payload: TabDragPayload, toPane paneId: String, at index: Int?) {
+        mutateCurrentLayout { $0.moveTab(payload.sessionId, toPane: paneId, at: index) }
+        flashPane(payload.sessionId)
+        requestTerminalFocus()
+    }
+
+    func moveTabToSplit(
+        _ payload: TabDragPayload,
+        ofPane paneId: String,
+        direction: TerminalSplitDirection,
+        newPaneFirst: Bool
+    ) {
+        mutateCurrentLayout {
+            $0.moveTabToSplit(
+                payload.sessionId, ofPane: paneId, direction: direction, newPaneFirst: newPaneFirst
+            )
+        }
+        flashPane(payload.sessionId)
+        requestTerminalFocus()
+    }
+
+    func focusPane(_ paneId: String) {
+        mutateCurrentLayout { layout in
+            layout.focusedPaneId = paneId
         }
     }
 
-    func toggleWorkspace(_ workspaceId: String) {
-        if expandedWorkspaceIds.contains(workspaceId) {
-            expandedWorkspaceIds.remove(workspaceId)
-        } else {
-            expandedWorkspaceIds.insert(workspaceId)
-        }
-    }
-
-    private func expandGroupContaining(_ workspaceId: String) {
-        guard let group = workspaceGroup(containing: workspaceId) else { return }
-        expandedWorkspaceGroupIds.insert(group.id)
+    func focusAdjacentPane(offset: Int) {
+        guard let layout = currentLayout, let root = layout.root else { return }
+        let panes = root.panes
+        guard panes.count > 1 else { return }
+        let currentIndex = panes.firstIndex { $0.id == layout.focusedPaneId } ?? 0
+        let next = panes[(currentIndex + offset + panes.count) % panes.count]
+        mutateCurrentLayout { $0.focusedPaneId = next.id }
+        if let sessionId = next.selectedSessionId { flashPane(sessionId) }
+        requestTerminalFocus()
     }
 
     // ---- 终端动作 ----
 
-    func requestNewTerminal(in workspace: Workspace) {
+    func requestNewTerminal(in workspace: Workspace, paneId: String? = nil) {
         let workspaceProjects = projects(in: workspace)
         selectedWorkspaceId = workspace.id
         expandGroupContaining(workspace.id)
         expandedWorkspaceIds.insert(workspace.id)
+        if let paneId { mutateCurrentLayout { $0.focusedPaneId = paneId } }
         switch workspaceProjects.count {
         case 0:
             presentProjectPicker(for: workspace)
         case 1:
             Task { _ = await openTerminal(project: workspaceProjects[0], workspace: workspace) }
         default:
-            terminalProjectPickerWorkspace = workspace
-            projectQuery = ""
+            // 有当前项目时新标签直接跟随当前项目(cmux newTab 语义),否则再弹选择器
+            if let selectedProject {
+                Task { _ = await openTerminal(project: selectedProject, workspace: workspace) }
+            } else {
+                terminalProjectPickerWorkspace = workspace
+                projectQuery = ""
+            }
         }
     }
 
@@ -316,7 +397,7 @@ final class WorkbenchModel: ObservableObject {
     }
 
     func splitTerminal(_ direction: TerminalSplitDirection) {
-        guard let sourceSessionId = selectedSessionId,
+        guard let sourcePaneId = currentLayout?.focusedPane?.id,
               let selectedWorkspace,
               let selectedProject
         else { return }
@@ -326,45 +407,13 @@ final class WorkbenchModel: ObservableObject {
                 workspace: selectedWorkspace,
                 activate: false
             ) else { return }
-            guard var layout = workspaceLayouts[selectedWorkspace.id],
-                  layout.root?.contains(sourceSessionId) == true
-            else { return }
-            layout.root = layout.root?.splitting(
-                sourceSessionId,
-                direction: direction,
-                newSessionId: session.id
-            )
-            layout.focusedSessionId = session.id
-            workspaceLayouts[selectedWorkspace.id] = layout
-            if selectedWorkspaceId == selectedWorkspace.id {
-                focusSession(session, flash: true)
-                requestTerminalFocus()
+            guard selectedWorkspaceId == selectedWorkspace.id else { return }
+            mutateCurrentLayout {
+                $0.split(fromPane: sourcePaneId, direction: direction, newSessionId: session.id)
             }
+            flashPane(session.id)
+            requestTerminalFocus()
         }
-    }
-
-    func closeFocusedPane() {
-        guard let workspaceId = selectedWorkspaceId,
-              let sessionId = currentLayout?.focusedSessionId
-        else { return }
-        closePane(workspaceId: workspaceId, sessionId: sessionId)
-    }
-
-    func closePane(workspaceId: String, sessionId: String) {
-        guard var layout = workspaceLayouts[workspaceId] else { return }
-        layout.remove(sessionId)
-        workspaceLayouts[workspaceId] = layout
-        guard selectedWorkspaceId == workspaceId else { return }
-        guard let focusedSessionId = layout.focusedSessionId,
-              let session = activeSessions.first(where: { $0.id == focusedSessionId })
-        else {
-            selectedSessionId = nil
-            selectedProjectId = nil
-            return
-        }
-        guard selectedSessionId != focusedSessionId else { return }
-        focusSession(session)
-        requestTerminalFocus()
     }
 
     func terminateSession(_ session: Session) async {
@@ -374,17 +423,11 @@ final class WorkbenchModel: ObservableObject {
             pendingSessionTermination = nil
             await runtime.refresh()
             if let workspaceId, var layout = workspaceLayouts[workspaceId] {
-                layout.remove(session.id)
+                layout.removeTab(session.id)
                 workspaceLayouts[workspaceId] = layout
                 if selectedWorkspaceId == workspaceId {
-                    if let focusedSessionId = layout.focusedSessionId,
-                       let focusedSession = activeSessions.first(where: { $0.id == focusedSessionId }) {
-                        focusSession(focusedSession)
-                        requestTerminalFocus()
-                    } else {
-                        selectedSessionId = nil
-                        selectedProjectId = nil
-                    }
+                    syncSelectionFromLayout()
+                    requestTerminalFocus()
                 }
             }
         } catch {
@@ -394,6 +437,27 @@ final class WorkbenchModel: ObservableObject {
     }
 
     // ---- 工作区与分组动作 ----
+
+    func toggleWorkspaceGroup(_ workspaceGroupId: String) {
+        if expandedWorkspaceGroupIds.contains(workspaceGroupId) {
+            expandedWorkspaceGroupIds.remove(workspaceGroupId)
+        } else {
+            expandedWorkspaceGroupIds.insert(workspaceGroupId)
+        }
+    }
+
+    func toggleWorkspace(_ workspaceId: String) {
+        if expandedWorkspaceIds.contains(workspaceId) {
+            expandedWorkspaceIds.remove(workspaceId)
+        } else {
+            expandedWorkspaceIds.insert(workspaceId)
+        }
+    }
+
+    private func expandGroupContaining(_ workspaceId: String) {
+        guard let group = workspaceGroup(containing: workspaceId) else { return }
+        expandedWorkspaceGroupIds.insert(group.id)
+    }
 
     func presentWorkspaceGroupEditor(workspaceGroupId: String?, name: String) {
         editingWorkspaceGroupId = workspaceGroupId
@@ -493,6 +557,21 @@ final class WorkbenchModel: ObservableObject {
                 "workspaceGroupId": group?.id ?? NSNull(),
             ])
             if let group { expandedWorkspaceGroupIds.insert(group.id) }
+            await runtime.refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // 拖拽重排:workspaceGroupId 为 nil 表示未分组区
+    func reorderWorkspace(_ workspaceId: String, toGroup workspaceGroupId: String?, index: Int) async {
+        do {
+            _ = try await runtime.rpc("workspace.reorder", [
+                "workspaceId": workspaceId,
+                "workspaceGroupId": workspaceGroupId ?? NSNull(),
+                "index": index,
+            ])
+            if let workspaceGroupId { expandedWorkspaceGroupIds.insert(workspaceGroupId) }
             await runtime.refresh()
         } catch {
             errorMessage = error.localizedDescription
@@ -640,12 +719,22 @@ final class WorkbenchModel: ObservableObject {
             let validSessionIds = Set(workspaceSessions.map(\.id))
             if var layout = workspaceLayouts[workspace.id] {
                 layout.prune(validSessionIds: validSessionIds)
+                // 新出现的会话(其他客户端创建的)并入布局作后台标签,不抢当前选中
+                for session in workspaceSessions
+                where layout.root?.paneContaining(session.id) == nil {
+                    if let pane = layout.focusedPane {
+                        layout.root = layout.root?.updatingPane(pane.id) {
+                            $0.appendTab(session.id, select: false)
+                        }
+                    } else {
+                        layout.adopt(session.id)
+                    }
+                }
                 workspaceLayouts[workspace.id] = layout
-            } else if let firstSessionId = workspaceSessions.first?.id {
-                workspaceLayouts[workspace.id] = WorkspaceTerminalLayout(
-                    root: .leaf(firstSessionId),
-                    focusedSessionId: firstSessionId
-                )
+            } else if !workspaceSessions.isEmpty {
+                // 首次见到该工作区:全部会话进同一窗格作标签
+                let pane = PaneTabGroup(sessionIds: workspaceSessions.map(\.id))
+                workspaceLayouts[workspace.id] = WorkspaceTerminalLayout(root: .pane(pane))
             } else {
                 workspaceLayouts[workspace.id] = WorkspaceTerminalLayout()
             }
@@ -657,24 +746,16 @@ final class WorkbenchModel: ObservableObject {
         if selectedWorkspaceId == nil {
             selectedWorkspaceId = runtime.workspaces.first?.id
         }
-        guard let selectedWorkspaceId else {
+        guard selectedWorkspaceId != nil else {
             selectedProjectId = nil
             selectedSessionId = nil
             return
         }
-        if shouldInitializeWorkspaceExpansion {
+        if shouldInitializeWorkspaceExpansion, let selectedWorkspaceId {
             expandedWorkspaceIds.insert(selectedWorkspaceId)
             expandGroupContaining(selectedWorkspaceId)
         }
-        guard let focusedSessionId = workspaceLayouts[selectedWorkspaceId]?.focusedSessionId,
-              let focusedSession = activeSessions.first(where: { $0.id == focusedSessionId })
-        else {
-            selectedProjectId = nil
-            selectedSessionId = nil
-            return
-        }
-        selectedSessionId = focusedSessionId
-        selectedProjectId = focusedSession.projectId
+        syncSelectionFromLayout()
     }
 
     private func persistLayout() {

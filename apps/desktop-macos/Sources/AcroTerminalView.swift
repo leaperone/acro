@@ -263,18 +263,9 @@ final class AcroTerminalNSView: NSView {
         return true
     }
 
+    // 应用快捷键统一定义在 ShortcutSettings,这里只做转发判断
     private func isAppShortcut(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let key = (event.charactersIgnoringModifiers ?? "").lowercased()
-        if flags == [.command, .option] {
-            return ["b", "i", "t"].contains(key) || [123, 124].contains(event.keyCode)
-        }
-        if flags == [.command, .shift] {
-            return ["p", "d", "w", "[", "]"].contains(key)
-        }
-        guard flags == .command else { return false }
-        return ["n", "t", "d", "w"].contains(key)
-            || (Int(key).map { (1...9).contains($0) } ?? false)
+        ShortcutSettings.isAppShortcut(event)
     }
 
     override func keyUp(with event: NSEvent) {

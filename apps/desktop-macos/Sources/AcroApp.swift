@@ -1,6 +1,7 @@
 // Acro Desktop 入口:App、菜单命令与 attach 命令解析。
 // 终端渲染由 libghostty 完成,surface command 跑 `acro attach <sessionId>`,
 // 会话本体永远活在 Runtime 侧的 terminal daemon 里。
+// 快捷键统一走 ShortcutSettings(cmux 范式):菜单、终端拦截、提示共用一份定义。
 
 import AppKit
 import SwiftUI
@@ -17,10 +18,7 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     static func handleKeyDown(_ event: NSEvent, firstResponder: NSResponder?) -> NSEvent? {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags == .command,
-              event.charactersIgnoringModifiers?.lowercased() == "w"
-        else { return event }
+        guard ShortcutSettings.stored(.closeTab).matches(event) else { return event }
         guard !event.isARepeat else { return nil }
         (firstResponder as? AcroTerminalNSView)?.closePaneFromShortcut()
         return nil
@@ -34,28 +32,28 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
 struct WorkbenchActions {
     let newWorkspaceGroup: () -> Void
     let newWorkspace: () -> Void
-    let newTerminal: () -> Void
+    let newTerminalTab: () -> Void
     let showCommandPalette: () -> Void
     let splitRight: () -> Void
     let splitDown: () -> Void
     let focusPreviousPane: () -> Void
     let focusNextPane: () -> Void
-    let closePane: () -> Void
+    let closeTab: () -> Void
     let toggleLeftSidebar: () -> Void
     let toggleInspector: () -> Void
-    let previousSession: () -> Void
-    let nextSession: () -> Void
-    let selectSessionAtIndex: (Int) -> Void
+    let previousTab: () -> Void
+    let nextTab: () -> Void
+    let selectWorkspaceAtIndex: (Int) -> Void
     let focusTerminal: () -> Void
-    let closeSession: () -> Void
+    let killSession: () -> Void
     let canCreateTerminal: Bool
     let canSplitTerminal: Bool
     let canNavigatePanes: Bool
-    let canClosePane: Bool
-    let canNavigateSessions: Bool
+    let canCloseTab: Bool
+    let canNavigateTabs: Bool
     let canFocusTerminal: Bool
-    let canCloseSession: Bool
-    let sessionCount: Int
+    let canKillSession: Bool
+    let workspaceCount: Int
     let leftSidebarVisible: Bool
     let inspectorVisible: Bool
 }
@@ -76,111 +74,114 @@ struct AcroWorkbenchCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("新建终端", systemImage: "terminal") {
-                actions?.newTerminal()
+            Button("新建标签", systemImage: "terminal") {
+                actions?.newTerminalTab()
             }
-            .keyboardShortcut("t", modifiers: .command)
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.newTerminalTab))
             .disabled(actions?.canCreateTerminal != true)
 
             Button("新建工作区", systemImage: "plus") {
                 actions?.newWorkspace()
             }
-            .keyboardShortcut("n", modifiers: .command)
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.newWorkspace))
 
             Button("新建分组", systemImage: "folder.badge.plus") {
                 actions?.newWorkspaceGroup()
             }
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.newWorkspaceGroup))
         }
 
         CommandMenu("工作台") {
             Button("命令面板", systemImage: "command") {
                 actions?.showCommandPalette()
             }
-            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.commandPalette))
 
             Divider()
 
             Button(actions?.leftSidebarVisible == true ? "隐藏左侧栏" : "显示左侧栏", systemImage: "sidebar.left") {
                 actions?.toggleLeftSidebar()
             }
-            .keyboardShortcut("b", modifiers: [.command, .option])
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.toggleSidebar))
 
             Button(actions?.inspectorVisible == true ? "隐藏右侧栏" : "显示右侧栏", systemImage: "sidebar.right") {
                 actions?.toggleInspector()
             }
-            .keyboardShortcut("i", modifiers: [.command, .option])
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.toggleInspector))
 
             Divider()
 
             Button("向右分屏", systemImage: "rectangle.split.2x1") {
                 actions?.splitRight()
             }
-            .keyboardShortcut("d", modifiers: .command)
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.splitRight))
             .disabled(actions?.canSplitTerminal != true)
 
             Button("向下分屏", systemImage: "rectangle.split.1x2") {
                 actions?.splitDown()
             }
-            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.splitDown))
             .disabled(actions?.canSplitTerminal != true)
 
             Button("上一个窗格", systemImage: "chevron.left") {
                 actions?.focusPreviousPane()
             }
-            .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.previousPane))
             .disabled(actions?.canNavigatePanes != true)
 
             Button("下一个窗格", systemImage: "chevron.right") {
                 actions?.focusNextPane()
             }
-            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.nextPane))
             .disabled(actions?.canNavigatePanes != true)
-
-            Button("关闭窗格", systemImage: "rectangle.split.2x1") {
-                actions?.closePane()
-            }
-            .keyboardShortcut("w", modifiers: .command)
-            .disabled(actions?.canClosePane != true)
 
             Divider()
 
-            Button("上一个终端", systemImage: "chevron.left") {
-                actions?.previousSession()
+            Button("上一个标签", systemImage: "chevron.left") {
+                actions?.previousTab()
             }
-            .keyboardShortcut("[", modifiers: [.command, .shift])
-            .disabled(actions?.canNavigateSessions != true)
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.previousTab))
+            .disabled(actions?.canNavigateTabs != true)
 
-            Button("下一个终端", systemImage: "chevron.right") {
-                actions?.nextSession()
+            Button("下一个标签", systemImage: "chevron.right") {
+                actions?.nextTab()
             }
-            .keyboardShortcut("]", modifiers: [.command, .shift])
-            .disabled(actions?.canNavigateSessions != true)
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.nextTab))
+            .disabled(actions?.canNavigateTabs != true)
 
-            Menu("切换终端", systemImage: "rectangle.stack") {
+            Button("关闭标签", systemImage: "xmark.rectangle") {
+                actions?.closeTab()
+            }
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.closeTab))
+            .disabled(actions?.canCloseTab != true)
+
+            Divider()
+
+            Menu("切换工作区", systemImage: "square.stack.3d.up") {
                 ForEach(1...9, id: \.self) { number in
-                    Button("终端 \(number)") {
-                        actions?.selectSessionAtIndex(number - 1)
+                    Button("工作区 \(number)") {
+                        actions?.selectWorkspaceAtIndex(number - 1)
                     }
                     .keyboardShortcut(
                         KeyEquivalent(Character(String(number))),
                         modifiers: .command
                     )
-                    .disabled((actions?.sessionCount ?? 0) < number)
+                    .disabled((actions?.workspaceCount ?? 0) < number)
                 }
             }
-            .disabled((actions?.sessionCount ?? 0) == 0)
+            .disabled((actions?.workspaceCount ?? 0) == 0)
 
             Button("聚焦终端", systemImage: "text.cursor") {
                 actions?.focusTerminal()
             }
-            .keyboardShortcut("t", modifiers: [.command, .option])
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.focusTerminal))
             .disabled(actions?.canFocusTerminal != true)
 
             Button("关闭终端", systemImage: "xmark") {
-                actions?.closeSession()
+                actions?.killSession()
             }
-            .keyboardShortcut("w", modifiers: [.command, .shift])
-            .disabled(actions?.canCloseSession != true)
+            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.killSession))
+            .disabled(actions?.canKillSession != true)
         }
     }
 }

@@ -97,6 +97,35 @@ export class WorkspaceRegistry {
     return cloneWorkspace(workspace);
   }
 
+  // 拖拽重排:先从所有分组摘除,再插入目标分组或未分组序列的 index 位
+  reorder(workspaceId: string, workspaceGroupId: string | null, index: number): void {
+    this.getMutable(workspaceId);
+    const target = workspaceGroupId ? this.getGroupMutable(workspaceGroupId) : null;
+    for (const group of this.workspaceGroups) {
+      group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
+    }
+    if (target) {
+      target.workspaceIds.splice(Math.min(index, target.workspaceIds.length), 0, workspaceId);
+    } else {
+      // 未分组顺序即 workspaces 数组顺序:把自己插到第 index 个未分组项之前
+      const grouped = new Set(this.workspaceGroups.flatMap((group) => group.workspaceIds));
+      const self = this.workspaces.findIndex((item) => item.id === workspaceId);
+      const [workspace] = this.workspaces.splice(self, 1);
+      let seen = 0;
+      let insertAt = this.workspaces.length;
+      for (let i = 0; i < this.workspaces.length; i += 1) {
+        if (grouped.has(this.workspaces[i]!.id)) continue;
+        if (seen === index) {
+          insertAt = i;
+          break;
+        }
+        seen += 1;
+      }
+      this.workspaces.splice(insertAt, 0, workspace!);
+    }
+    this.saveAll();
+  }
+
   createGroup(name: string): WorkspaceGroup {
     const group: WorkspaceGroup = {
       id: crypto.randomUUID(),

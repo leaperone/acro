@@ -180,7 +180,7 @@ struct WorkbenchView: View {
                 model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
             },
             newWorkspace: { Task { await model.createWorkspace() } },
-            newTerminal: {
+            newTerminalTab: {
                 if let workspace = model.selectedWorkspace {
                     model.requestNewTerminal(in: workspace)
                 }
@@ -190,14 +190,14 @@ struct WorkbenchView: View {
             splitDown: { model.splitTerminal(.vertical) },
             focusPreviousPane: { model.focusAdjacentPane(offset: -1) },
             focusNextPane: { model.focusAdjacentPane(offset: 1) },
-            closePane: { model.closeFocusedPane() },
+            closeTab: { model.closeFocusedTab() },
             toggleLeftSidebar: { model.leftSidebarVisible.toggle() },
             toggleInspector: { model.inspectorVisible.toggle() },
-            previousSession: { model.selectAdjacentSession(offset: -1) },
-            nextSession: { model.selectAdjacentSession(offset: 1) },
-            selectSessionAtIndex: { model.selectSession(at: $0) },
+            previousTab: { model.selectAdjacentTab(offset: -1) },
+            nextTab: { model.selectAdjacentTab(offset: 1) },
+            selectWorkspaceAtIndex: { model.selectWorkspace(at: $0) },
             focusTerminal: { model.requestTerminalFocus() },
-            closeSession: {
+            killSession: {
                 if let session = model.selectedSession {
                     model.pendingSessionTermination = session
                 }
@@ -206,12 +206,12 @@ struct WorkbenchView: View {
             canSplitTerminal: model.selectedWorkspace != nil
                 && model.selectedProject != nil
                 && model.selectedSession != nil,
-            canNavigatePanes: model.currentLayout?.root?.sessionIds.count ?? 0 > 1,
-            canClosePane: model.currentLayout?.root != nil,
-            canNavigateSessions: model.currentWorkspaceSessions.count > 1,
+            canNavigatePanes: model.currentLayout?.root?.panes.count ?? 0 > 1,
+            canCloseTab: model.currentLayout?.focusedSessionId != nil,
+            canNavigateTabs: model.currentLayout?.focusedPane?.sessionIds.count ?? 0 > 1,
             canFocusTerminal: model.selectedSession != nil,
-            canCloseSession: model.selectedSession != nil,
-            sessionCount: model.currentWorkspaceSessions.count,
+            canKillSession: model.selectedSession != nil,
+            workspaceCount: model.orderedWorkspaces.count,
             leftSidebarVisible: model.leftSidebarVisible,
             inspectorVisible: model.inspectorVisible
         )

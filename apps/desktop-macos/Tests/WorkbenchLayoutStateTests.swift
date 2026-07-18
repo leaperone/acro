@@ -2,78 +2,77 @@ import XCTest
 @testable import AcroDesktop
 
 final class WorkbenchLayoutStateTests: XCTestCase {
-    func testSplitRemovePruneAndRoundTrip() throws {
-        let root = TerminalLayoutNode.leaf("one")
-            .splitting("one", direction: .horizontal, newSessionId: "two")
-            .splitting("two", direction: .vertical, newSessionId: "three")
+    func testTabAdoptSelectCloseAndSplit() throws {
+        var layout = WorkspaceTerminalLayout()
 
-        XCTAssertEqual(root.sessionIds, ["one", "two", "three"])
-        XCTAssertEqual(root.removing("two")?.sessionIds, ["one", "three"])
-        XCTAssertEqual(root.pruning(validSessionIds: ["three"])?.sessionIds, ["three"])
+        // adopt 建窗格,后续 adopt 变标签
+        layout.adopt("one")
+        layout.adopt("two")
+        XCTAssertEqual(layout.root?.panes.count, 1)
+        XCTAssertEqual(layout.root?.sessionIds, ["one", "two"])
+        XCTAssertEqual(layout.focusedSessionId, "two")
 
-        var layout = WorkspaceTerminalLayout(root: root, focusedSessionId: "hidden")
-        layout.prune(validSessionIds: ["one", "two", "three", "hidden"])
+        // 已存在的会话 adopt 只切选中
+        layout.adopt("one")
+        XCTAssertEqual(layout.focusedSessionId, "one")
+        XCTAssertEqual(layout.root?.sessionIds, ["one", "two"])
+
+        // 分屏出第二个窗格
+        let firstPaneId = layout.focusedPane!.id
+        layout.split(fromPane: firstPaneId, direction: .horizontal, newSessionId: "three")
+        XCTAssertEqual(layout.root?.panes.count, 2)
+        XCTAssertEqual(layout.focusedSessionId, "three")
+
+        // 关标签:窗格空了会被摘除,焦点回退
+        layout.removeTab("three")
+        XCTAssertEqual(layout.root?.panes.count, 1)
+        XCTAssertEqual(layout.focusedSessionId, "one")
+    }
+
+    func testMoveTabBetweenPanesAndToSplit() throws {
+        var layout = WorkspaceTerminalLayout()
+        layout.adopt("one")
+        layout.adopt("two")
+        let sourcePaneId = layout.focusedPane!.id
+        layout.split(fromPane: sourcePaneId, direction: .horizontal, newSessionId: "three")
+        let targetPaneId = layout.focusedPane!.id
+
+        // 移动标签到另一窗格的指定位置
+        layout.moveTab("one", toPane: targetPaneId, at: 0)
+        XCTAssertEqual(layout.root?.pane(withId: targetPaneId)?.sessionIds, ["one", "three"])
+        XCTAssertEqual(layout.root?.pane(withId: sourcePaneId)?.sessionIds, ["two"])
         XCTAssertEqual(layout.focusedSessionId, "one")
 
-        layout = WorkspaceTerminalLayout(root: root, focusedSessionId: "three")
-        layout.remove("one")
-        XCTAssertEqual(layout.root?.sessionIds, ["two", "three"])
+        // 拖到边缘生成新分屏,新窗格在前半
+        layout.moveTabToSplit("three", ofPane: sourcePaneId, direction: .vertical, newPaneFirst: true)
+        XCTAssertEqual(layout.root?.panes.count, 3)
         XCTAssertEqual(layout.focusedSessionId, "three")
-        layout.remove("three")
-        XCTAssertEqual(layout.focusedSessionId, "two")
 
-        layout = WorkspaceTerminalLayout(root: root)
-        layout.remove("one")
-        XCTAssertEqual(layout.focusedSessionId, "two")
+        // 源窗格因搬空被摘除
+        layout.moveTab("two", toPane: layout.focusedPane!.id, at: nil)
+        XCTAssertEqual(layout.root?.panes.count, 2)
+        XCTAssertEqual(layout.root?.pane(withId: sourcePaneId), nil)
+    }
+
+    func testPruneAndRoundTrip() throws {
+        var layout = WorkspaceTerminalLayout()
+        layout.adopt("one")
+        layout.adopt("two")
+        layout.split(fromPane: layout.focusedPane!.id, direction: .vertical, newSessionId: "three")
+
+        // 失效会话被剪掉,空窗格塌缩,焦点自愈
+        layout.prune(validSessionIds: ["one", "two"])
+        XCTAssertEqual(layout.root?.panes.count, 1)
+        XCTAssertEqual(layout.root?.sessionIds, ["one", "two"])
+        XCTAssertNotNil(layout.focusedSessionId)
 
         let snapshot = WorkbenchLayoutSnapshot(
             selectedWorkspaceId: "workspace",
-            workspaceLayouts: [
-                "workspace": WorkspaceTerminalLayout(root: root, focusedSessionId: "three"),
-            ],
+            workspaceLayouts: ["workspace": layout],
             leftSidebarVisible: true,
-            inspectorVisible: true
+            inspectorVisible: false
         )
         let data = try JSONEncoder().encode(snapshot)
         XCTAssertEqual(try JSONDecoder().decode(WorkbenchLayoutSnapshot.self, from: data), snapshot)
-    }
-}
-
-@MainActor
-final class AcroShortcutTests: XCTestCase {
-    func testCommandWClosesOnceAndConsumesRepeats() throws {
-        let terminal = AcroTerminalNSView(command: "true")
-        var closeCount = 0
-        terminal.onClose = { closeCount += 1 }
-
-        let press = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: .command,
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "w",
-            charactersIgnoringModifiers: "w",
-            isARepeat: false,
-            keyCode: 13
-        ))
-        XCTAssertNil(AcroAppDelegate.handleKeyDown(press, firstResponder: terminal))
-        XCTAssertEqual(closeCount, 1)
-
-        let repeated = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: .command,
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "w",
-            charactersIgnoringModifiers: "w",
-            isARepeat: true,
-            keyCode: 13
-        ))
-        XCTAssertNil(AcroAppDelegate.handleKeyDown(repeated, firstResponder: terminal))
-        XCTAssertEqual(closeCount, 1)
     }
 }

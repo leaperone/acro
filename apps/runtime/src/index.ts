@@ -66,6 +66,10 @@ async function main(): Promise<void> {
       }
       return workspaces.update(workspaceId, { name, projectIds, workspaceGroupId });
     },
+    "workspace.reorder": (_conn, { workspaceId, workspaceGroupId, index }) => {
+      workspaces.reorder(workspaceId, workspaceGroupId, index);
+      return { reordered: true };
+    },
     "workspaceGroup.list": () => workspaces.listGroups(),
     "workspaceGroup.create": (_conn, { name }) => workspaces.createGroup(name),
     "workspaceGroup.update": (_conn, { workspaceGroupId, name }) =>

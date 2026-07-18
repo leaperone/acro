@@ -92,6 +92,15 @@ export const methods = {
       ),
     result: Workspace,
   },
+  // 拖拽重排:移入分组(或 null 表示未分组区)并落在 index 位置
+  "workspace.reorder": {
+    params: z.object({
+      workspaceId: z.string(),
+      workspaceGroupId: z.string().nullable(),
+      index: z.number().int().min(0),
+    }),
+    result: z.object({ reordered: z.boolean() }),
+  },
   "workspaceGroup.list": {
     params: z.object({}),
     result: z.array(WorkspaceGroup),
