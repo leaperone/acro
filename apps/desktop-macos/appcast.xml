@@ -3,6 +3,18 @@
   <channel>
     <title>Acro Desktop</title>
     <item>
+      <title>0.0.7-beta.5</title>
+      <pubDate>Sat, 18 Jul 2026 15:12:59 GMT</pubDate>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>0.0.7-beta.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>beta</sparkle:channel>
+      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.7-beta.5/Acro-v0.0.7-beta.5-macos.zip" type="application/octet-stream" length="12985738" sparkle:edSignature="bIHC23p9YTB3dQ2Lel7jdmNq52ssFnSfJFV7BDzhCs8kou4WV0vBQ3Ne/wmEyDguphraUgs8pRXu7s+FVYoaBw==" />
+      <sparkle:deltas>
+        <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.7-beta.5/Acro-v0.0.7-beta.5-from-0.0.7-beta.4.delta" type="application/octet-stream" length="529486" sparkle:deltaFrom="19" sparkle:edSignature="X8S0WJ7XYmZltaDf6TYcA1HCdL6RdwgSTBTSHyMZza/iCil3ECTfhN1RF2pGlpe7gRa6kQaRgj45uktFCLFsCw==" />
+      </sparkle:deltas>
+    </item>
+    <item>
       <title>0.0.7-beta.4</title>
       <pubDate>Sat, 18 Jul 2026 14:57:05 GMT</pubDate>
       <sparkle:version>19</sparkle:version>
