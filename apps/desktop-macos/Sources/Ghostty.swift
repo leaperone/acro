@@ -82,16 +82,19 @@ final class Ghostty {
         if let app { ghostty_app_tick(app) }
     }
 
-    // 资源目录:env 覆盖 > 包目录(swift build 布局)
+    // 资源目录:env 覆盖 > .app bundle > 包目录(swift build 布局)
     private static func setupResourcesDir() {
         if ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] != nil { return }
         let exe = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
-        let candidates = [
+        var candidates = [
             exe.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
                 .appendingPathComponent("Resources/ghostty"), // <pkg>/.build/debug/AcroDesktop → <pkg>/Resources/ghostty
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("Resources/ghostty"),
         ]
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("ghostty") {
+            candidates.insert(bundled, at: 0) // Acro.app 分发布局
+        }
         for url in candidates
         where FileManager.default.fileExists(atPath: url.appendingPathComponent("shell-integration").path) {
             setenv("GHOSTTY_RESOURCES_DIR", url.path, 1)

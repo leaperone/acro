@@ -286,7 +286,9 @@ private struct PaneTabBar: View {
     var body: some View {
         HStack(spacing: 4) {
             if trafficLightClearance {
-                Color.clear.frame(width: 70)
+                WindowDragHandle()
+                    .frame(width: 70)
+                    .frame(maxHeight: .infinity)
             }
             ScrollView(.horizontal) {
                 HStack(spacing: 3) {
@@ -295,8 +297,10 @@ private struct PaneTabBar: View {
                     }
                 }
                 .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.never)
+            .frame(maxWidth: .infinity)
 
             Button {
                 if let workspace = model.selectedWorkspace {
@@ -312,9 +316,7 @@ private struct PaneTabBar: View {
             .foregroundStyle(.secondary)
             .help("新建标签(\(ShortcutSettings.stored(.newTerminalTab).displayString))")
             .accessibilityLabel("新建标签")
-
-            WindowDragHandle()
-                .frame(minWidth: 8, maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.trailing, 4)
         }
         .frame(height: 28)
         .background(.bar)

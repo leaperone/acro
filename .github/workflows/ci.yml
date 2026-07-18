@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -C packages/protocol check
+      - run: pnpm -C apps/runtime exec tsc --noEmit
+      - run: pnpm -C apps/runtime test
+      - run: pnpm -C apps/cli exec tsc --noEmit
+
+  desktop-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup ghostty assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash apps/desktop-macos/scripts/setup-ghostty.sh
+      - name: build
+        run: swift build --package-path apps/desktop-macos
+      - name: test
+        run: swift test --package-path apps/desktop-macos

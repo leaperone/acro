@@ -1,0 +1,29 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup ghostty assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash apps/desktop-macos/scripts/setup-ghostty.sh
+      - name: package app
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash apps/desktop-macos/scripts/package-app.sh "$VERSION"
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSET=$(ls apps/desktop-macos/dist/Acro-v*-macos.zip)
+          gh release create "$GITHUB_REF_NAME" "$ASSET" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
