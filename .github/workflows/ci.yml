@@ -25,6 +25,16 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: runtime e2e
+        run: pnpm -C apps/runtime e2e
+      - name: cli e2e
+        run: pnpm -C apps/cli e2e
       - name: test appcast generation
         run: python3 apps/desktop-macos/scripts/test_update_appcast.py
       - name: setup ghostty assets

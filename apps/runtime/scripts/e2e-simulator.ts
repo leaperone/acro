@@ -7,11 +7,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import WebSocket from "ws";
-import { decodeFrame, FRAME_SIM } from "@acro/protocol";
+import { decodePairingOffer, FRAME_SIM } from "@acro/protocol";
+import { E2eClient } from "./e2e-client.ts";
 
 const PORT = 18793;
-const PAIR_CODE = "E2ESIMULATOR";
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-sim-"));
 const runtimeEntry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 
@@ -19,8 +18,6 @@ const env = {
   ...process.env,
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
-  ACRO_PAIR_CODE: PAIR_CODE,
-  ACRO_PROJECT_ROOTS: stateDir,
 };
 
 function sleep(ms: number): Promise<void> {
@@ -44,45 +41,13 @@ async function main(): Promise<void> {
         await sleep(150);
       }
     }
-    const { token } = (await (
-      await fetch(`http://127.0.0.1:${PORT}/pair`, {
-        method: "POST",
-        body: JSON.stringify({ code: PAIR_CODE, deviceName: "e2e-sim" }),
-      })
-    ).json()) as { token: string };
-
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${token}`);
-    await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => resolve());
-      ws.on("error", reject);
-    });
-    let nextId = 1;
-    const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-    const frames: Buffer[] = [];
-    ws.on("message", (raw: Buffer, isBinary: boolean) => {
-      if (isBinary) {
-        const frame = decodeFrame(raw);
-        if (frame.type === FRAME_SIM) frames.push(Buffer.from(frame.data));
-        return;
-      }
-      const msg = JSON.parse(raw.toString("utf8"));
-      if (msg.t !== "res") return;
-      const p = pending.get(msg.id);
-      if (!p) return;
-      pending.delete(msg.id);
-      if (msg.ok) p.resolve(msg.result);
-      else p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
-    });
-    const rpc = <T = any>(method: string, params: unknown = {}, timeoutMs = 180000): Promise<T> => {
-      const id = nextId++;
-      ws.send(JSON.stringify({ t: "req", id, method, params }));
-      return new Promise<T>((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        setTimeout(() => {
-          if (pending.delete(id)) reject(new Error(`rpc timeout: ${method}`));
-        }, timeoutMs);
-      });
-    };
+    const offer = decodePairingOffer(
+      fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim(),
+    );
+    const client = new E2eClient();
+    await client.connect(offer);
+    const rpc = <T = any>(method: string, params: unknown = {}) =>
+      client.rpc<T>(method, params, 180000);
 
     const devices = await rpc<Array<{ udid: string; name: string; state: string }>>(
       "simulator.list",
@@ -99,21 +64,20 @@ async function main(): Promise<void> {
       console.log("[e2e] booted");
     }
 
-    const attach = await rpc<{ channel: number }>("simulator.attach", { udid: target.udid });
+    const attach = await rpc<{ channel: number }>("simulator.attach", {
+      udid: target.udid,
+    });
     assert.ok(attach.channel >= 1);
-    const frameDeadline = Date.now() + 30000;
-    while (frames.length === 0 && Date.now() < frameDeadline) await sleep(300);
-    assert.ok(frames.length > 0, "must receive simulator frames");
-    const png = frames[0]!;
+    const png = Buffer.from((await client.waitFrame(FRAME_SIM, 30000)).data);
     assert.ok(png[0] === 0x89 && png[1] === 0x50, "frame must be PNG");
-    console.log(`[e2e] received ${frames.length} sim frame(s), first ${png.length}B`);
+    console.log(`[e2e] received sim frame, ${png.length}B`);
 
     await rpc("simulator.detach", { udid: target.udid });
     if (bootedUdid) {
       await rpc("simulator.shutdown", { udid: bootedUdid });
       console.log("[e2e] shutdown");
     }
-    ws.close();
+    client.close();
     console.log("\nE2E-SIMULATOR PASS ✅  list/boot/画面流/shutdown 全部通过");
   } finally {
     runtime.kill("SIGTERM");
