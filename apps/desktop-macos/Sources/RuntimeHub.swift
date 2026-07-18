@@ -18,7 +18,9 @@ final class RuntimeHub: ObservableObject {
 
     // 与磁盘配置对账:新增的服务器建连接,删除的断开,endpoints/凭据变了重连
     func reload() {
-        let servers = ClientConfig.load()?.servers ?? []
+        let config = ClientConfig.load()
+        if config == nil, FileManager.default.fileExists(atPath: ClientConfig.path) { return }
+        let servers = config?.servers ?? []
         var next: [Entry] = []
         var seen = Set<String>()
         for server in servers {
