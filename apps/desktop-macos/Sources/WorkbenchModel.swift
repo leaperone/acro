@@ -94,6 +94,7 @@ final class WorkbenchModel: ObservableObject {
     // 工作区拖拽的来源服务器:禁止拖进另一台服务器的分组
     @Published var draggingWorkspaceServerId: String?
     @Published private(set) var cmdHeld = false
+    @Published private(set) var controlHeld = false
 
     // ---- 对话框与浮层 ----
     @Published var showingCommandPalette = false
@@ -140,12 +141,22 @@ final class WorkbenchModel: ObservableObject {
         sidebarViewMode = UserDefaults.standard.string(forKey: Self.sidebarModeKey)
             .flatMap(SidebarViewMode.init(rawValue:)) ?? .workspaces
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            let held = event.modifierFlags
-                .intersection(.deviceIndependentFlagsMask) == .command
+            let flags = StoredShortcut.normalizedModifiers(event)
+            let cmdHeld = flags == .command
+            let controlHeld = flags == .control
             Task { @MainActor in
-                if self?.cmdHeld != held { self?.cmdHeld = held }
+                if self?.cmdHeld != cmdHeld { self?.cmdHeld = cmdHeld }
+                if self?.controlHeld != controlHeld { self?.controlHeld = controlHeld }
             }
             return event
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.cmdHeld = false
+                self?.controlHeld = false
+            }
         }
         NotificationCenter.default.addObserver(
             forName: .acroShortcutAction, object: nil, queue: .main
@@ -159,9 +170,17 @@ final class WorkbenchModel: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: .acroSelectWorkspace, object: nil, queue: .main
         ) { [weak self] note in
-            guard let index = note.userInfo?["index"] as? Int else { return }
+            guard let digit = note.userInfo?["digit"] as? Int else { return }
             MainActor.assumeIsolated {
-                self?.selectWorkspace(at: index)
+                self?.selectWorkspace(number: digit)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .acroSelectTabByNumber, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let digit = note.userInfo?["digit"] as? Int else { return }
+            MainActor.assumeIsolated {
+                self?.selectTab(number: digit)
             }
         }
     }
@@ -201,6 +220,10 @@ final class WorkbenchModel: ObservableObject {
             selectAdjacentTab(offset: -1)
         case .nextTab:
             selectAdjacentTab(offset: 1)
+        case .previousWorkspace:
+            selectAdjacentWorkspace(offset: -1)
+        case .nextWorkspace:
+            selectAdjacentWorkspace(offset: 1)
         case .focusTerminal:
             requestTerminalFocus()
         case .openSettings:
@@ -260,9 +283,11 @@ final class WorkbenchModel: ObservableObject {
 
     func workspaceShortcutDigit(_ workspaceId: String) -> Int? {
         guard let index = orderedWorkspaces.firstIndex(where: { $0.id == workspaceId }),
-              index < 9
+              let digit = NumberedShortcutMapper.digit(
+                  forIndex: index, count: orderedWorkspaces.count
+              )
         else { return nil }
-        return index + 1
+        return digit
     }
 
     func workspaces(in group: WorkspaceGroup, on connection: RuntimeConnection? = nil) -> [Workspace] {
@@ -423,6 +448,22 @@ final class WorkbenchModel: ObservableObject {
         selectWorkspace(ordered[index])
     }
 
+    func selectWorkspace(number: Int) {
+        guard let index = NumberedShortcutMapper.index(
+            forDigit: number, count: orderedWorkspaces.count
+        ) else { return }
+        selectWorkspace(at: index)
+    }
+
+    func selectAdjacentWorkspace(offset: Int) {
+        let ordered = orderedWorkspaces
+        guard !ordered.isEmpty,
+              let selectedWorkspaceId,
+              let index = ordered.firstIndex(where: { $0.id == selectedWorkspaceId })
+        else { return }
+        selectWorkspace(ordered[(index + offset + ordered.count) % ordered.count])
+    }
+
     func focusSession(_ session: Session, flash: Bool = false) {
         guard let workspace = workspace(containing: session.id) else { return }
         if selectedWorkspaceId != workspace.id { selectedWorkspaceId = workspace.id }
@@ -445,6 +486,19 @@ final class WorkbenchModel: ObservableObject {
         maybeClaimFocus(sessionId)
         flashPane(sessionId)
         requestTerminalFocus()
+    }
+
+    func selectTab(number: Int) {
+        guard let target = currentLayout?.tab(number: number) else { return }
+        selectTab(target.sessionId, inPane: target.paneId)
+    }
+
+    func tabShortcutDigit(_ sessionId: String, inPane paneId: String) -> Int? {
+        guard currentLayout?.focusedPaneId == paneId,
+              let pane = currentLayout?.root?.pane(withId: paneId),
+              let index = pane.sessionIds.firstIndex(of: sessionId)
+        else { return nil }
+        return NumberedShortcutMapper.digit(forIndex: index, count: pane.sessionIds.count)
     }
 
     // 布局层移除(surface 自行退出、会话已死时用);活会话的"关闭标签"走 requestKillTab
@@ -480,12 +534,8 @@ final class WorkbenchModel: ObservableObject {
     }
 
     func selectAdjacentTab(offset: Int) {
-        guard let pane = currentLayout?.focusedPane, pane.sessionIds.count > 1,
-              let selected = pane.selectedSessionId,
-              let index = pane.sessionIds.firstIndex(of: selected)
-        else { return }
-        let next = pane.sessionIds[(index + offset + pane.sessionIds.count) % pane.sessionIds.count]
-        selectTab(next, inPane: pane.id)
+        guard let target = currentLayout?.adjacentTab(offset: offset) else { return }
+        selectTab(target.sessionId, inPane: target.paneId)
     }
 
     // 拖拽负载有效性:会话必须仍在"当前布局"的来源窗格里。

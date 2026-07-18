@@ -366,6 +366,9 @@ private struct PaneTabBar: View {
             title: session.map { model.sessionDisplayName($0) } ?? "终端",
             selected: selected,
             focused: focused,
+            shortcutHint: model.controlHeld && focused
+                ? model.tabShortcutDigit(sessionId, inPane: pane.id).map { "⌃\($0)" }
+                : nil,
             select: { model.selectTab(sessionId, inPane: pane.id) },
             kill: { model.requestKillTab(sessionId) },
             // 分屏基于焦点窗格:先把该标签选中再分,语义与 orca 的"非激活标签先激活"一致
@@ -402,6 +405,7 @@ private struct PaneTabItem: View {
     let title: String
     let selected: Bool
     let focused: Bool
+    let shortcutHint: String?
     let select: () -> Void
     let kill: () -> Void
     let splitRight: () -> Void
@@ -430,17 +434,24 @@ private struct PaneTabItem: View {
             }
             .buttonStyle(.plain)
 
-            Button(action: kill) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 8, weight: .bold))
-                    .frame(width: 14, height: 14)
-                    .contentShape(Rectangle())
+            ZStack {
+                if let shortcutHint {
+                    ShortcutHintPill(text: shortcutHint, fontSize: 8)
+                } else {
+                    Button(action: kill) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .frame(width: 14, height: 14)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .opacity(hovered ? 1 : 0)
+                    .help("关闭标签(终止终端)")
+                    .accessibilityLabel("关闭标签 \(title)")
+                }
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .opacity(hovered ? 1 : 0)
-            .help("关闭标签(终止终端)")
-            .accessibilityLabel("关闭标签 \(title)")
+            .frame(width: 30, height: 18)
         }
         .padding(.leading, 7)
         .padding(.trailing, 3)

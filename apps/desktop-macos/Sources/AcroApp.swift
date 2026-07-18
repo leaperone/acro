@@ -7,11 +7,12 @@ import AppKit
 import SwiftUI
 
 extension Notification.Name {
-    // 全部应用快捷键与菜单点击统一走这两条通知,由 WorkbenchModel 执行。
+    // 全部应用快捷键与菜单点击统一走这些通知,由 WorkbenchModel 执行。
     // (cmux 的 AppDelegate 快捷键路由模式;SwiftUI Commands 的 FocusedValue /
     // @ObservedObject 在本应用形态下都不可靠,菜单只做哑触发器。)
     static let acroShortcutAction = Notification.Name("acro.shortcut.action")
     static let acroSelectWorkspace = Notification.Name("acro.shortcut.selectWorkspace")
+    static let acroSelectTabByNumber = Notification.Name("acro.shortcut.selectTabByNumber")
 }
 
 func postShortcut(_ action: ShortcutAction) {
@@ -35,7 +36,13 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
             if event.window?.title == Self.settingsWindowTitle { return event }
             if let digit = ShortcutSettings.workspaceDigit(event) {
                 NotificationCenter.default.post(
-                    name: .acroSelectWorkspace, object: nil, userInfo: ["index": digit - 1]
+                    name: .acroSelectWorkspace, object: nil, userInfo: ["digit": digit]
+                )
+                return nil
+            }
+            if let digit = ShortcutSettings.tabDigit(event) {
+                NotificationCenter.default.post(
+                    name: .acroSelectTabByNumber, object: nil, userInfo: ["digit": digit]
                 )
                 return nil
             }
@@ -105,13 +112,16 @@ struct AcroWorkbenchCommands: Commands {
 
             Divider()
 
+            item("上一个工作区", "chevron.up", .previousWorkspace)
+            item("下一个工作区", "chevron.down", .nextWorkspace)
+
             Menu("切换工作区", systemImage: "square.stack.3d.up") {
                 ForEach(1...9, id: \.self) { number in
                     Button("工作区 \(number)") {
                         NotificationCenter.default.post(
                             name: .acroSelectWorkspace,
                             object: nil,
-                            userInfo: ["index": number - 1]
+                            userInfo: ["digit": number]
                         )
                     }
                     .keyboardShortcut(

@@ -629,7 +629,7 @@ private struct ShortcutSettingsPane: View {
                         row(action)
                     }
                 } footer: {
-                    Text("⌘1-9 固定用于切换工作区。菜单栏中的快捷键在重启应用后更新，其余立即生效。")
+                    Text("⌃1-9 固定选择焦点窗格标签，⌘1-9 固定切换工作区；9 代表最后一个。菜单栏中的快捷键在重启应用后更新，其余立即生效。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -701,6 +701,10 @@ private struct ShortcutSettingsPane: View {
         let shortcut = StoredShortcut.from(event)
         guard shortcut.hasModifier else {
             feedback = "快捷键至少需要 ⌘、⌥ 或 ⌃ 修饰键"
+            return
+        }
+        if let reserved = ShortcutSettings.reservedNumberedShortcutDescription(shortcut) {
+            feedback = reserved
             return
         }
         if let conflict = ShortcutStore.shared.conflict(of: shortcut, excluding: action) {
