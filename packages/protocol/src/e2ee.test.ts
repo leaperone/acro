@@ -69,7 +69,7 @@ test("配对码编解码往返", () => {
   const pub = bytesToB64(generateKeyPair().pub);
   const offer = {
     v: 1 as const,
-    endpoints: ["192.168.1.10:8790", "frp.example.com:7100"],
+    endpoints: ["192.168.1.10:8790", "例子.test:7100"],
     token: "t".repeat(64),
     pub,
   };

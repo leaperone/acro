@@ -39,6 +39,36 @@ enum ServerDirectory {
         return entry
     }
 
+    // 本机授权来自 ~/.acro/local-offer.txt。文件轮换后保留同一个 localId，
+    // 让侧边栏、选中态和 attach 路由不会因为凭据更新而迁移。
+    @discardableResult
+    static func pairLocal(offerText: String, hub: RuntimeHub) throws -> ServerEntry {
+        let offer = try PairingOffer.decode(
+            offerText.trimmingCharacters(in: .whitespacesAndNewlines))
+        var config = try ClientConfig.loadForWrite()
+        let existing = config.servers.first(where: { $0.isLocal })
+        if let existing,
+           existing.token == offer.token,
+           existing.pub == offer.pub,
+           existing.endpoints == offer.endpoints {
+            return existing
+        }
+
+        config.servers.removeAll { $0.isLocal }
+        let entry = ServerEntry(
+            localId: existing?.localId ?? UUID().uuidString,
+            name: existing?.name ?? "本机",
+            deviceId: "",
+            token: offer.token,
+            pub: offer.pub,
+            endpoints: offer.endpoints)
+        config.servers.append(entry)
+        config.active = entry.id
+        config.save()
+        hub.reload()
+        return entry
+    }
+
     // 名称 + 连接方式一次事务保存:入口顺序即用户排序(连接时局域网优先、组内保序)
     static func update(
         _ serverId: String, name: String, endpoints: [String], hub: RuntimeHub

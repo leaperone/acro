@@ -13,8 +13,9 @@ import { createHttpHandler } from "./http.ts";
 import {
   clearBootstrapOffer,
   createShareOffer,
+  ensureBootstrapOffer,
+  ensureLocalOffer,
   ServerIdentity,
-  writeBootstrapOffer,
 } from "./share.ts";
 import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.ts";
 import { ensureStateDirs, paths } from "./paths.ts";
@@ -34,7 +35,10 @@ async function main(): Promise<void> {
   process.once("exit", releaseLock);
   const config = loadConfig();
   const registry = new DeviceRegistry();
+  registry.migrateLegacyLocalGrants();
   const identity = new ServerIdentity();
+  let localOffer = ensureLocalOffer(registry, identity, config.port);
+  const needsBootstrap = !registry.list().some((device) => device.lastSeenAt !== null);
   const daemon = await DaemonClient.connect();
   const browsers = new BrowserManager();
   const simulators = new SimulatorManager();
@@ -91,6 +95,9 @@ async function main(): Promise<void> {
       const removed = registry.remove(deviceId);
       if (!removed) throw new Error("device not found");
       gateway.terminateDevice(deviceId);
+      if (removed.id === localOffer.deviceId) {
+        localOffer = ensureLocalOffer(registry, identity, config.port);
+      }
       return { revoked: true };
     },
     "workspace.list": () => workspaces.list(),
@@ -395,18 +402,12 @@ async function main(): Promise<void> {
   simulators.on("detached", (_udid: string, handle: number) => gateway.dropSimChannel(handle));
 
   // 本机再配对 offer 显式带回环入口:客户端以"含回环"识别本机条目
-  const server = http.createServer(
-    createHttpHandler(
-      () =>
-        createShareOffer(registry, identity, config.port, "本机", [`127.0.0.1:${config.port}`])
-          .offer,
-    ),
-  );
+  const server = http.createServer(createHttpHandler());
   server.on("upgrade", (req, socket, head) => gateway.handleUpgrade(req, socket, head));
   server.listen(config.port, () => {
     console.log(`[runtime] listening on http://127.0.0.1:${config.port}`);
-    if (!registry.hasDevices()) {
-      const { offer } = writeBootstrapOffer(registry, identity, config.port);
+    if (needsBootstrap) {
+      const { offer } = ensureBootstrapOffer(registry, identity, config.port);
       console.log(`[runtime] 首次启动,配对码(也写入 ${paths.bootstrapOffer}):\n${offer}`);
     }
   });

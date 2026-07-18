@@ -62,20 +62,16 @@ final class LocalRuntimeManager {
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
-    // 配置里已有本机条目(含回环入口)就不动;没有则向 runtime 的
-    // 仅限回环 /local-offer 请求新配对码(bootstrap 文件被清、条目被删都能自愈)
+    // 本机配对码只从当前用户的 0700 state 目录读取。回环 HTTP 无法区分
+    // 本机不同账号，不能承载会授予终端与 Computer Use 权限的凭据。
     private func ensurePaired(hub: RuntimeHub) async {
-        if ClientConfig.load()?.servers.contains(where: { $0.isLocal }) == true { return }
-        guard let url = URL(string: "http://127.0.0.1:\(Self.port)/local-offer") else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 3
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let body = try? JSONDecoder().decode([String: String].self, from: data),
-              let offer = body["offer"]
+        let statePath = ProcessInfo.processInfo.environment["ACRO_STATE_DIR"]
+            ?? "\(NSHomeDirectory())/.acro"
+        let path = "\(statePath)/local-offer.txt"
+        guard let data = FileManager.default.contents(atPath: path),
+              let offer = String(data: data, encoding: .utf8)
         else { return }
-        _ = try? ServerDirectory.pair(offerText: offer, name: "本机", hub: hub)
+        _ = try? ServerDirectory.pairLocal(offerText: offer, hub: hub)
     }
 
     private func spawnBundledRuntime() -> Bool {
