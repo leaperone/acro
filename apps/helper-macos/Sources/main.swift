@@ -67,7 +67,7 @@ func listWindows() -> [String: Any] {
     return ["windows": windows]
 }
 
-func click(x: Double, y: Double) throws {
+func click(x: Double, y: Double, deadlineMs: Int64?) throws {
     let point = CGPoint(x: x, y: y)
     guard
         let down = CGEvent(
@@ -77,26 +77,38 @@ func click(x: Double, y: Double) throws {
             mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point,
             mouseButton: .left)
     else { throw HelperError.message("event create failed") }
+    try requireBeforeDeadline(deadlineMs)
     down.post(tap: .cghidEventTap)
     usleep(30_000)
     up.post(tap: .cghidEventTap)
 }
 
-func typeText(_ text: String) throws {
+func requireBeforeDeadline(_ deadlineMs: Int64?) throws {
+    guard let deadlineMs else { return }
+    let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+    guard nowMs < deadlineMs else { throw HelperError.message("request deadline exceeded") }
+}
+
+func typeText(_ text: String, deadlineMs: Int64?) throws {
     for scalar in text.unicodeScalars {
+        try requireBeforeDeadline(deadlineMs)
         var utf16 = Array(String(scalar).utf16)
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
             let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
         else { throw HelperError.message("event create failed") }
         down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
         up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+        try requireBeforeDeadline(deadlineMs)
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         usleep(5_000)
     }
 }
 
-func pressKey(keyCode: Int, command: Bool, option: Bool, control: Bool, shift: Bool) throws {
+func pressKey(
+    keyCode: Int, command: Bool, option: Bool, control: Bool, shift: Bool,
+    deadlineMs: Int64?
+) throws {
     guard let keyCode = CGKeyCode(exactly: keyCode) else {
         throw HelperError.message("keyCode out of range")
     }
@@ -112,6 +124,7 @@ func pressKey(keyCode: Int, command: Bool, option: Bool, control: Bool, shift: B
     if shift { flags.insert(.maskShift) }
     down.flags = flags
     up.flags = flags
+    try requireBeforeDeadline(deadlineMs)
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
 }
@@ -134,7 +147,10 @@ enum HelperError: Error {
 
 // ---- 分发 ----
 
-func handle(method: String, params: [String: Any]) async throws -> [String: Any] {
+func handle(method: String, params: [String: Any], deadlineMs: Int64?) async throws
+    -> [String: Any]
+{
+    try requireBeforeDeadline(deadlineMs)
     switch method {
     case "ping":
         return ["pid": ProcessInfo.processInfo.processIdentifier]
@@ -150,14 +166,14 @@ func handle(method: String, params: [String: Any]) async throws -> [String: Any]
         guard let x = params["x"] as? Double, let y = params["y"] as? Double else {
             throw HelperError.message("x/y required")
         }
-        try click(x: x, y: y)
+        try click(x: x, y: y, deadlineMs: deadlineMs)
         return [:]
     case "input.type":
         guard let text = params["text"] as? String else { throw HelperError.message("text required") }
         guard text.unicodeScalars.count <= maxTypeScalars else {
             throw HelperError.message("text too long")
         }
-        try typeText(text)
+        try typeText(text, deadlineMs: deadlineMs)
         return [:]
     case "input.key":
         guard let keyCode = params["keyCode"] as? Int else {
@@ -168,7 +184,8 @@ func handle(method: String, params: [String: Any]) async throws -> [String: Any]
             command: params["command"] as? Bool ?? false,
             option: params["option"] as? Bool ?? false,
             control: params["control"] as? Bool ?? false,
-            shift: params["shift"] as? Bool ?? false)
+            shift: params["shift"] as? Bool ?? false,
+            deadlineMs: deadlineMs)
         return [:]
     case "app.activate":
         guard let bundleId = params["bundleId"] as? String else {
@@ -253,9 +270,10 @@ func handleLine(_ line: Data, fd: Int32) async {
         let method = obj["method"] as? String
     else { return }
     let params = obj["params"] as? [String: Any] ?? [:]
+    let deadlineMs = (obj["deadlineMs"] as? NSNumber)?.int64Value
     var response: [String: Any]
     do {
-        let result = try await handle(method: method, params: params)
+        let result = try await handle(method: method, params: params, deadlineMs: deadlineMs)
         response = ["id": id, "ok": true, "result": result]
     } catch {
         response = ["id": id, "ok": false, "error": "\(error)"]

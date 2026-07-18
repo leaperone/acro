@@ -10,11 +10,20 @@ import { StringDecoder } from "node:string_decoder";
 const helperSocket =
   process.env.ACRO_HELPER_SOCKET ?? path.join(os.homedir(), ".acro", "helper.sock");
 const MAX_HELPER_LINE_CHARS = 64 * 1024 * 1024;
+const HELPER_TIMEOUT_MS = 15_000;
+const MAX_HELPER_QUEUE = 32;
 
 interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
+}
+
+interface QueuedRequest {
+  method: string;
+  params: Record<string, unknown>;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
 }
 
 export class HelperClient {
@@ -25,9 +34,16 @@ export class HelperClient {
   private decoder = new StringDecoder("utf8");
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  private queue: QueuedRequest[] = [];
+  private active = false;
+  private closed = false;
+  private readonly timeoutMs: number;
+  private readonly maxQueue: number;
 
-  constructor(socketPath = helperSocket) {
+  constructor(socketPath = helperSocket, timeoutMs = HELPER_TIMEOUT_MS, maxQueue = MAX_HELPER_QUEUE) {
     this.socketPath = socketPath;
+    this.timeoutMs = timeoutMs;
+    this.maxQueue = maxQueue;
   }
 
   private ensureConnected(): Promise<void> {
@@ -47,6 +63,11 @@ export class HelperClient {
       socket.once("error", fail);
       socket.on("connect", () => {
         socket.off("error", fail);
+        if (this.closed) {
+          socket.destroy();
+          reject(new Error("helper client closed"));
+          return;
+        }
         this.socket = socket;
         socket.on("data", (chunk) => this.onData(this.decoder.write(chunk)));
         socket.on("close", () => this.onClose(socket));
@@ -57,15 +78,20 @@ export class HelperClient {
   }
 
   private onClose(socket: net.Socket): void {
-    if (this.socket !== socket) return;
-    this.socket = null;
-    this.buffer = "";
-    this.decoder = new StringDecoder("utf8");
+    if (!this.resetSocket(socket)) return;
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);
       p.reject(new Error("helper connection lost"));
     }
     this.pending.clear();
+  }
+
+  private resetSocket(socket: net.Socket): boolean {
+    if (this.socket !== socket) return false;
+    this.socket = null;
+    this.buffer = "";
+    this.decoder = new StringDecoder("utf8");
+    return true;
   }
 
   private onData(text: string): void {
@@ -98,26 +124,65 @@ export class HelperClient {
     }
   }
 
-  async request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    await this.ensureConnected();
-    const id = this.nextId++;
+  request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (this.closed) return Promise.reject(new Error("helper client closed"));
+    if (this.queue.length >= this.maxQueue) {
+      return Promise.reject(new Error("helper request queue full"));
+    }
     return new Promise<T>((resolve, reject) => {
+      this.queue.push({
+        method,
+        params,
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      });
+      void this.pump();
+    });
+  }
+
+  private async pump(): Promise<void> {
+    if (this.active || this.closed) return;
+    const queued = this.queue.shift();
+    if (!queued) return;
+    this.active = true;
+    try {
+      await this.ensureConnected();
+      queued.resolve(await this.send(queued.method, queued.params));
+    } catch (error) {
+      queued.reject(error as Error);
+    } finally {
+      this.active = false;
+      void this.pump();
+    }
+  }
+
+  private send(method: string, params: Record<string, unknown>): Promise<unknown> {
+    const id = this.nextId++;
+    const deadlineMs = Date.now() + this.timeoutMs;
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`helper timeout: ${method}`));
-      }, 15000);
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-      this.socket!.write(`${JSON.stringify({ id, method, params })}\n`, (error) => {
+        if (!this.pending.delete(id)) return;
+        const socket = this.socket;
+        if (socket && this.resetSocket(socket)) socket.destroy();
+        reject(new Error(`helper timeout: ${method}`));
+      }, this.timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.socket!.write(`${JSON.stringify({ id, method, params, deadlineMs })}\n`, (error) => {
         if (!error) return;
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
         clearTimeout(pending.timer);
+        const socket = this.socket;
+        if (socket && this.resetSocket(socket)) socket.destroy();
         reject(error);
       });
     });
   }
 
   close(): void {
+    this.closed = true;
+    for (const queued of this.queue.splice(0)) queued.reject(new Error("helper client closed"));
     this.socket?.destroy();
   }
 }
