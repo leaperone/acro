@@ -5,6 +5,7 @@ import {
   type Workspace,
   type WorkspaceGroup,
 } from "@acro/protocol";
+import { z } from "zod";
 import { paths } from "./paths.ts";
 import { readJson, writeJsonAtomic } from "./store.ts";
 
@@ -20,17 +21,15 @@ export class WorkspaceRegistry {
 
   constructor(storage: WorkspaceStorage = paths) {
     this.storage = storage;
-    const stored = readJson<unknown[]>(storage.workspaces, []);
-    this.workspaces = stored.flatMap((value) => {
-      const parsed = WorkspaceSchema.safeParse(value);
-      return parsed.success ? [parsed.data] : [];
-    });
-    const storedGroups = readJson<unknown[]>(storage.workspaceGroups, []);
-    this.workspaceGroups = storedGroups.flatMap((value) => {
-      const parsed = WorkspaceGroupSchema.safeParse(value);
-      return parsed.success ? [parsed.data] : [];
-    });
-    this.normalizeGroups();
+    try {
+      this.workspaces = z.array(WorkspaceSchema).parse(readJson<unknown>(storage.workspaces, []));
+      this.workspaceGroups = z
+        .array(WorkspaceGroupSchema)
+        .parse(readJson<unknown>(storage.workspaceGroups, []));
+    } catch (error) {
+      throw new Error(`invalid workspace state: ${(error as Error).message}`, { cause: error });
+    }
+    this.validateGroups();
   }
 
   list(): Workspace[] {
@@ -190,20 +189,20 @@ export class WorkspaceRegistry {
     return group;
   }
 
-  private normalizeGroups(): void {
+  private validateGroups(): void {
     const validWorkspaceIds = new Set(this.workspaces.map((workspace) => workspace.id));
     const claimed = new Set<string>();
-    let changed = false;
     for (const group of this.workspaceGroups) {
-      const next = group.workspaceIds.filter((id) => {
-        if (!validWorkspaceIds.has(id) || claimed.has(id)) return false;
+      for (const id of group.workspaceIds) {
+        if (!validWorkspaceIds.has(id)) {
+          throw new Error(`workspace group ${group.id} references missing workspace ${id}`);
+        }
+        if (claimed.has(id)) {
+          throw new Error(`workspace ${id} belongs to more than one workspace group`);
+        }
         claimed.add(id);
-        return true;
-      });
-      if (next.length !== group.workspaceIds.length) changed = true;
-      group.workspaceIds = next;
+      }
     }
-    if (changed) this.saveGroups();
   }
 
   private saveWorkspaces(): void {

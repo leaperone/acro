@@ -305,7 +305,13 @@ async function main(): Promise<void> {
     runtimeSeq += 1;
     gateway.broadcastEvent({ seq: runtimeSeq, boot: runtimeBoot, event, payload });
   };
-  gateway.onAuthenticated = () => clearBootstrapOffer();
+  gateway.onAuthenticated = () => {
+    try {
+      clearBootstrapOffer();
+    } catch (error) {
+      console.warn(`[runtime] failed to clear bootstrap offer: ${(error as Error).message}`);
+    }
+  };
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
   daemon.on("event", (evt) => {
     // 会话结束即清占用,不留脏条目

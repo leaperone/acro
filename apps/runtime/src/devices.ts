@@ -1,11 +1,16 @@
 import crypto from "node:crypto";
-import type { Device } from "@acro/protocol";
+import { Device as DeviceSchema, type Device } from "@acro/protocol";
+import { z } from "zod";
 import { paths } from "./paths.ts";
 import { readJson, writeJsonAtomic } from "./store.ts";
 
 interface StoredDevice extends Device {
   tokenHash: string;
 }
+
+const StoredDevices = z.array(
+  DeviceSchema.extend({ tokenHash: z.string().regex(/^[0-9a-f]{64}$/) }),
+);
 
 function sha256(s: string): string {
   return crypto.createHash("sha256").update(s).digest("hex");
@@ -16,9 +21,15 @@ function sha256(s: string): string {
 // lastSeenAt === null 表示"配对码已生成但尚未有客户端连上"。
 export class DeviceRegistry {
   private devices: StoredDevice[];
+  private file: string;
 
-  constructor() {
-    this.devices = readJson<StoredDevice[]>(paths.devices, []);
+  constructor(file = paths.devices) {
+    this.file = file;
+    try {
+      this.devices = StoredDevices.parse(readJson<unknown>(file, []));
+    } catch (error) {
+      throw new Error(`invalid device state ${file}: ${(error as Error).message}`, { cause: error });
+    }
   }
 
   createGrant(name?: string): { device: Device; token: string } {
@@ -30,26 +41,36 @@ export class DeviceRegistry {
       lastSeenAt: null,
       tokenHash: sha256(token),
     };
-    this.devices.push(device);
-    this.persist();
+    const next = [...this.devices, device];
+    this.persist(next);
+    this.devices = next;
     return { device: this.publicView(device), token };
   }
 
   remove(deviceId: string): Device | null {
     const idx = this.devices.findIndex((d) => d.id === deviceId);
     if (idx < 0) return null;
-    const [removed] = this.devices.splice(idx, 1);
-    this.persist();
+    const next = [...this.devices];
+    const [removed] = next.splice(idx, 1);
+    this.persist(next);
+    this.devices = next;
     return this.publicView(removed!);
   }
 
   auth(token: string): Device | null {
     const hash = Buffer.from(sha256(token), "hex");
-    for (const d of this.devices) {
+    for (const [index, d] of this.devices.entries()) {
       if (crypto.timingSafeEqual(hash, Buffer.from(d.tokenHash, "hex"))) {
-        d.lastSeenAt = new Date().toISOString();
-        this.persist();
-        return this.publicView(d);
+        const updated = { ...d, lastSeenAt: new Date().toISOString() };
+        const next = [...this.devices];
+        next[index] = updated;
+        try {
+          this.persist(next);
+          this.devices = next;
+        } catch (error) {
+          console.warn(`[runtime] failed to persist device lastSeenAt: ${(error as Error).message}`);
+        }
+        return this.publicView(updated);
       }
     }
     return null;
@@ -68,7 +89,7 @@ export class DeviceRegistry {
     return pub;
   }
 
-  private persist(): void {
-    writeJsonAtomic(paths.devices, this.devices);
+  private persist(devices: StoredDevice[]): void {
+    writeJsonAtomic(this.file, devices);
   }
 }
