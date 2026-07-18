@@ -24,6 +24,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ASSET=$(ls apps/desktop-macos/dist/Acro-v*-macos.zip)
-          gh release create "$GITHUB_REF_NAME" "$ASSET" --generate-notes \
-            || gh release upload "$GITHUB_REF_NAME" "$ASSET" --clobber
+          ASSETS=(apps/desktop-macos/dist/Acro-v*-macos.dmg apps/desktop-macos/dist/Acro-v*-macos.zip)
+          gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" --generate-notes \
+            || gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber

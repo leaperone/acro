@@ -37,4 +37,15 @@ PLIST
 
 codesign --force --deep --sign - "$APP"
 ditto -c -k --keepParent "$APP" "dist/Acro-v${VERSION}-macos.zip"
+
+# DMG:标准拖入 /Applications 安装盘
+STAGE="dist/dmg-stage"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/Acro.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "Acro" -srcfolder "$STAGE" -ov -format UDZO \
+    "dist/Acro-v${VERSION}-macos.dmg" > /dev/null
+rm -rf "$STAGE"
 echo "==> dist/Acro-v${VERSION}-macos.zip"
+echo "==> dist/Acro-v${VERSION}-macos.dmg"
