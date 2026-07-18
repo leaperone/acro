@@ -36,3 +36,9 @@ struct Session: Codable, Identifiable, Equatable, Hashable, Sendable {
     let alive: Bool
     let exitCode: Int?
 }
+
+struct SessionFocus: Codable, Equatable, Hashable, Sendable {
+    let sessionId: String
+    let deviceId: String
+    let deviceName: String
+}

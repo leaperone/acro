@@ -32,6 +32,14 @@ export const WorkspaceGroup = z.object({
 });
 export type WorkspaceGroup = z.infer<typeof WorkspaceGroup>;
 
+// 终端占用:某设备 focus 一个会话即认领,其他设备须显式接管(orca presence lock 的显式变体)
+export const SessionFocus = z.object({
+  sessionId: z.string(),
+  deviceId: z.string(),
+  deviceName: z.string(),
+});
+export type SessionFocus = z.infer<typeof SessionFocus>;
+
 export const Session = z.object({
   id: z.string(),
   // cwd 是创建时目录;daemon 查询实时目录成功后会回写此字段

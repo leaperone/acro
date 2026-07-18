@@ -346,6 +346,38 @@ final class WorkbenchModel: ObservableObject {
         flashToken &+= 1
     }
 
+    // ---- 终端占用锁(orca presence lock 的显式变体) ----
+
+    // 被其他设备占用时返回占用者;自己占用或无人占用返回 nil
+    func focusOccupant(
+        _ sessionId: String, on connection: RuntimeConnection? = nil
+    ) -> SessionFocus? {
+        let source = connection ?? runtime
+        guard let owner = source.focusOwners[sessionId],
+              !source.deviceId.isEmpty,
+              owner.deviceId != source.deviceId
+        else { return nil }
+        return owner
+    }
+
+    // 本地交互(点标签/点终端/侧边栏选择)时静默认领;
+    // 已被他人占用则不抢——由蒙版上的按钮显式接管
+    func maybeClaimFocus(_ sessionId: String) {
+        guard focusOccupant(sessionId) == nil,
+              runtime.focusOwners[sessionId]?.deviceId != runtime.deviceId
+        else { return }
+        claimFocus(sessionId)
+    }
+
+    // 显式接管:蒙版按钮直达,无条件夺取占用权
+    func claimFocus(_ sessionId: String) {
+        let connection = runtime
+        Task {
+            _ = try? await connection.rpc("session.claimFocus", ["sessionId": sessionId])
+            await connection.refresh()
+        }
+    }
+
     func showSession(_ session: Session, flash: Bool = true) {
         guard let workspace = workspace(containing: session.id) else { return }
         selectedWorkspaceId = workspace.id
@@ -354,6 +386,7 @@ final class WorkbenchModel: ObservableObject {
         expandedWorkspaceIds.insert(workspace.id)
         if flash { flashPane(session.id) }
         requestTerminalFocus()
+        maybeClaimFocus(session.id)
     }
 
     func selectWorkspace(_ workspace: Workspace) {
@@ -395,6 +428,7 @@ final class WorkbenchModel: ObservableObject {
 
     func selectTab(_ sessionId: String, inPane paneId: String) {
         mutateCurrentLayout { $0.selectTab(sessionId, inPane: paneId) }
+        maybeClaimFocus(sessionId)
         flashPane(sessionId)
         requestTerminalFocus()
     }
@@ -562,6 +596,7 @@ final class WorkbenchModel: ObservableObject {
             }
             flashPane(session.id)
             requestTerminalFocus()
+            maybeClaimFocus(session.id)
         }
     }
 
