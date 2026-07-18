@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.sparkle-project.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>Acro Desktop</title>
+    <item>
+      <title>0.0.2</title>
+      <pubDate>Sat, 18 Jul 2026 07:37:33 GMT</pubDate>
+      <sparkle:version>0.0.2</sparkle:version>
+      <sparkle:shortVersionString>0.0.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.2/Acro-v0.0.2-macos.zip" type="application/octet-stream" length="7803357" sparkle:edSignature="kERGQoz3hqAqE4KlDvdJ9D+u9uO6CUVSnDLZC6Z9nMc52vakSUftBpihPDUKcnfmcC2zBPBQ0y+9OA+fWNclCg==" />
+    </item>
+  </channel>
+</rss>
