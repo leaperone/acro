@@ -31,8 +31,10 @@ const SCROLLBACK = 5000;
 const CHECKPOINT_INTERVAL_MS = 20_000;
 // 输出微批(orca daemon-stream-data-batcher 思路):
 // pty 以 ~1KB 粒度吐块,逐块广播会用 5 万条消息发 50MB,吞吐被消息开销钉死。
-// 同一事件循环轮次内聚合,到上限立即发,交互单块仍在 setImmediate 内送出(亚毫秒)。
+// setImmediate 聚合不到东西(每个 pty 读事件独占一个循环轮次),必须用时间窗:
+// 洪峰时 256KB 上限主导(立即发),涓流时 4ms 窗口封顶交互延迟。
 const OUT_BATCH_MAX_BYTES = 256 * 1024;
+const OUT_BATCH_WINDOW_MS = 4;
 // 解析队列合并写入:xterm 大串解析远快于 5 万次 1KB await
 const PARSE_MERGE_MAX_CHARS = 1 << 20;
 
@@ -130,10 +132,10 @@ class DaemonSession {
         this.flushOutput();
       } else if (!this.outFlushScheduled) {
         this.outFlushScheduled = true;
-        setImmediate(() => {
+        setTimeout(() => {
           this.outFlushScheduled = false;
           this.flushOutput();
-        });
+        }, OUT_BATCH_WINDOW_MS);
       }
       this.queue.push({ kind: "chunk", data, seq: this.seq });
       void this.pump();
