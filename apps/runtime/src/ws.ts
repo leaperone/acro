@@ -22,7 +22,13 @@ export interface Conn {
   browserChannels: Set<number>;
   // 已附着的模拟器画面 channel
   simChannels: Set<number>;
+  // 心跳:上一轮 ping 后是否收到 pong(取自 orca ws-transport 的半开连接回收)
+  alive: boolean;
 }
+
+// 移动端后台挂起会留下半开 socket,macOS TCP keepalive 默认 2 小时才发现;
+// 每轮 ping,下一轮仍未 pong 就 terminate。
+const HEARTBEAT_INTERVAL_MS = 15_000;
 
 export type Handlers = {
   [M in keyof typeof methods]: (
@@ -34,6 +40,7 @@ export type Handlers = {
 export class Gateway {
   private wss = new WebSocketServer({ noServer: true });
   private conns = new Set<Conn>();
+  private heartbeat: NodeJS.Timeout;
 
   private registry: DeviceRegistry;
   private handlers: Handlers;
@@ -47,6 +54,18 @@ export class Gateway {
     this.registry = registry;
     this.handlers = handlers;
     this.onInput = onInput;
+    this.heartbeat = setInterval(() => {
+      for (const conn of this.conns) {
+        if (!conn.alive) {
+          conn.ws.terminate();
+          this.conns.delete(conn);
+          continue;
+        }
+        conn.alive = false;
+        conn.ws.ping();
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+    this.heartbeat.unref();
   }
 
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -65,9 +84,13 @@ export class Gateway {
         attached: new Map(),
         browserChannels: new Set(),
         simChannels: new Set(),
+        alive: true,
       };
       this.conns.add(conn);
       ws.on("message", (raw, isBinary) => this.onMessage(conn, raw as Buffer, isBinary));
+      ws.on("pong", () => {
+        conn.alive = true;
+      });
       ws.on("close", () => this.conns.delete(conn));
       ws.on("error", () => this.conns.delete(conn));
     });
@@ -156,6 +179,7 @@ export class Gateway {
   }
 
   close(): void {
+    clearInterval(this.heartbeat);
     for (const conn of this.conns) conn.ws.close();
     this.wss.close();
   }

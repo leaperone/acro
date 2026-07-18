@@ -175,9 +175,11 @@ Acro 达到以下结果时，基础架构成立：
 | 项目 | 本地路径 | License | 用途 |
 |---|---|---|---|
 | orca | `.tmp/orca` | MIT | 服务端代码来源：terminal daemon、RPC、编排模型可直接取用 |
-| cmux | `.tmp/cmux` | GPL-3.0 | 只作交互设计与架构参考，禁止复制代码 |
+| cmux | `.tmp/cmux` | GPL-3.0 | Acro 以 GPL-3.0-or-later 开源，代码可直接取用并保留版权声明；巨型 app 层（AppDelegate/ContentView）只抄逻辑不整搬 |
 | muxy | `.tmp/muxy` | MIT | SwiftUI + libghostty 集成与移动端远程协议的代码来源 |
 | ghostty | `.tmp/ghostty` | MIT | libghostty 上游，xcframework 构建方式 |
 | otty | `.tmp/otty` | Apache-2.0 | Rust 终端工作台，快照帧与后端抽象参考 |
 
 MIT / Apache 项目的代码在理解后可以取用并保留版权声明。libghostty 没有喂字节 API，远程会话必须走 attach CLI 作 surface command 的模式；embedding API 不稳定，需 pin ghostty fork。
+
+cmux 取材要点（调研结论）：侧边栏行必须走 snapshot 边界（行视图只收 Equatable 值快照 + 闭包动作包，不持 ObservableObject）；不加 display link 或手动 surface_draw 轮询；注意力闪环、命令面板 overlay、快捷键提示 pill 可直接取用。orca 取材要点：WS 心跳回收半开连接、客户端重连退避 + 探针式探活、快照与增量 seq 同轮对齐。
