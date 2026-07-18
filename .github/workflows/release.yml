@@ -2,7 +2,7 @@ name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['desktop-v*']
 
 permissions:
   contents: write
@@ -18,7 +18,7 @@ jobs:
         run: bash apps/desktop-macos/scripts/setup-ghostty.sh
       - name: package app
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
           bash apps/desktop-macos/scripts/package-app.sh "$VERSION"
       - name: publish release
         env:
