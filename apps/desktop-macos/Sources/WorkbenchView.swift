@@ -217,10 +217,12 @@ struct WorkbenchView: View {
 }
 
 // 顶栏空位的显式窗口拖动(cmux TitlebarAccessoryContainerView 语义):
-// 不开全局 isMovableByWindowBackground,侧边栏/内容区永不拖窗;
+// 窗口 isMovable=false(见 WindowConfigurator),这里手动移动窗口——
+// performDrag 在 isMovable=false 下是 no-op,必须自己跟踪拖拽。
 // 单击拖动,双击执行系统缩放
 final class WindowDragNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
+    private var dragOrigin: (window: NSPoint, mouse: NSPoint)?
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
@@ -228,7 +230,20 @@ final class WindowDragNSView: NSView {
             window.zoom(nil)
             return
         }
-        window.performDrag(with: event)
+        dragOrigin = (window.frame.origin, NSEvent.mouseLocation)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window, let dragOrigin else { return }
+        let mouse = NSEvent.mouseLocation
+        window.setFrameOrigin(NSPoint(
+            x: dragOrigin.window.x + (mouse.x - dragOrigin.mouse.x),
+            y: dragOrigin.window.y + (mouse.y - dragOrigin.mouse.y)
+        ))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragOrigin = nil
     }
 }
 
@@ -269,7 +284,11 @@ struct NonDraggableArea<Content: View>: NSViewRepresentable {
     }
 }
 
-// 无标题栏窗口:内容全幅
+// 无标题栏窗口:内容全幅。
+// isMovable=false 是"窗口拖动只走 WindowDragHandle"的硬保证:
+// 标题栏带的隐式拖动看的是"被命中的最深层 NSView"的 mouseDownCanMoveWindow,
+// 标签条内嵌的 NSScrollView(SwiftUI ScrollView 桥接)内部视图会返回可拖,
+// 容器级覆盖挡不住;直接关掉窗口级隐式移动才是根治。
 private struct WindowConfigurator: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -278,6 +297,7 @@ private struct WindowConfigurator: NSViewRepresentable {
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
+            window.isMovable = false
         }
         return view
     }
