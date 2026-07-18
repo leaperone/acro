@@ -50,5 +50,8 @@ export const Session = z.object({
   createdAt: z.string(),
   alive: z.boolean(),
   exitCode: z.number().int().nullable(),
+  // 终端 OSC 0/2 标题;daemon 从 @xterm/headless 屏幕状态采集,无则 null 由客户端回退到 cwd 尾段。
+  // nullable + default(null) 让旧 checkpoint / 旧 runtime 的 session 记录仍能通过 safeParse(版本偏斜兼容)。
+  title: z.string().nullable().default(null),
 });
 export type Session = z.infer<typeof Session>;

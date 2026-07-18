@@ -330,19 +330,18 @@ final class WorkbenchModel: ObservableObject {
         activeSessions.first { $0.id == sessionId }
     }
 
+    // 标签标题不再追加 " · N" 同名序号:靠终端 OSC 标题天然区分同目录的多个终端,
+    // 都不设标题的裸 shell 本无语义差异,序号不携带信息。on: 形参保留仅为调用点零改动。
     func sessionDisplayName(_ session: Session, on connection: RuntimeConnection? = nil) -> String {
-        let source = connection ?? runtime
-        let base = Self.sessionTitle(session)
-        guard let workspace = source.workspaces.first(where: { $0.sessionIds.contains(session.id) })
-        else { return base }
-        let related = sessions(in: workspace, on: source).filter { Self.sessionTitle($0) == base }
-        guard related.count > 1, let index = related.firstIndex(where: { $0.id == session.id })
-        else { return base }
-        return "\(base) · \(index + 1)"
+        Self.sessionTitle(session)
     }
 
-    // 标题 = 工作目录尾段(既定事实的最短表达);根目录等退化为"终端"
+    // 标题优先级:终端 OSC 标题(vim/agent/ssh 等主动设置)> 工作目录尾段 > "终端"。
+    // OSC 标题由 daemon 从屏幕状态采集写入 session.title,跨端一致。
     static func sessionTitle(_ session: Session) -> String {
+        if let title = session.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
         let last = (session.cwd as NSString).lastPathComponent
         return last.isEmpty || last == "/" ? "终端" : last
     }
