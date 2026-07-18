@@ -81,6 +81,28 @@ final class WorkbenchLayoutStateTests: XCTestCase {
         XCTAssertEqual(layout.paneId(toward: .down), rightBottomPaneId)
     }
 
+    func testSamePaneReorder() throws {
+        var layout = WorkspaceTerminalLayout()
+        layout.adopt("a")
+        layout.adopt("b")
+        layout.adopt("c")
+        let paneId = layout.focusedPane!.id
+
+        // 向后拖:a 落到 c 的插入指示器处(index 2),应插到 c 前面
+        layout.moveTab("a", toPane: paneId, at: 2)
+        XCTAssertEqual(layout.root?.pane(withId: paneId)?.sessionIds, ["b", "a", "c"])
+
+        // 向前拖:c 落到 b 的位置(index 0),插到 b 前面
+        layout.moveTab("c", toPane: paneId, at: 0)
+        XCTAssertEqual(layout.root?.pane(withId: paneId)?.sessionIds, ["c", "b", "a"])
+
+        // 落回本窗格空白处(index nil):不改顺序,只选中
+        layout.selectTab("b", inPane: paneId)
+        layout.moveTab("c", toPane: paneId, at: nil)
+        XCTAssertEqual(layout.root?.pane(withId: paneId)?.sessionIds, ["c", "b", "a"])
+        XCTAssertEqual(layout.focusedSessionId, "c")
+    }
+
     func testPruneAndRoundTrip() throws {
         var layout = WorkspaceTerminalLayout()
         layout.adopt("one")

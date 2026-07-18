@@ -375,12 +375,24 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
     // 拖拽:把标签移入目标窗格 index 处(nil 表示末尾)
     mutating func moveTab(_ sessionId: String, toPane paneId: String, at index: Int?) {
         guard root?.pane(withId: paneId) != nil else { return }
-        if let source = root?.paneContaining(sessionId), source.id != paneId {
+        let source = root?.paneContaining(sessionId)
+        // 拖起又落回本窗格空白处(反悔动作):只选中,不改变标签顺序
+        if source?.id == paneId, index == nil {
+            selectTab(sessionId, inPane: paneId)
+            return
+        }
+        // 同窗格向后拖:先摘除自身会让目标位左移一格;不修正会落到插入指示器的右边
+        var targetIndex = index
+        if let source, source.id == paneId, let index,
+           let sourceIndex = source.sessionIds.firstIndex(of: sessionId), sourceIndex < index {
+            targetIndex = index - 1
+        }
+        if let source, source.id != paneId {
             root = root?.updatingPane(source.id) { _ = $0.removeTab(sessionId) }
         }
         root = root?.updatingPane(paneId) { pane in
-            if let index {
-                pane.insertTab(sessionId, at: index)
+            if let targetIndex {
+                pane.insertTab(sessionId, at: targetIndex)
             } else {
                 pane.sessionIds.removeAll { $0 == sessionId }
                 pane.appendTab(sessionId)
