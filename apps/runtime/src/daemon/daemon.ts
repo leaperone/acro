@@ -39,6 +39,8 @@ const OUT_BATCH_MAX_BYTES = 256 * 1024;
 const OUT_BATCH_WINDOW_MS = 4;
 // 静默超过该值后的第一块走立即路径:打字回显不吃 4ms 窗口
 const OUT_BATCH_IDLE_MS = 30;
+// OSC 标题广播节流:agent / TUI 会高频改标题,leading+trailing 压到每 300ms 一次
+const TITLE_THROTTLE_MS = 300;
 // 解析队列合并写入:xterm 大串解析远快于 5 万次 1KB await;
 // 上限压在 256KB,单次解析不超过 ~10ms,输入帧不会被长时间卡住
 const PARSE_MERGE_MAX_CHARS = 256 * 1024;
@@ -94,9 +96,13 @@ class DaemonSession {
   private removeOnExit = false;
   private exited: Promise<void>;
   private resolveExit!: () => void;
+  // OSC 标题节流:窗口内已排定尾发时 titleTimer 非空;pendingTitle 记窗口内是否有新值待发
+  private titleTimer: NodeJS.Timeout | null = null;
+  private pendingTitle = false;
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
   private onExit: (session: DaemonSession, removed: boolean) => void;
+  private onTitle: (session: DaemonSession, title: string | null) => void;
 
   constructor(
     opts: {
@@ -107,9 +113,11 @@ class DaemonSession {
     },
     onOutput: (handle: number, seq: number, data: Buffer) => void,
     onExit: (session: DaemonSession, removed: boolean) => void,
+    onTitle: (session: DaemonSession, title: string | null) => void,
   ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
+    this.onTitle = onTitle;
     this.exited = new Promise((resolve) => {
       this.resolveExit = resolve;
     });
@@ -126,6 +134,7 @@ class DaemonSession {
       createdAt: new Date().toISOString(),
       alive: true,
       exitCode: null,
+      title: null,
     };
     this.term = new Terminal({
       cols: opts.cols,
@@ -135,6 +144,8 @@ class DaemonSession {
     });
     this.serializer = new SerializeAddon();
     this.term.loadAddon(this.serializer);
+    // OSC 0/2 标题:xterm 解析屏幕数据时触发,与 serializer 同生命周期,随 term 释放
+    this.term.onTitleChange((title) => this.updateTitle(title));
     this.ptyProc = pty.spawn(shell, args, {
       name: "xterm-256color",
       cols: opts.cols,
@@ -173,6 +184,11 @@ class DaemonSession {
     this.ptyProc.onExit(({ exitCode }) => {
       // 尾批先于 exit 事件送出,客户端不会丢最后一段输出
       this.flushOutput();
+      // 退出即停掉挂起的标题尾发,别给已进死表的会话补发多余 session.title
+      if (this.titleTimer) {
+        clearTimeout(this.titleTimer);
+        this.titleTimer = null;
+      }
       this.meta.alive = false;
       this.meta.exitCode = exitCode;
       if (!this.removeOnExit) this.checkpoint();
@@ -319,6 +335,28 @@ class DaemonSession {
   checkpointIfDirty(): void {
     if (this.dirty && Date.now() - this.lastOutputAt > 2000) this.checkpoint();
   }
+
+  // OSC 标题变化:内存即时更新(session.list 立刻反映),节流广播压高频刷标题。
+  // 落盘交给已有的 checkpointIfDirty(静默 2s),不为标题单独触发重的 scrollback 序列化。
+  private updateTitle(raw: string): void {
+    // OSC 清空标题给的是空串;归一为 null,内存态与广播态一致,客户端统一回退 cwd
+    const title = raw === "" ? null : raw;
+    if (title === this.meta.title) return;
+    this.meta.title = title;
+    this.dirty = true;
+    this.pendingTitle = true;
+    if (this.titleTimer) return;
+    this.emitTitleNow(); // leading edge
+    this.titleTimer = setTimeout(() => {
+      this.titleTimer = null;
+      if (this.pendingTitle) this.emitTitleNow(); // trailing edge
+    }, TITLE_THROTTLE_MS);
+  }
+
+  private emitTitleNow(): void {
+    this.pendingTitle = false;
+    this.onTitle(this, this.meta.title);
+  }
 }
 
 // ---- 会话表:活会话 + 上一个 boot 留下的死会话记录 ----
@@ -368,6 +406,10 @@ function handleExit(session: DaemonSession, removed: boolean): void {
   emitEvent("session.exit", { sessionId: session.meta.id, exitCode: session.meta.exitCode });
 }
 
+function handleTitle(session: DaemonSession, title: string | null): void {
+  emitEvent("session.title", { sessionId: session.meta.id, title });
+}
+
 type Handler = (params: any) => Promise<unknown> | unknown;
 
 const handlers: Record<string, Handler> = {
@@ -378,7 +420,7 @@ const handlers: Record<string, Handler> = {
     cols: number;
     rows: number;
   }) => {
-    const session = new DaemonSession(params, handleOutput, handleExit);
+    const session = new DaemonSession(params, handleOutput, handleExit, handleTitle);
     live.set(session.meta.id, session);
     session.checkpoint();
     emitEvent("session.created", session.meta);

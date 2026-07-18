@@ -312,6 +312,8 @@ export const events = {
     deviceId: z.string().nullable(),
     deviceName: z.string().nullable(),
   }),
+  // 终端 OSC 标题变化的增量广播(daemon 节流后发);runtime 透传,客户端刷新 session.list 拿新标题。
+  "session.title": z.object({ sessionId: z.string(), title: z.string().nullable() }),
 } as const;
 
 export type EventName = keyof typeof events;

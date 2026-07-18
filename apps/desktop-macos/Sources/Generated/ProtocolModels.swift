@@ -35,6 +35,7 @@ struct Session: Codable, Identifiable, Equatable, Hashable, Sendable {
     let createdAt: String
     let alive: Bool
     let exitCode: Int?
+    let title: String?
 }
 
 struct SessionFocus: Codable, Equatable, Hashable, Sendable {
