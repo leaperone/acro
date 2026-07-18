@@ -20,23 +20,28 @@ struct WorkbenchView: View {
                 }
 
                 GeometryReader { geometry in
+                    // HSplitView(NSSplitView)会给子视图重新套顶部安全区,逐层穿透
                     HSplitView {
                         TerminalPanesView(model: model, runtime: runtime)
+                            .ignoresSafeArea(.container, edges: .top)
                             .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
 
                         if model.inspectorVisible, geometry.size.width >= 720 {
                             InspectorView(model: model, runtime: runtime)
+                                .ignoresSafeArea(.container, edges: .top)
                                 .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
                                 .frame(maxHeight: .infinity)
                         }
                     }
+                    .ignoresSafeArea(.container, edges: .top)
                     .frame(
                         width: geometry.size.width,
                         height: geometry.size.height,
                         alignment: .leading
                     )
                 }
+                .ignoresSafeArea(.container, edges: .top)
             }
             .coordinateSpace(name: "workbench-root")
             .ignoresSafeArea(.container, edges: .top)
