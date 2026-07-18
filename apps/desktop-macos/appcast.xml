@@ -3,6 +3,14 @@
   <channel>
     <title>Acro Desktop</title>
     <item>
+      <title>0.0.4</title>
+      <pubDate>Sat, 18 Jul 2026 10:32:11 GMT</pubDate>
+      <sparkle:version>0.0.4</sparkle:version>
+      <sparkle:shortVersionString>0.0.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.4/Acro-v0.0.4-macos.zip" type="application/octet-stream" length="8018640" sparkle:edSignature="jnvRoAd57zL+B3ZMZlJRf+8xSna6THFYfKrWlNezR2nfQhBEjAZ8VZ0vkMi2mQ4bRjIxn01KLC4hS5i0XzPUCA==" />
+    </item>
+    <item>
       <title>0.0.3</title>
       <pubDate>Sat, 18 Jul 2026 09:17:32 GMT</pubDate>
       <sparkle:version>0.0.3</sparkle:version>
