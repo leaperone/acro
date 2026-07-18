@@ -330,22 +330,88 @@ async function main(): Promise<void> {
     await client3.waitOutput("AFTER_RUNTIME_RESTART_XYZ");
     log("runtime restart survival ok");
 
-    // kill 会话 → exit 事件 → 列表标记死亡
-    await client3.rpc("session.kill", { sessionId: session.id });
+    // 真实 CLI attach:断线(runtime 重启)后必须自动重挂载,而不是退出
+    const cliEntry = fileURLToPath(new URL("../../cli/src/cli.ts", import.meta.url));
+    const cliConfig = path.join(stateDir, "cli-client.json");
+    fs.writeFileSync(
+      cliConfig,
+      JSON.stringify({
+        v: 2,
+        servers: [
+          {
+            localId: "e2e-local",
+            name: "e2e",
+            deviceId: "",
+            token: offer.token,
+            pub: offer.pub,
+            endpoints: offer.endpoints,
+          },
+        ],
+        active: "e2e-local",
+      }),
+    );
+    const cli = spawn(process.execPath, [...process.execArgv, cliEntry, "attach", session.id], {
+      env: { ...env, ACRO_CLIENT_CONFIG: cliConfig },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let cliOut = "";
+    let cliErr = "";
+    cli.stdout!.on("data", (d: Buffer) => {
+      cliOut += d.toString("utf8");
+    });
+    cli.stderr!.on("data", (d: Buffer) => {
+      cliErr += d.toString("utf8");
+    });
+    const waitCliOut = async (needle: string, timeoutMs = 20000): Promise<void> => {
+      const deadline = Date.now() + timeoutMs;
+      while (!cliOut.includes(needle)) {
+        if (Date.now() > deadline) throw new Error(`cli output missing: ${needle}`);
+        await sleep(200);
+      }
+    };
+    await waitCliOut("AFTER_RUNTIME_RESTART_XYZ"); // 快照回放
+    cli.stdin!.write("echo CLI_ATTACH_LIVE_XYZ\n");
+    await waitCliOut("CLI_ATTACH_LIVE_XYZ");
+
+    // 拔掉 runtime 再拉起:CLI 必须自己重连并恢复输入输出
+    client3.close();
+    runtime.kill("SIGTERM");
+    await sleep(800);
+    runtime = startRuntime();
+    await waitHealthy();
+    const reconnectedDeadline = Date.now() + 30000;
+    for (;;) {
+      cli.stdin!.write("echo CLI_AFTER_RECONNECT_XYZ\n");
+      await sleep(1000);
+      if (cliOut.includes("CLI_AFTER_RECONNECT_XYZ")) break;
+      if (Date.now() > reconnectedDeadline) {
+        throw new Error(`cli did not reattach; stderr: ${cliErr}`);
+      }
+    }
+    assert.ok(cliErr.includes("重连"), "cli should report the reconnect on stderr");
+    log("cli attach auto-reattach ok");
+
+    const client4 = new Client();
+    await client4.connect(offer);
+    const cliExit = new Promise<number | null>((resolve) => cli.on("exit", resolve));
+
+    // kill 会话 → exit 事件 → 列表标记死亡;附着中的 CLI 应随之干净退出
+    await client4.rpc("session.kill", { sessionId: session.id });
+    assert.equal(await cliExit, 0, "cli attach should exit cleanly on session exit");
     await sleep(800);
     assert.ok(
-      client3.events.some((e) => e.event === "session.exit" && e.payload.sessionId === session.id),
+      client4.events.some((e) => e.event === "session.exit" && e.payload.sessionId === session.id),
       "must receive session.exit event",
     );
-    const after = await client3.rpc<Session[]>("session.list");
+    const after = await client4.rpc<Session[]>("session.list");
     assert.equal(after.find((s) => s.id === session.id)?.alive, false);
     log("kill + exit event ok");
 
-    await client3.rpc("workspace.remove", { workspaceId: workspace.id });
-    assert.equal((await client3.rpc<Workspace[]>("workspace.list")).length, 0);
-    await client3.rpc("workspaceGroup.remove", { workspaceGroupId: workspaceGroup.id });
-    assert.equal((await client3.rpc<WorkspaceGroup[]>("workspaceGroup.list")).length, 0);
-    client3.close();
+    await client4.rpc("workspace.remove", { workspaceId: workspace.id });
+    assert.equal((await client4.rpc<Workspace[]>("workspace.list")).length, 0);
+    await client4.rpc("workspaceGroup.remove", { workspaceGroupId: workspaceGroup.id });
+    assert.equal((await client4.rpc<WorkspaceGroup[]>("workspaceGroup.list")).length, 0);
+    client4.close();
     log("workspace removed");
 
     console.log("\nE2E PASS ✅  配对/Workspace/项目/会话/断线重连/Runtime重启存活 全部通过");
