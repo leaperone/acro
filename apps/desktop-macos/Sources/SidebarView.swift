@@ -429,11 +429,8 @@ struct SidebarView: View {
                 .onDrop(of: [UTType.text], isTargeted: nil) { _ in
                     guard let dragId = model.draggingWorkspaceId else { return false }
                     model.draggingWorkspaceId = nil
-                    Task {
-                        await model.reorderWorkspace(
-                            dragId, toGroup: nil, index: model.ungroupedWorkspaces.count
-                        )
-                    }
+                    model.requestReorderWorkspace(
+                        dragId, toGroup: nil, index: model.ungroupedWorkspaces.count)
                     return true
                 }
 
@@ -490,7 +487,7 @@ struct SidebarView: View {
             // 取代原来的「三点圈菜单 + 独立加号」两块。
             Menu {
                 Button("新建工作区", systemImage: "square.stack.3d.up.badge.plus") {
-                    Task { await model.createWorkspace() }
+                    model.requestCreateWorkspace()
                 }
                 Button("新建分组", systemImage: "folder.badge.plus") {
                     model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
@@ -499,7 +496,7 @@ struct SidebarView: View {
                 Image(systemName: "plus")
                     .frame(width: 20, height: 20)
             } primaryAction: {
-                Task { await model.createWorkspace() }
+                model.requestCreateWorkspace()
             }
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
@@ -652,7 +649,7 @@ struct SidebarView: View {
             // 服务器级创建入口:动作先 activate,保证 RPC 落到这台服务器
             Button("新建工作区") {
                 model.activate(serverId: entry.id)
-                Task { await model.createWorkspace() }
+                model.requestCreateWorkspace()
             }
             .disabled(!entry.connection.connected)
             Button("新建分组") {
@@ -689,7 +686,7 @@ struct SidebarView: View {
         if connection.workspaceGroups.isEmpty && connection.workspaces.isEmpty {
             Button {
                 model.activate(serverId: entry.id)
-                Task { await model.createWorkspace() }
+                model.requestCreateWorkspace()
             } label: {
                 Label(
                     connection.connected ? "新建工作区" : "等待连接…",
@@ -738,7 +735,7 @@ struct SidebarView: View {
                 toggle: { model.toggleWorkspaceGroup(group.id) },
                 createWorkspace: {
                     model.activate(serverId: entry.id)
-                    Task { await model.createWorkspace(in: group.id) }
+                    model.requestCreateWorkspace(in: group.id)
                 },
                 rename: {
                     model.activate(serverId: entry.id)
@@ -755,11 +752,8 @@ struct SidebarView: View {
                     guard let dragId = model.draggingWorkspaceId else { return false }
                     model.draggingWorkspaceId = nil
                     model.activate(serverId: entry.id)
-                    Task {
-                        await model.reorderWorkspace(
-                            dragId, toGroup: group.id, index: group.workspaceIds.count
-                        )
-                    }
+                    model.requestReorderWorkspace(
+                        dragId, toGroup: group.id, index: group.workspaceIds.count)
                     return true
                 }
             )
@@ -770,7 +764,7 @@ struct SidebarView: View {
             if groupWorkspaces.isEmpty {
                 Button {
                     model.activate(serverId: entry.id)
-                    Task { await model.createWorkspace(in: group.id) }
+                    model.requestCreateWorkspace(in: group.id)
                 } label: {
                     Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -839,7 +833,7 @@ struct SidebarView: View {
                 moveToGroup: { groupId in
                     model.activate(serverId: entry.id)
                     let target = connection.workspaceGroups.first { $0.id == groupId }
-                    Task { await model.moveWorkspace(workspace, to: target) }
+                    model.requestMoveWorkspace(workspace, to: target)
                 },
                 beginDrag: {
                     model.draggingWorkspaceId = workspace.id
@@ -860,7 +854,7 @@ struct SidebarView: View {
                     let index = container
                         .filter { $0.id != dragId }
                         .firstIndex { $0.id == workspace.id } ?? container.count
-                    Task { await model.reorderWorkspace(dragId, toGroup: group?.id, index: index) }
+                    model.requestReorderWorkspace(dragId, toGroup: group?.id, index: index)
                     return true
                 }
             )
@@ -885,7 +879,7 @@ struct SidebarView: View {
                         },
                         newSibling: {
                             model.activate(serverId: entry.id)
-                            Task { _ = await model.openTerminal(in: workspace, inheritFrom: session.id) }
+                            model.requestNewTerminal(in: workspace, inheritFrom: session.id)
                         },
                         terminate: {
                             model.activate(serverId: entry.id)

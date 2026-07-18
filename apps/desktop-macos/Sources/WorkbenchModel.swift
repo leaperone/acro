@@ -191,7 +191,7 @@ final class WorkbenchModel: ObservableObject {
         case .newTerminalTab:
             if let workspace = selectedWorkspace { requestNewTerminal(in: workspace) }
         case .newWorkspace:
-            Task { await createWorkspace() }
+            requestCreateWorkspace()
         case .newWorkspaceGroup:
             presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
         case .commandPalette:
@@ -523,7 +523,8 @@ final class WorkbenchModel: ObservableObject {
         if confirmCloseTab {
             pendingSessionTermination = session
         } else {
-            Task { await terminateSession(session) }
+            let connection = runtime
+            Task { await terminateSession(session, on: connection) }
         }
     }
 
@@ -606,40 +607,45 @@ final class WorkbenchModel: ObservableObject {
 
     // ---- 终端动作 ----
 
-    func requestNewTerminal(in workspace: Workspace, paneId: String? = nil) {
+    func requestNewTerminal(
+        in workspace: Workspace, paneId: String? = nil, inheritFrom: String? = nil
+    ) {
+        let connection = runtime
         selectedWorkspaceId = workspace.id
         expandGroupContaining(workspace.id)
         expandedWorkspaceIds.insert(workspace.id)
         if let paneId { mutateCurrentLayout { $0.focusedPaneId = paneId } }
-        Task { _ = await openTerminal(in: workspace) }
+        Task { _ = await openTerminal(in: workspace, inheritFrom: inheritFrom, on: connection) }
     }
 
     // 路径继承源:聚焦终端优先;fallback 工作区第一个存活终端;都没有交给服务端(家目录)
-    private func inheritCwdSource(in workspace: Workspace) -> String? {
-        if selectedWorkspaceId == workspace.id,
+    private func inheritCwdSource(in workspace: Workspace, on connection: RuntimeConnection) -> String? {
+        if runtime === connection, selectedWorkspaceId == workspace.id,
            let focused = currentLayout?.focusedSessionId,
            session(focused) != nil {
             return focused
         }
-        return sessions(in: workspace).first?.id
+        return sessions(in: workspace, on: connection).first?.id
     }
 
     @discardableResult
-    func openTerminal(
-        in workspace: Workspace, activate: Bool = true, inheritFrom explicit: String? = nil
+    private func openTerminal(
+        in workspace: Workspace, activate: Bool = true, inheritFrom explicit: String? = nil,
+        on explicitConnection: RuntimeConnection? = nil
     ) async -> Session? {
+        let connection = explicitConnection ?? runtime
         var params: [String: Any] = [
             "workspaceId": workspace.id,
             "cols": 140,
             "rows": 40,
         ]
-        if let inheritFrom = explicit ?? inheritCwdSource(in: workspace) {
+        if let inheritFrom = explicit ?? inheritCwdSource(in: workspace, on: connection) {
             params["inheritCwdFrom"] = inheritFrom
         }
         do {
-            let session = try await runtime.rpc("session.create", params, as: Session.self)
-            await runtime.refresh()
-            if activate { showSession(session) }
+            let session = try await connection.rpc("session.create", params, as: Session.self)
+            await connection.refresh()
+            if activate, runtime === connection { showSession(session) }
             return session
         } catch {
             errorMessage = error.localizedDescription
@@ -651,10 +657,12 @@ final class WorkbenchModel: ObservableObject {
         guard let sourcePaneId = currentLayout?.focusedPane?.id,
               let selectedWorkspace
         else { return }
+        let connection = runtime
         Task {
-            guard let session = await openTerminal(in: selectedWorkspace, activate: false)
+            guard let session = await openTerminal(
+                in: selectedWorkspace, activate: false, on: connection)
             else { return }
-            guard selectedWorkspaceId == selectedWorkspace.id else { return }
+            guard runtime === connection, selectedWorkspaceId == selectedWorkspace.id else { return }
             mutateCurrentLayout {
                 $0.split(fromPane: sourcePaneId, direction: direction, newSessionId: session.id)
             }
@@ -664,10 +672,12 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
-    func terminateSession(_ session: Session) async {
-        let connection = pendingRuntime
+    func terminateSession(
+        _ session: Session, on explicitConnection: RuntimeConnection? = nil
+    ) async {
+        let connection = explicitConnection ?? pendingRuntime
         do {
-            let workspaceId = workspace(containing: session.id)?.id
+            let workspaceId = connection.workspaces.first { $0.sessionIds.contains(session.id) }?.id
             _ = try await connection.rpc("session.kill", ["sessionId": session.id])
             pendingSessionTermination = nil
             TerminalSurfaceCache.shared.evict(session.id)
@@ -676,7 +686,7 @@ final class WorkbenchModel: ObservableObject {
                 layout.removeTab(session.id)
                 dirtyLayoutWorkspaceIds.insert(workspaceId)
                 workspaceLayouts[workspaceId] = layout
-                if selectedWorkspaceId == workspaceId {
+                if runtime === connection, selectedWorkspaceId == workspaceId {
                     syncSelectionFromLayout()
                     requestTerminalFocus()
                 }
@@ -745,18 +755,28 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
-    func createWorkspace(in workspaceGroupId: String? = nil) async {
+    func requestCreateWorkspace(in workspaceGroupId: String? = nil) {
+        let connection = runtime
+        Task { await createWorkspace(in: workspaceGroupId, on: connection) }
+    }
+
+    private func createWorkspace(
+        in workspaceGroupId: String? = nil, on connection: RuntimeConnection
+    ) async {
         do {
             var params: [String: Any] = [:]
             if let workspaceGroupId { params["workspaceGroupId"] = workspaceGroupId }
-            let workspace = try await runtime.rpc("workspace.create", params, as: Workspace.self)
-            if let workspaceGroupId { expandedWorkspaceGroupIds.insert(workspaceGroupId) }
-            expandedWorkspaceIds.insert(workspace.id)
-            selectedWorkspaceId = workspace.id
-            selectedSessionId = nil
-            await runtime.refresh()
+            let workspace = try await connection.rpc("workspace.create", params, as: Workspace.self)
+            await connection.refresh()
+            let shouldActivate = runtime === connection
+            if shouldActivate {
+                if let workspaceGroupId { expandedWorkspaceGroupIds.insert(workspaceGroupId) }
+                expandedWorkspaceIds.insert(workspace.id)
+                selectedWorkspaceId = workspace.id
+                selectedSessionId = nil
+            }
             // 终端应用的工作区开箱即用:直接带上第一个终端,不要求再点一次
-            _ = await openTerminal(in: workspace)
+            _ = await openTerminal(in: workspace, activate: shouldActivate, on: connection)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -827,29 +847,51 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
-    func moveWorkspace(_ workspace: Workspace, to group: WorkspaceGroup?) async {
+    func requestMoveWorkspace(_ workspace: Workspace, to group: WorkspaceGroup?) {
+        let connection = runtime
+        Task { await moveWorkspace(workspace, to: group, on: connection) }
+    }
+
+    private func moveWorkspace(
+        _ workspace: Workspace, to group: WorkspaceGroup?, on connection: RuntimeConnection
+    ) async {
         do {
-            _ = try await runtime.rpc("workspace.update", [
+            _ = try await connection.rpc("workspace.update", [
                 "workspaceId": workspace.id,
                 "workspaceGroupId": group?.id ?? NSNull(),
             ])
-            if let group { expandedWorkspaceGroupIds.insert(group.id) }
-            await runtime.refresh()
+            if runtime === connection, let group { expandedWorkspaceGroupIds.insert(group.id) }
+            await connection.refresh()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     // 拖拽重排:workspaceGroupId 为 nil 表示未分组区
-    func reorderWorkspace(_ workspaceId: String, toGroup workspaceGroupId: String?, index: Int) async {
+    func requestReorderWorkspace(
+        _ workspaceId: String, toGroup workspaceGroupId: String?, index: Int
+    ) {
+        let connection = runtime
+        Task {
+            await reorderWorkspace(
+                workspaceId, toGroup: workspaceGroupId, index: index, on: connection)
+        }
+    }
+
+    private func reorderWorkspace(
+        _ workspaceId: String, toGroup workspaceGroupId: String?, index: Int,
+        on connection: RuntimeConnection
+    ) async {
         do {
-            _ = try await runtime.rpc("workspace.reorder", [
+            _ = try await connection.rpc("workspace.reorder", [
                 "workspaceId": workspaceId,
                 "workspaceGroupId": workspaceGroupId ?? NSNull(),
                 "index": index,
             ])
-            if let workspaceGroupId { expandedWorkspaceGroupIds.insert(workspaceGroupId) }
-            await runtime.refresh()
+            if runtime === connection, let workspaceGroupId {
+                expandedWorkspaceGroupIds.insert(workspaceGroupId)
+            }
+            await connection.refresh()
         } catch {
             errorMessage = error.localizedDescription
         }

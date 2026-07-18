@@ -242,7 +242,7 @@ extension WorkbenchModel {
                 subtitle: "创建新的工作上下文",
                 symbol: "square.stack.3d.up.badge.plus",
                 kind: "命令",
-                action: { Task { await self.createWorkspace() } }
+                action: { self.requestCreateWorkspace() }
             ),
             CommandPaletteItem(
                 id: "command:toggle-sidebar",
