@@ -9,6 +9,10 @@ extension Notification.Name {
     static let acroClosePaneShortcut = Notification.Name("acro.closePaneShortcut")
 }
 
+final class ClosePaneShortcutCommand {
+    var handled = false
+}
+
 final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     private var keyMonitor: Any?
 
@@ -20,8 +24,9 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
             guard flags == .command,
                   event.charactersIgnoringModifiers?.lowercased() == "w"
             else { return event }
-            NotificationCenter.default.post(name: .acroClosePaneShortcut, object: nil)
-            return nil
+            let command = ClosePaneShortcutCommand()
+            NotificationCenter.default.post(name: .acroClosePaneShortcut, object: command)
+            return command.handled ? nil : event
         }
     }
 
@@ -328,12 +333,8 @@ struct ContentView: View {
                 DispatchQueue.main.async { requestTerminalFocus() }
             }
         }
-        .onChange(of: workspaceIds) { _, _ in
-            guard runtime.snapshotLoaded else { return }
-            reconcileLayoutState()
-        }
-        .onChange(of: activeSessionIds) { _, _ in
-            guard runtime.snapshotLoaded else { return }
+        .onChange(of: runtime.snapshotRevision) { _, _ in
+            guard runtime.snapshotLoaded, layoutRestored else { return }
             reconcileLayoutState()
         }
         .onChange(of: workspaceLayouts) { _, _ in
@@ -357,8 +358,10 @@ struct ContentView: View {
             else { return }
             DispatchQueue.main.async { requestTerminalFocus() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .acroClosePaneShortcut)) { _ in
-            guard !showingCommandPalette,
+        .onReceive(NotificationCenter.default.publisher(for: .acroClosePaneShortcut)) { notification in
+            guard let command = notification.object as? ClosePaneShortcutCommand,
+                  currentLayout?.root != nil,
+                  !showingCommandPalette,
                   !showingWorkspaceEditor,
                   projectPickerWorkspace == nil,
                   terminalProjectPickerWorkspace == nil,
@@ -366,6 +369,7 @@ struct ContentView: View {
                   pendingSessionTermination == nil,
                   errorMessage == nil
             else { return }
+            command.handled = true
             closeFocusedPane()
         }
         .alert(
@@ -599,6 +603,7 @@ struct ContentView: View {
     private func terminalPane(sessionId: String) -> some View {
         let session = activeSessions.first { string($0, "id") == sessionId }
         let focused = currentLayout?.focusedSessionId == sessionId
+        let workspaceId = selectedWorkspaceId
         return VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "terminal.fill")
@@ -633,7 +638,7 @@ struct ContentView: View {
                 .help("向下分屏")
                 .accessibilityLabel("向下分屏")
                 Button {
-                    closePane(sessionId: sessionId)
+                    if let workspaceId { closePane(workspaceId: workspaceId, sessionId: sessionId) }
                 } label: {
                     Image(systemName: "xmark")
                 }
@@ -654,7 +659,9 @@ struct ContentView: View {
                 AcroTerminalView(
                     command: AttachCommand.resolve(sessionId: sessionId),
                     focusRequest: focused ? terminalFocusRequest : 0,
-                    onClose: { closePane(sessionId: sessionId) },
+                    onClose: {
+                        if let workspaceId { closePane(workspaceId: workspaceId, sessionId: sessionId) }
+                    },
                     onFocus: { focusSession(session) }
                 )
                 .id(sessionId)
@@ -1316,17 +1323,25 @@ struct ContentView: View {
             ) else { return }
             let workspaceId = string(selectedWorkspace, "id")
             let newSessionId = string(session, "id")
-            var layout = workspaceLayouts[workspaceId]
-                ?? WorkspaceTerminalLayout(root: .leaf(sourceSessionId), focusedSessionId: sourceSessionId)
-            layout.root = layout.root?.splitting(
-                sourceSessionId,
-                direction: direction,
-                newSessionId: newSessionId
-            )
+            var layout = workspaceLayouts[workspaceId] ?? WorkspaceTerminalLayout()
+            if layout.root?.contains(sourceSessionId) == true {
+                layout.root = layout.root?.splitting(
+                    sourceSessionId,
+                    direction: direction,
+                    newSessionId: newSessionId
+                )
+            } else if let fallbackSessionId = layout.focusedSessionId,
+                      layout.root?.contains(fallbackSessionId) == true {
+                layout.root = layout.root?.replacing(fallbackSessionId, with: newSessionId)
+            } else {
+                layout.root = .leaf(newSessionId)
+            }
             layout.focusedSessionId = newSessionId
             workspaceLayouts[workspaceId] = layout
-            focusSession(session)
-            requestTerminalFocus()
+            if selectedWorkspaceId == workspaceId {
+                focusSession(session)
+                requestTerminalFocus()
+            }
         }
     }
 
@@ -1342,17 +1357,17 @@ struct ContentView: View {
     }
 
     private func closeFocusedPane() {
-        guard let sessionId = currentLayout?.focusedSessionId else { return }
-        closePane(sessionId: sessionId)
+        guard let workspaceId = selectedWorkspaceId,
+              let sessionId = currentLayout?.focusedSessionId
+        else { return }
+        closePane(workspaceId: workspaceId, sessionId: sessionId)
     }
 
-    private func closePane(sessionId: String) {
-        guard let workspaceId = selectedWorkspaceId,
-              var layout = workspaceLayouts[workspaceId]
-        else { return }
-        layout.root = layout.root?.removing(sessionId)
-        layout.focusedSessionId = layout.root?.firstSessionId
+    private func closePane(workspaceId: String, sessionId: String) {
+        guard var layout = workspaceLayouts[workspaceId] else { return }
+        layout.remove(sessionId)
         workspaceLayouts[workspaceId] = layout
+        guard selectedWorkspaceId == workspaceId else { return }
         guard let focusedSessionId = layout.focusedSessionId else {
             selectedSessionId = nil
             selectedProjectId = nil
@@ -1364,6 +1379,7 @@ struct ContentView: View {
             selectedProjectId = nil
             return
         }
+        guard selectedSessionId != focusedSessionId else { return }
         focusSession(session)
         requestTerminalFocus()
     }
@@ -1526,10 +1542,7 @@ struct ContentView: View {
             pendingSessionTermination = nil
             await runtime.refresh()
             if let workspaceId, var layout = workspaceLayouts[workspaceId] {
-                layout.root = layout.root?.removing(sessionId)
-                if layout.focusedSessionId == sessionId {
-                    layout.focusedSessionId = layout.root?.firstSessionId
-                }
+                layout.remove(sessionId)
                 workspaceLayouts[workspaceId] = layout
                 if selectedWorkspaceId == workspaceId {
                     if let focusedSessionId = layout.focusedSessionId,

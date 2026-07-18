@@ -261,17 +261,16 @@ final class AcroTerminalNSView: NSView {
 
     private func isAppShortcut(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains(.command) else { return false }
         let key = (event.charactersIgnoringModifiers ?? "").lowercased()
-        if flags.contains(.option) {
-            return ["b", "i", "t"].contains(key)
-                || [123, 124, 125, 126].contains(event.keyCode)
+        if flags == [.command, .option] {
+            return ["b", "i", "t"].contains(key) || [123, 124].contains(event.keyCode)
         }
-        if flags.contains(.shift) {
+        if flags == [.command, .shift] {
             return ["p", "d", "w", "[", "]"].contains(key)
         }
+        guard flags == .command else { return false }
         return ["n", "t", "d", "w"].contains(key)
-            || (key.count == 1 && key.first?.isNumber == true)
+            || (Int(key).map { (1...9).contains($0) } ?? false)
     }
 
     override func keyUp(with event: NSEvent) {

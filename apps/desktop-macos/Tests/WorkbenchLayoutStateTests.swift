@@ -15,6 +15,17 @@ final class WorkbenchLayoutStateTests: XCTestCase {
         layout.prune(validSessionIds: ["one", "two", "three", "hidden"])
         XCTAssertEqual(layout.focusedSessionId, "one")
 
+        layout = WorkspaceTerminalLayout(root: root, focusedSessionId: "three")
+        layout.remove("one")
+        XCTAssertEqual(layout.root?.sessionIds, ["two", "three"])
+        XCTAssertEqual(layout.focusedSessionId, "three")
+        layout.remove("three")
+        XCTAssertEqual(layout.focusedSessionId, "two")
+
+        layout = WorkspaceTerminalLayout(root: root)
+        layout.remove("one")
+        XCTAssertEqual(layout.focusedSessionId, "two")
+
         let snapshot = WorkbenchLayoutSnapshot(
             selectedWorkspaceId: "workspace",
             workspaceLayouts: [

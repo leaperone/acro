@@ -122,6 +122,15 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
             return
         }
     }
+
+    mutating func remove(_ sessionId: String) {
+        root = root?.removing(sessionId)
+        if focusedSessionId == nil
+            || focusedSessionId == sessionId
+            || focusedSessionId.map({ root?.contains($0) != true }) == true {
+            focusedSessionId = root?.firstSessionId
+        }
+    }
 }
 
 struct WorkbenchLayoutSnapshot: Codable, Equatable {
