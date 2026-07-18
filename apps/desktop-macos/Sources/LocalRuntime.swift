@@ -64,10 +64,24 @@ final class LocalRuntimeManager {
               let node = Self.findNode()
         else { return false }
 
-        let logPath = "\(NSHomeDirectory())/.acro/app-runtime.log"
-        try? FileManager.default.createDirectory(
-            atPath: "\(NSHomeDirectory())/.acro", withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: logPath, contents: nil)
+        let statePath = "\(NSHomeDirectory())/.acro"
+        let logPath = "\(statePath)/app-runtime.log"
+        do {
+            try FileManager.default.createDirectory(
+                atPath: statePath, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: statePath)
+            if !FileManager.default.fileExists(atPath: logPath) {
+                FileManager.default.createFile(
+                    atPath: logPath, contents: nil,
+                    attributes: [.posixPermissions: 0o600])
+            }
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: logPath)
+        } catch {
+            return false
+        }
         let log = FileHandle(forWritingAtPath: logPath)
         log?.seekToEndOfFile()
 

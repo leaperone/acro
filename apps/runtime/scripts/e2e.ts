@@ -71,12 +71,18 @@ async function waitHealthy(timeoutMs = 15000): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  fs.chmodSync(stateDir, 0o755);
+  fs.mkdirSync(path.join(stateDir, "sessions"), { mode: 0o755 });
   const fixtureRepo = makeFixtureRepo();
   let runtime = startRuntime();
 
   try {
     await waitHealthy();
     log("runtime healthy");
+    assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(stateDir, "sessions")).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(stateDir, "daemon.sock")).mode & 0o777, 0o600);
+    log("state permissions ok");
 
     // 配对:首启的 bootstrap 配对码写在 state 目录
     const offerRaw = fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim();

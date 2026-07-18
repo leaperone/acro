@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function sendOversizedRequest(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(env.ACRO_HELPER_SOCKET);
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("helper did not reject oversized request"));
+    }, 5000);
+    socket.on("connect", () => socket.write(Buffer.alloc(2 * 1024 * 1024 + 1, 0x61)));
+    socket.on("close", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    socket.on("error", reject);
+  });
+}
+
 async function main(): Promise<void> {
   assert.ok(fs.existsSync(helperBin), "build helper first: swift build in apps/helper-macos");
   const helper: ChildProcess = spawn(helperBin, [], { env, stdio: "ignore" });
@@ -49,6 +66,9 @@ async function main(): Promise<void> {
     const offer = decodePairingOffer(
       fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim(),
     );
+    assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(path.join(stateDir, "helper.sock")).mode & 0o777, 0o600);
+    await sendOversizedRequest();
     const client = new E2eClient();
     await client.connect(offer);
     const rpc = <T = any>(method: string, params: unknown = {}) =>
