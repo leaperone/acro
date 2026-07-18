@@ -55,6 +55,10 @@ export class Gateway {
   private onInput: (sessionHandle: number, data: Uint8Array) => void;
   // 首个设备认证成功的回调(用于清理 bootstrap 配对码文件)
   onAuthenticated: ((device: Device) => void) | null = null;
+  // 终端占用锁:返回 false 时丢弃该连接对该会话的输入帧
+  inputGate: ((conn: Conn, sessionId: string) => boolean) | null = null;
+  // 已认证连接关闭(占用释放等簿记用)
+  onConnClosed: ((conn: Conn) => void) | null = null;
 
   constructor(
     registry: DeviceRegistry,
@@ -109,9 +113,17 @@ export class Gateway {
       ws.on("close", () => {
         clearTimeout(preAuthTimer);
         this.conns.delete(conn);
+        if (conn.device) this.onConnClosed?.(conn);
       });
       ws.on("error", () => this.conns.delete(conn));
     });
+  }
+
+  hasDeviceConnection(deviceId: string): boolean {
+    for (const conn of this.conns) {
+      if (conn.device?.id === deviceId) return true;
+    }
+    return false;
   }
 
   // 撤销授权时立即断开该设备的所有活动连接(orca terminateClientConnections)
@@ -158,7 +170,10 @@ export class Gateway {
 
       if (opened.kind === "binary") {
         const frame = decodeFrame(opened.data);
-        if (frame.type === FRAME_IN && conn.attached.has(frame.channel)) {
+        const attached = frame.type === FRAME_IN ? conn.attached.get(frame.channel) : undefined;
+        if (attached) {
+          // 会话被其他设备占用时丢弃输入:蒙版之下的硬约束
+          if (this.inputGate && !this.inputGate(conn, attached.sessionId)) return;
           this.onInput(frame.channel, frame.data);
         }
         return;

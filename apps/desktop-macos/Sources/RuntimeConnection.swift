@@ -135,11 +135,16 @@ final class RuntimeConnection: ObservableObject {
     @Published private(set) var workspaceGroups: [WorkspaceGroup] = []
     @Published private(set) var workspaces: [Workspace] = []
     @Published private(set) var sessions: [Session] = []
+    // 终端占用:sessionId -> 占用设备(含自己;是否显示蒙版由调用方比对 deviceId)
+    @Published private(set) var focusOwners: [String: SessionFocus] = [:]
     @Published private(set) var snapshotLoaded = false
     @Published private(set) var snapshotRevision = 0
     @Published private(set) var reconnectAttempt = 0
     // 当前实际连上的入口(设置页展示用)
     @Published private(set) var connectedEndpoint: String?
+
+    // 本连接的设备身份(authed 后可用;用于占用锁的"是不是我"判定)
+    var deviceId: String { server?.deviceId ?? "" }
 
     var connected: Bool { state == .connected }
 
@@ -416,10 +421,13 @@ final class RuntimeConnection: ObservableObject {
             let nextWorkspaceGroups = try await rpc("workspaceGroup.list", as: [WorkspaceGroup].self)
             let nextWorkspaces = try await rpc("workspace.list", as: [Workspace].self)
             let nextSessions = try await rpc("session.list", as: [Session].self)
+            let nextFocus = try await rpc("session.focusList", as: [SessionFocus].self)
             guard generation == refreshGeneration else { return false }
             workspaceGroups = nextWorkspaceGroups
             workspaces = nextWorkspaces
             sessions = nextSessions
+            focusOwners = Dictionary(
+                uniqueKeysWithValues: nextFocus.map { ($0.sessionId, $0) })
             snapshotLoaded = true
             snapshotRevision &+= 1
             return true

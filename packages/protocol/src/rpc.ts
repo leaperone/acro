@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Device, Session, Workspace, WorkspaceGroup } from "./models.ts";
+import { Device, Session, SessionFocus, Workspace, WorkspaceGroup } from "./models.ts";
 
 // 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
 
@@ -137,6 +137,18 @@ export const methods = {
   "session.list": {
     params: z.object({}),
     result: z.array(Session),
+  },
+  // 终端占用锁:claim 即夺取占用权(focus 上报与显式接管共用);
+  // 非占用设备的终端输入会被网关丢弃,设备全部断开时占用自动释放
+  // force=false 时会话已被其他设备占用则拒绝(claimed:false)——
+  // 静默认领只能拿无主会话,夺取必须显式 force(蒙版上的接管按钮)
+  "session.claimFocus": {
+    params: z.object({ sessionId: z.string(), force: z.boolean().optional() }),
+    result: z.object({ claimed: z.boolean() }),
+  },
+  "session.focusList": {
+    params: z.object({}),
+    result: z.array(SessionFocus),
   },
   // attach 返回:连接内 channel、快照(含 scrollback 的 ANSI 序列,base64)、
   // 快照覆盖到的输出 seq。之后的 OUT 帧从 seq+1 开始。
@@ -295,6 +307,11 @@ export const events = {
   "session.created": Session,
   "session.removed": z.object({ sessionId: z.string() }),
   "workspace.layoutChanged": z.object({ workspaceId: z.string(), rev: z.number().int() }),
+  "session.focusChanged": z.object({
+    sessionId: z.string(),
+    deviceId: z.string().nullable(),
+    deviceName: z.string().nullable(),
+  }),
 } as const;
 
 export type EventName = keyof typeof events;

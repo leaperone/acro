@@ -295,6 +295,8 @@ function TerminalScreen({
 }) {
   const webRef = useRef<WebView>(null);
   const channelRef = useRef<number | null>(null);
+  // 终端占用锁:被其他设备占用时显示遮罩,显式接管才恢复输入
+  const [occupant, setOccupant] = useState<string | null>(null);
 
   const inject = useCallback((js: string) => {
     webRef.current?.injectJavaScript(`${js}; true;`);
@@ -319,16 +321,45 @@ function TerminalScreen({
         inject(`window.__acro.write("${bytesToB64(frame.data)}")`);
       }
     };
+    // 占用变化实时反映:他人接管 → 遮罩;释放/自己 → 解除
+    client.onEvent = (event, payload) => {
+      if (event !== "session.focusChanged") return;
+      const p = payload as { sessionId: string; deviceId: string | null; deviceName: string | null };
+      if (p.sessionId !== session.id) return;
+      setOccupant(p.deviceId && p.deviceId !== client.deviceId ? p.deviceName : null);
+    };
     // 断线重连后重新 attach(快照重画)
     client.onStateChange = (up) => {
       if (up && channelRef.current !== null) void attach(0, 0).catch(() => {});
     };
+    // 打开即认领:无主则静默拿下;被占用则先遮罩,等用户显式接管
+    void (async () => {
+      try {
+        const owners = await client.rpc("session.focusList", {});
+        const owner = owners.find((o) => o.sessionId === session.id);
+        if (owner && owner.deviceId !== client.deviceId) {
+          setOccupant(owner.deviceName);
+        } else {
+          await client.rpc("session.claimFocus", { sessionId: session.id });
+        }
+      } catch {
+        // 离线时随重连恢复
+      }
+    })();
     return () => {
       client.onFrame = null;
+      client.onEvent = null;
       client.onStateChange = null;
       void client.rpc("session.detach", { sessionId: session.id }).catch(() => {});
     };
   }, [client, session.id, attach, inject]);
+
+  const takeOver = () => {
+    setOccupant(null);
+    void client
+      .rpc("session.claimFocus", { sessionId: session.id, force: true })
+      .catch(() => {});
+  };
 
   const sendBytes = (text: string) => {
     const channel = channelRef.current;
@@ -376,6 +407,15 @@ function TerminalScreen({
           </Pressable>
         ))}
       </View>
+      {occupant !== null && (
+        <View style={styles.focusMask}>
+          <Text style={styles.focusTitle}>此终端正在被「{occupant}」使用</Text>
+          <Text style={styles.focusHint}>接管后这里恢复操作,对方会被暂停</Text>
+          <Pressable style={styles.focusButton} onPress={takeOver}>
+            <Text style={styles.focusButtonText}>在此设备继续使用</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -554,4 +594,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   keyText: { color: "#cdd6f4", fontSize: 13 },
+  focusMask: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(17, 17, 27, 0.92)",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    padding: 24,
+  },
+  focusTitle: { color: "#cdd6f4", fontSize: 16, fontWeight: "600" },
+  focusHint: { color: "#7f849c", fontSize: 13 },
+  focusButton: {
+    marginTop: 8,
+    backgroundColor: "#89b4fa",
+    borderRadius: 8,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+  },
+  focusButtonText: { color: "#11111b", fontSize: 14, fontWeight: "600" },
 });

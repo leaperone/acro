@@ -261,16 +261,27 @@ private struct PaneView: View {
     @ViewBuilder
     private func terminal(sessionId: String) -> some View {
         if model.session(sessionId) != nil {
-            AcroTerminalView(
-                sessionId: sessionId,
-                command: AttachCommand.resolve(sessionId: sessionId, serverId: model.selectedServerId),
-                focusRequest: focused && pane.selectedSessionId == sessionId
-                    ? model.terminalFocusRequest
-                    : 0,
-                onClose: { model.closeTab(sessionId) },
-                onFocus: { model.selectTab(sessionId, inPane: pane.id) }
-            )
-            .id(sessionId)
+            ZStack {
+                AcroTerminalView(
+                    sessionId: sessionId,
+                    command: AttachCommand.resolve(
+                        sessionId: sessionId, serverId: model.selectedServerId),
+                    focusRequest: focused && pane.selectedSessionId == sessionId
+                        ? model.terminalFocusRequest
+                        : 0,
+                    onClose: { model.closeTab(sessionId) },
+                    onFocus: { model.selectTab(sessionId, inPane: pane.id) }
+                )
+                .id(sessionId)
+
+                // 占用蒙版:他端正在使用,内容遮住、交互挡掉,必须显式接管
+                if let occupant = model.focusOccupant(sessionId) {
+                    FocusLockOverlay(
+                        deviceName: occupant.deviceName,
+                        takeOver: { model.claimFocus(sessionId, force: true) }
+                    )
+                }
+            }
         } else {
             ContentUnavailableView("终端已结束", systemImage: "terminal")
         }
@@ -469,6 +480,35 @@ private struct PaneTabItem: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+}
+
+// 终端占用蒙版:另一台设备正在使用该会话时盖在 surface 上,
+// 会话继续在后台接收输出,接管后立即呈现最新状态
+private struct FocusLockOverlay: View {
+    let deviceName: String
+    let takeOver: () -> Void
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.regularMaterial)
+            VStack(spacing: 10) {
+                Image(systemName: "display.2")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text("此终端正在被「\(deviceName)」使用")
+                    .font(.callout.weight(.semibold))
+                Text("接管后这里恢复操作,对方会被暂停并需要重新接管")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("在此设备继续使用", action: takeOver)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+            }
+            .padding(24)
+        }
+        .contentShape(Rectangle())
     }
 }
 

@@ -37,6 +37,8 @@ async function main(): Promise<void> {
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
   const workspaces = new WorkspaceRegistry();
+  // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
+  const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
 
   const handlers: Handlers = {
     "device.list": () => registry.list(),
@@ -102,6 +104,27 @@ async function main(): Promise<void> {
       return session;
     },
     "session.list": () => daemon.request<Session[]>("session.list"),
+    "session.claimFocus": async (conn, { sessionId, force }) => {
+      if (!conn.device) throw new Error("unauthenticated");
+      const owner = focusOwners.get(sessionId);
+      // 静默认领拿不到别人手里的会话:防客户端缓存过期时绕过显式接管语义
+      if (owner && owner.deviceId !== conn.device.id && !force) {
+        return { claimed: false };
+      }
+      const sessions = await daemon.request<Session[]>("session.list");
+      if (!sessions.some((s) => s.id === sessionId && s.alive)) {
+        throw new Error("session not alive");
+      }
+      focusOwners.set(sessionId, { deviceId: conn.device.id, deviceName: conn.device.name });
+      emitRuntimeEvent("session.focusChanged", {
+        sessionId,
+        deviceId: conn.device.id,
+        deviceName: conn.device.name,
+      });
+      return { claimed: true };
+    },
+    "session.focusList": () =>
+      [...focusOwners].map(([sessionId, owner]) => ({ sessionId, ...owner })),
     "session.attach": async (conn, { sessionId }) => {
       const snap = await daemon.request<SnapshotResult>("session.snapshot", { sessionId });
       conn.attached.set(snap.handle, { sessionId, attachSeq: snap.seq });
@@ -190,7 +213,32 @@ async function main(): Promise<void> {
   };
   gateway.onAuthenticated = () => clearBootstrapOffer();
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
-  daemon.on("event", (evt) => gateway.broadcastEvent(evt));
+  daemon.on("event", (evt) => {
+    // 会话结束即清占用,不留脏条目
+    if (evt.event === "session.exit") {
+      const sessionId = (evt.payload as { sessionId?: string }).sessionId;
+      if (sessionId) focusOwners.delete(sessionId);
+    }
+    gateway.broadcastEvent(evt);
+  });
+  gateway.inputGate = (conn, sessionId) => {
+    const owner = focusOwners.get(sessionId);
+    return !owner || owner.deviceId === conn.device?.id;
+  };
+  // 占用设备的连接全部断开后自动释放,其他设备无需手动接管
+  gateway.onConnClosed = (conn) => {
+    const deviceId = conn.device?.id;
+    if (!deviceId || gateway.hasDeviceConnection(deviceId)) return;
+    for (const [sessionId, owner] of focusOwners) {
+      if (owner.deviceId !== deviceId) continue;
+      focusOwners.delete(sessionId);
+      emitRuntimeEvent("session.focusChanged", {
+        sessionId,
+        deviceId: null,
+        deviceName: null,
+      });
+    }
+  };
   browsers.on("frame", (handle: number, seq: number, data: Buffer) =>
     gateway.forwardBrowserFrame(handle, seq, data),
   );

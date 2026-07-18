@@ -281,6 +281,55 @@ async function main(): Promise<void> {
     await client.rpc("session.kill", { sessionId: inherited.id });
     log("cwd inheritance ok");
 
+    // 终端占用锁:占用后其他设备输入被丢弃,显式接管后恢复,设备断开自动释放
+    const seatShare = await client.rpc<{ offer: string; deviceId: string }>("device.share", {
+      name: "second-seat",
+    });
+    const seat = new Client();
+    await seat.connect(decodePairingOffer(seatShare.offer));
+    await client.rpc("session.claimFocus", { sessionId: session.id });
+    const owners = await client.rpc<Array<{ sessionId: string; deviceId: string }>>(
+      "session.focusList",
+    );
+    assert.equal(owners.find((o) => o.sessionId === session.id)?.deviceId, client.deviceId);
+
+    const seatAttach = await seat.rpc<{ channel: number }>("session.attach", {
+      sessionId: session.id,
+    });
+    seat.sendInput(seatAttach.channel, "echo LOCKED_OUT_XYZ\n");
+    await sleep(800);
+    assert.ok(!seat.output.includes("LOCKED_OUT_XYZ"), "non-owner input must be dropped");
+
+    // 非 force 拿不到别人手里的会话;显式接管必须 force
+    const denied = await seat.rpc<{ claimed: boolean }>("session.claimFocus", {
+      sessionId: session.id,
+    });
+    assert.equal(denied.claimed, false, "silent claim must not steal an owned session");
+    await seat.rpc("session.claimFocus", { sessionId: session.id, force: true });
+    seat.sendInput(seatAttach.channel, "echo TAKEN_OVER_XYZ\n");
+    await seat.waitOutput("TAKEN_OVER_XYZ");
+    assert.ok(
+      client.events.some(
+        (e) => e.event === "session.focusChanged" && e.payload.deviceId === seat.deviceId,
+      ),
+      "takeover must broadcast focusChanged",
+    );
+
+    // 占用设备断开 → 自动释放并广播 null
+    seat.close();
+    await sleep(500);
+    assert.ok(
+      client.events.some(
+        (e) =>
+          e.event === "session.focusChanged" &&
+          e.payload.sessionId === session.id &&
+          e.payload.deviceId === null,
+      ),
+      "disconnect must release the focus lock",
+    );
+    assert.equal((await client.rpc<unknown[]>("session.focusList")).length, 0);
+    log("focus lock ok");
+
     // 断开重连:会话必须还在,快照必须包含断开前的输出,且不重发旧帧
     client.close();
     await sleep(500);
