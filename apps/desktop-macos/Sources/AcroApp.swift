@@ -31,6 +31,27 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private enum SidebarViewMode: String, CaseIterable, Identifiable {
+    case workspaces
+    case sessions
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .workspaces: "工作区"
+        case .sessions: "会话"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .workspaces: "square.stack.3d.up"
+        case .sessions: "terminal"
+        }
+    }
+}
+
 struct WorkbenchActions {
     let newWorkspaceGroup: () -> Void
     let newWorkspace: () -> Void
@@ -290,6 +311,7 @@ struct ContentView: View {
     @State private var hoveredWorkspaceId: String?
     @State private var errorMessage: String?
     @AppStorage("acro.desktop.workbench.layout.v1") private var persistedLayout = ""
+    @AppStorage("acro.desktop.sidebar.view-mode") private var sidebarViewMode = SidebarViewMode.workspaces
 
     var body: some View {
         ZStack {
@@ -444,6 +466,17 @@ struct ContentView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                Picker("侧边栏视图", selection: $sidebarViewMode) {
+                    ForEach(SidebarViewMode.allCases) { mode in
+                        Image(systemName: mode.symbol)
+                            .accessibilityLabel(mode.title)
+                            .tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 64)
+                .help("切换工作区或会话视图")
                 Circle()
                     .fill(runtime.connected ? Color.green : Color.secondary)
                     .frame(width: 7, height: 7)
@@ -1334,17 +1367,19 @@ struct ContentView: View {
         let currentGroup = workspaceGroup(containing: workspaceId)
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Button {
-                    toggleWorkspace(workspaceId)
-                } label: {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 28)
-                        .contentShape(Rectangle())
+                if sidebarViewMode == .sessions {
+                    Button {
+                        toggleWorkspace(workspaceId)
+                    } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 18, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(expanded ? "折叠工作区" : "展开工作区")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(expanded ? "折叠工作区" : "展开工作区")
 
                 Button {
                     selectWorkspace(workspace)
@@ -1390,7 +1425,8 @@ struct ContentView: View {
             }
             .padding(.horizontal, 6)
             .modifier(SidebarRowSurface(
-                selected: selectedWorkspaceId == workspaceId && selectedSessionId == nil
+                selected: selectedWorkspaceId == workspaceId
+                    && (sidebarViewMode == .workspaces || selectedSessionId == nil)
             ))
             .onHover { hovering in
                 hoveredWorkspaceId = hovering ? workspaceId : nil
@@ -1438,7 +1474,7 @@ struct ContentView: View {
                     pendingWorkspaceDeletion = workspace
                 }
             }
-            if expanded {
+            if sidebarViewMode == .sessions && expanded {
                 if workspaceProjects.isEmpty {
                     Button {
                         selectedWorkspaceId = workspaceId
