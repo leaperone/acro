@@ -722,7 +722,10 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func groupSection(_ group: WorkspaceGroup, entry: RuntimeHub.Entry) -> some View {
-        let expanded = model.expandedWorkspaceGroupIds.contains(group.id)
+        let expanded = model.expandedWorkspaceGroupIds.contains(ScopedResourceID(
+            serverId: entry.id,
+            resourceId: group.id
+        ))
         let groupWorkspaces = model.workspaces(in: group, on: entry.connection)
         WorkspaceGroupRow(
             snapshot: WorkspaceGroupRowSnapshot(
@@ -732,7 +735,7 @@ struct SidebarView: View {
                 isExpanded: expanded
             ),
             actions: WorkspaceGroupRowActions(
-                toggle: { model.toggleWorkspaceGroup(group.id) },
+                toggle: { model.toggleWorkspaceGroup(group.id, serverId: entry.id) },
                 createWorkspace: {
                     model.activate(serverId: entry.id)
                     model.requestCreateWorkspace(in: group.id)
@@ -790,7 +793,10 @@ struct SidebarView: View {
         entry: RuntimeHub.Entry
     ) -> some View {
         let connection = entry.connection
-        let expanded = model.expandedWorkspaceIds.contains(workspace.id)
+        let expanded = model.expandedWorkspaceIds.contains(ScopedResourceID(
+            serverId: entry.id,
+            resourceId: workspace.id
+        ))
         let workspaceSessions = model.sessions(in: workspace, on: connection)
         let currentGroup = model.workspaceGroup(containing: workspace.id, on: connection)
         let isSelectedServer = model.selectedServerId == entry.id
@@ -817,7 +823,7 @@ struct SidebarView: View {
                     model.activate(serverId: entry.id)
                     model.selectWorkspace(workspace)
                 },
-                toggleExpand: { model.toggleWorkspace(workspace.id) },
+                toggleExpand: { model.toggleWorkspace(workspace.id, serverId: entry.id) },
                 newTerminal: {
                     model.activate(serverId: entry.id)
                     model.requestNewTerminal(in: workspace)

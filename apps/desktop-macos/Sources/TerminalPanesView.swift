@@ -260,19 +260,28 @@ private struct PaneView: View {
 
     @ViewBuilder
     private func terminal(sessionId: String) -> some View {
-        if model.session(sessionId) != nil {
+        if let serverId = model.selectedServerId,
+           let workspaceId = model.selectedWorkspaceId,
+           model.session(sessionId) != nil {
             ZStack {
                 AcroTerminalView(
+                    serverId: serverId,
                     sessionId: sessionId,
                     command: AttachCommand.resolve(
-                        sessionId: sessionId, serverId: model.selectedServerId),
+                        sessionId: sessionId, serverId: serverId),
                     focusRequest: focused && pane.selectedSessionId == sessionId
                         ? model.terminalFocusRequest
                         : 0,
-                    onClose: { model.closeTab(sessionId) },
+                    onClose: {
+                        model.closeTab(
+                            sessionId,
+                            workspaceId: workspaceId,
+                            serverId: serverId
+                        )
+                    },
                     onFocus: { model.selectTab(sessionId, inPane: pane.id) }
                 )
-                .id(sessionId)
+                .id(ScopedResourceID(serverId: serverId, resourceId: sessionId))
 
                 // 占用蒙版:他端正在使用,内容遮住、交互挡掉,必须显式接管
                 if let occupant = model.focusOccupant(sessionId) {

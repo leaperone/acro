@@ -11,6 +11,7 @@ final class AcroTerminalNSView: NSView {
     private var cStrings: [UnsafeMutablePointer<CChar>] = []
     private var requestedFocusRequest = 0
     private var appliedFocusRequest = 0
+    let serverId: String
     let sessionId: String
     private let command: String
     private var markedText = ""
@@ -23,7 +24,8 @@ final class AcroTerminalNSView: NSView {
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?
 
-    init(sessionId: String, command: String) {
+    init(serverId: String, sessionId: String, command: String) {
+        self.serverId = serverId
         self.sessionId = sessionId
         self.command = command
         super.init(frame: .zero)
@@ -119,7 +121,11 @@ final class AcroTerminalNSView: NSView {
             ghostty_surface_free(surface)
             self.surface = nil
         }
-        TerminalSurfaceCache.shared.evict(sessionId, teardown: false)
+        TerminalSurfaceCache.shared.evict(
+            serverId: serverId,
+            sessionId: sessionId,
+            teardown: false
+        )
         onClose?()
     }
 
@@ -520,29 +526,32 @@ extension AcroTerminalNSView: NSTextInputClient {
 final class TerminalSurfaceCache {
     static let shared = TerminalSurfaceCache()
 
-    private var views: [String: AcroTerminalNSView] = [:]
+    private var views: [ScopedResourceID: AcroTerminalNSView] = [:]
 
-    func view(for sessionId: String, command: String) -> AcroTerminalNSView {
-        if let view = views[sessionId] { return view }
-        let view = AcroTerminalNSView(sessionId: sessionId, command: command)
-        views[sessionId] = view
+    func view(serverId: String, sessionId: String, command: String) -> AcroTerminalNSView {
+        let key = ScopedResourceID(serverId: serverId, resourceId: sessionId)
+        if let view = views[key] { return view }
+        let view = AcroTerminalNSView(serverId: serverId, sessionId: sessionId, command: command)
+        views[key] = view
         return view
     }
 
-    func evict(_ sessionId: String, teardown: Bool = true) {
-        guard let view = views.removeValue(forKey: sessionId) else { return }
+    func evict(serverId: String, sessionId: String, teardown: Bool = true) {
+        let key = ScopedResourceID(serverId: serverId, resourceId: sessionId)
+        guard let view = views.removeValue(forKey: key) else { return }
         if teardown { view.teardown() }
     }
 
     // 对账:只保留仍然存活的会话
-    func retainOnly(_ sessionIds: Set<String>) {
+    func retainOnly(_ sessionIds: Set<ScopedResourceID>) {
         for key in views.keys where !sessionIds.contains(key) {
-            evict(key)
+            evict(serverId: key.serverId, sessionId: key.resourceId)
         }
     }
 }
 
 struct AcroTerminalView: NSViewRepresentable {
+    let serverId: String
     let sessionId: String
     let command: String
     let focusRequest: Int
@@ -550,7 +559,11 @@ struct AcroTerminalView: NSViewRepresentable {
     var onFocus: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> AcroTerminalNSView {
-        let view = TerminalSurfaceCache.shared.view(for: sessionId, command: command)
+        let view = TerminalSurfaceCache.shared.view(
+            serverId: serverId,
+            sessionId: sessionId,
+            command: command
+        )
         view.onClose = onClose
         view.onFocus = onFocus
         view.applyFocusRequest(focusRequest)
