@@ -22,7 +22,7 @@ enum ServerDirectory {
     static func pair(offerText: String, name: String?, hub: RuntimeHub) throws -> ServerEntry {
         let offer = try PairingOffer.decode(
             offerText.trimmingCharacters(in: .whitespacesAndNewlines))
-        var config = ClientConfig.load() ?? ClientConfig(v: 2, servers: [], active: nil)
+        var config = try ClientConfig.loadForWrite()
         let trimmed = name?.trimmingCharacters(in: .whitespaces) ?? ""
         let finalName = trimmed.isEmpty ? (offer.endpoints.first ?? "Runtime") : trimmed
         // 名称重复直接拒绝,避免静默覆盖另一台服务器的凭据

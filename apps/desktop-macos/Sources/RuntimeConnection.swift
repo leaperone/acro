@@ -11,6 +11,11 @@ struct RpcError: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct ClientConfigError: Error, LocalizedError {
+    let path: String
+    var errorDescription: String? { "客户端配置已损坏或不可读,请先修复或备份 \(path)" }
+}
+
 // 入口按可达路径分两类:局域网直连(私网地址)与公网入口(FRP 等映射的域名/公网 IP)。
 // 分类由地址推断,不改协议;连接时局域网永远优先,公网只做回退。
 enum EndpointKind {
@@ -104,6 +109,17 @@ struct ClientConfig: Codable {
         return config
     }
 
+    static func loadForWrite() throws -> ClientConfig {
+        let files = FileManager.default
+        guard files.fileExists(atPath: path) else {
+            return ClientConfig(v: 2, servers: [], active: nil)
+        }
+        guard let data = files.contents(atPath: path) else { throw ClientConfigError(path: path) }
+        guard let config = try? JSONDecoder().decode(ClientConfig.self, from: data), config.v == 2
+        else { throw ClientConfigError(path: path) }
+        return config
+    }
+
     func save() {
         let dir = (Self.path as NSString).deletingLastPathComponent
         do {
@@ -163,17 +179,24 @@ final class RuntimeConnection: ObservableObject {
     private var endpointIndex = 0
     private var generation = 0
     private var nextId = 1
-    private var pending: [Int: CheckedContinuation<Any, Error>] = [:]
+    private struct PendingRpc {
+        let continuation: CheckedContinuation<Any, Error>
+        let timeoutTask: Task<Void, Never>
+    }
+
+    private var pending: [Int: PendingRpc] = [:]
     private var refreshGeneration = 0
     private var probeTimer: Timer?
     private var probeOutstanding = false
-    private var reconnectScheduled = false
+    private var reconnectTask: Task<Void, Never>?
     var onTerminalFrame: ((UInt32, UInt32, Data) -> Void)?
 
     // orca RECONNECT_DELAYS_MS 的等价物,尾项为稳态重试间隔
     private static let reconnectDelays: [TimeInterval] = [0.5, 1, 2, 3, 5, 8]
 
     func connect(server: ServerEntry) {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         self.server = server
         endpointIndex = 0
         reconnectAttempt = 0
@@ -181,15 +204,20 @@ final class RuntimeConnection: ObservableObject {
     }
 
     func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         server = nil
         generation += 1
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session = nil
+        handshake = nil
         state = .disconnected
+        reconnectAttempt = 0
         connectedEndpoint = nil
         probeTimer?.invalidate()
         probeTimer = nil
+        probeOutstanding = false
         failPending(RpcError(message: "disconnected"))
     }
 
@@ -251,12 +279,16 @@ final class RuntimeConnection: ObservableObject {
     }
 
     private func handleDisconnect(generation: Int) {
-        guard self.generation == generation else { return }
+        guard self.generation == generation, state != .disconnected else { return }
         state = .disconnected
         connectedEndpoint = nil
         session = nil
+        handshake = nil
+        task?.cancel(with: .abnormalClosure, reason: nil)
+        task = nil
         probeTimer?.invalidate()
         probeTimer = nil
+        probeOutstanding = false
         failPending(RpcError(message: "disconnected"))
         // 换下一个入口再试(LAN 不通就轮到公网入口)
         endpointIndex += 1
@@ -264,23 +296,33 @@ final class RuntimeConnection: ObservableObject {
     }
 
     private func scheduleReconnect() {
-        guard server != nil, !reconnectScheduled else { return }
-        reconnectScheduled = true
+        guard server != nil, reconnectTask == nil else { return }
         let delay = Self.reconnectDelays[min(reconnectAttempt, Self.reconnectDelays.count - 1)]
         reconnectAttempt += 1
-        Task {
+        reconnectTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            reconnectScheduled = false
-            guard state != .connected else { return }
-            openSocket()
+            guard !Task.isCancelled, let self else { return }
+            self.reconnectTask = nil
+            guard self.server != nil, self.state != .connected else { return }
+            self.openSocket()
         }
     }
 
     private func failPending(_ error: Error) {
-        let continuations = pending.values
+        let requests = pending.values
         pending.removeAll()
-        for continuation in continuations {
-            continuation.resume(throwing: error)
+        for request in requests {
+            request.timeoutTask.cancel()
+            request.continuation.resume(throwing: error)
+        }
+    }
+
+    private func completePending(_ id: Int, _ result: Result<Any, Error>) {
+        guard let request = pending.removeValue(forKey: id) else { return }
+        request.timeoutTask.cancel()
+        switch result {
+        case .success(let value): request.continuation.resume(returning: value)
+        case .failure(let error): request.continuation.resume(throwing: error)
         }
     }
 
@@ -374,13 +416,12 @@ final class RuntimeConnection: ObservableObject {
                 }
             }
         case "res":
-            guard let id = obj["id"] as? Int,
-                  let cont = pending.removeValue(forKey: id) else { return }
+            guard let id = obj["id"] as? Int else { return }
             if obj["ok"] as? Bool == true {
-                cont.resume(returning: obj["result"] ?? [:])
+                completePending(id, .success(obj["result"] ?? [:]))
             } else {
                 let err = (obj["error"] as? [String: Any])?["message"] as? String ?? "rpc error"
-                cont.resume(throwing: RpcError(message: err))
+                completePending(id, .failure(RpcError(message: err)))
             }
         case "evt":
             Task { await refresh() }
@@ -397,12 +438,17 @@ final class RuntimeConnection: ObservableObject {
         let data = try JSONSerialization.data(withJSONObject: payload)
         let sealed = try session.sealText(String(decoding: data, as: UTF8.self))
         return try await withCheckedThrowingContinuation { cont in
-            pending[id] = cont
+            let timeoutTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled else { return }
+                self?.completePending(id, .failure(RpcError(message: "rpc timeout: \(method)")))
+            }
+            pending[id] = PendingRpc(continuation: cont, timeoutTask: timeoutTask)
             Task {
                 do {
                     try await task.send(.data(sealed))
                 } catch {
-                    pending.removeValue(forKey: id)?.resume(throwing: error)
+                    completePending(id, .failure(error))
                 }
             }
         }
