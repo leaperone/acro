@@ -36,6 +36,11 @@ export interface Conn {
 const HEARTBEAT_INTERVAL_MS = 15_000;
 // 握手 + 认证必须在此时限内完成(取自 orca 的 PRE_AUTH_TIMEOUT)
 const PRE_AUTH_TIMEOUT_MS = 10_000;
+// 布局控制消息上限 256KB,终端输入通常远小于 1MB;更大的单帧只会放大内存攻击面。
+const MAX_INBOUND_BYTES = 1024 * 1024;
+// 慢客户端不能让 ws 内部发送队列无限增长。画面可以丢帧;终端必须断线后靠快照恢复。
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const SEALED_OVERHEAD_BYTES = 17;
 
 export type Handlers = {
   [M in keyof typeof methods]: (
@@ -45,7 +50,7 @@ export type Handlers = {
 };
 
 export class Gateway {
-  private wss = new WebSocketServer({ noServer: true });
+  private wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_BYTES });
   private conns = new Set<Conn>();
   private heartbeat: NodeJS.Timeout;
 
@@ -74,7 +79,7 @@ export class Gateway {
       for (const conn of this.conns) {
         if (!conn.alive) {
           conn.ws.terminate();
-          this.conns.delete(conn);
+          this.removeConn(conn);
           continue;
         }
         conn.alive = false;
@@ -112,11 +117,15 @@ export class Gateway {
       });
       ws.on("close", () => {
         clearTimeout(preAuthTimer);
-        this.conns.delete(conn);
-        if (conn.device) this.onConnClosed?.(conn);
+        this.removeConn(conn);
       });
-      ws.on("error", () => this.conns.delete(conn));
+      ws.on("error", () => this.removeConn(conn));
     });
+  }
+
+  private removeConn(conn: Conn): void {
+    if (!this.conns.delete(conn)) return;
+    if (conn.device) this.onConnClosed?.(conn);
   }
 
   hasDeviceConnection(deviceId: string): boolean {
@@ -131,14 +140,42 @@ export class Gateway {
     for (const conn of this.conns) {
       if (conn.device?.id === deviceId) {
         conn.ws.terminate();
-        this.conns.delete(conn);
+        this.removeConn(conn);
       }
     }
   }
 
   private sendText(conn: Conn, msg: unknown): void {
     if (!conn.session) return;
-    conn.ws.send(conn.session.sealText(JSON.stringify(msg)), { binary: true });
+    const text = JSON.stringify(msg);
+    if (!this.canSend(conn, Buffer.byteLength(text) + SEALED_OVERHEAD_BYTES, false)) return;
+    this.sendSealed(conn, conn.session.sealText(text));
+  }
+
+  private canSend(conn: Conn, bytes: number, lossy: boolean): boolean {
+    if (conn.ws.readyState !== WebSocket.OPEN) return false;
+    // 单个大画面在队列为空时仍允许发送;之后的帧会丢弃,峰值只多这一帧。
+    if (conn.ws.bufferedAmount === 0 || conn.ws.bufferedAmount + bytes <= MAX_BUFFERED_BYTES) {
+      return true;
+    }
+    if (!lossy) {
+      conn.ws.terminate();
+      this.removeConn(conn);
+    }
+    return false;
+  }
+
+  private sendSealed(conn: Conn, data: Uint8Array): void {
+    try {
+      conn.ws.send(data, { binary: true }, (error) => {
+        if (!error) return;
+        conn.ws.terminate();
+        this.removeConn(conn);
+      });
+    } catch {
+      conn.ws.terminate();
+      this.removeConn(conn);
+    }
   }
 
   private onMessage(conn: Conn, raw: Buffer, isBinary: boolean): void {
@@ -183,7 +220,7 @@ export class Gateway {
     } catch {
       // 握手违规、解密失败、认证失败:直接断开
       conn.ws.terminate();
-      this.conns.delete(conn);
+      this.removeConn(conn);
     }
   }
 
@@ -218,32 +255,39 @@ export class Gateway {
     }
   }
 
-  private sendBinary(conn: Conn, data: Uint8Array): void {
+  private sendBinary(conn: Conn, data: Uint8Array, lossy = false): void {
     if (!conn.session || !conn.device) return;
-    conn.ws.send(conn.session.sealBinary(data), { binary: true });
+    if (!this.canSend(conn, data.byteLength + SEALED_OVERHEAD_BYTES, lossy)) return;
+    this.sendSealed(conn, conn.session.sealBinary(data));
   }
 
   forwardBrowserFrame(channel: number, seq: number, data: Uint8Array): void {
+    let encoded: Uint8Array | null = null;
     for (const conn of this.conns) {
       if (conn.browserChannels.has(channel)) {
-        this.sendBinary(conn, encodeBrowserFrame(channel, seq, data));
+        encoded ??= encodeBrowserFrame(channel, seq, data);
+        this.sendBinary(conn, encoded, true);
       }
     }
   }
 
   forwardSimFrame(channel: number, seq: number, data: Uint8Array): void {
+    let encoded: Uint8Array | null = null;
     for (const conn of this.conns) {
       if (conn.simChannels.has(channel)) {
-        this.sendBinary(conn, encodeSimFrame(channel, seq, data));
+        encoded ??= encodeSimFrame(channel, seq, data);
+        this.sendBinary(conn, encoded, true);
       }
     }
   }
 
   forwardFrame(frame: OutFrame): void {
+    let encoded: Uint8Array | null = null;
     for (const conn of this.conns) {
       const st = conn.attached.get(frame.channel);
       if (st && frame.seq > st.attachSeq) {
-        this.sendBinary(conn, encodeOutFrame(frame.channel, frame.seq, frame.data));
+        encoded ??= encodeOutFrame(frame.channel, frame.seq, frame.data);
+        this.sendBinary(conn, encoded);
       }
     }
   }

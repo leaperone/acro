@@ -433,41 +433,45 @@ function startServer(): void {
     clients.add(socket);
     const reader = new FrameReader();
     socket.on("data", (chunk) => {
-      for (const msg of reader.push(chunk)) {
-        if (msg.kind === KIND_BIN) {
-          const frame = decodeFrame(msg.body);
-          if (frame.type === FRAME_IN) {
-            for (const s of live.values()) {
-              if (s.handle === frame.channel) s.write(Buffer.from(frame.data));
+      try {
+        for (const msg of reader.push(chunk)) {
+          if (msg.kind === KIND_BIN) {
+            const frame = decodeFrame(msg.body);
+            if (frame.type === FRAME_IN) {
+              for (const s of live.values()) {
+                if (s.handle === frame.channel) s.write(Buffer.from(frame.data));
+              }
             }
+            continue;
           }
-          continue;
+          if (msg.kind !== KIND_JSON) continue;
+          const req = JSON.parse(msg.body.toString("utf8")) as {
+            t: string;
+            id: number;
+            method: string;
+            params?: unknown;
+          };
+          if (req.t !== "req") continue;
+          void (async () => {
+            try {
+              const handler = handlers[req.method];
+              if (!handler) throw new Error(`unknown method ${req.method}`);
+              const result = await handler(req.params ?? {});
+              socket.write(packJson({ t: "res", id: req.id, ok: true, result }));
+            } catch (err) {
+              socket.write(
+                packJson({
+                  t: "res",
+                  id: req.id,
+                  ok: false,
+                  error: { code: "daemon_error", message: (err as Error).message },
+                }),
+              );
+            }
+          })();
         }
-        if (msg.kind !== KIND_JSON) continue;
-        const req = JSON.parse(msg.body.toString("utf8")) as {
-          t: string;
-          id: number;
-          method: string;
-          params?: unknown;
-        };
-        if (req.t !== "req") continue;
-        void (async () => {
-          try {
-            const handler = handlers[req.method];
-            if (!handler) throw new Error(`unknown method ${req.method}`);
-            const result = await handler(req.params ?? {});
-            socket.write(packJson({ t: "res", id: req.id, ok: true, result }));
-          } catch (err) {
-            socket.write(
-              packJson({
-                t: "res",
-                id: req.id,
-                ok: false,
-                error: { code: "daemon_error", message: (err as Error).message },
-              }),
-            );
-          }
-        })();
+      } catch {
+        socket.destroy();
       }
     });
     socket.on("close", () => clients.delete(socket));
