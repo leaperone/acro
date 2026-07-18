@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
+  Linking,
   Pressable,
   SafeAreaView,
   StyleSheet,
@@ -22,7 +23,13 @@ import {
   type ServerConfig,
 } from "./src/client.ts";
 import { mapContainedPoint } from "./src/surface.ts";
-import { terminalHtml } from "./src/terminal-html.ts";
+import {
+  isTerminalDocumentUrl,
+  parseTerminalBridgeMessage,
+  safeTerminalExternalUrl,
+  TERMINAL_DOCUMENT_URL,
+} from "./src/terminal-bridge.ts";
+import { createTerminalHtml } from "./src/terminal-html.ts";
 
 // ---- 小工具 ----
 
@@ -315,24 +322,35 @@ function TerminalScreen({
 }) {
   const webRef = useRef<WebView>(null);
   const channelRef = useRef<number | null>(null);
+  const terminalDocumentActiveRef = useRef(true);
+  const [bridgeToken] = useState(() =>
+    bytesToB64(globalThis.crypto.getRandomValues(new Uint8Array(32))),
+  );
+  const bridgeExpression = `window[${JSON.stringify(`__acro_${bridgeToken}`)}]`;
+  const [terminalSource] = useState(() => ({
+    html: createTerminalHtml(bridgeToken),
+    baseUrl: TERMINAL_DOCUMENT_URL,
+  }));
   // 终端占用锁:被其他设备占用时显示遮罩,显式接管才恢复输入
   const [occupant, setOccupant] = useState<string | null>(null);
 
   const inject = useCallback((js: string) => {
-    webRef.current?.injectJavaScript(`${js}; true;`);
+    if (terminalDocumentActiveRef.current) {
+      webRef.current?.injectJavaScript(`${js}; true;`);
+    }
   }, []);
 
   const attach = useCallback(
     async (cols: number, rows: number) => {
       const res = await client.rpc("session.attach", { sessionId: session.id });
       channelRef.current = res.channel;
-      inject(`window.__acro.clear()`);
-      inject(`window.__acro.write(${JSON.stringify(res.snapshot)})`);
+      inject(`${bridgeExpression}?.clear()`);
+      inject(`${bridgeExpression}?.write(${JSON.stringify(res.snapshot)})`);
       if (cols !== res.cols || rows !== res.rows) {
         await client.rpc("session.resize", { sessionId: session.id, cols, rows });
       }
     },
-    [client, session.id, inject],
+    [bridgeExpression, client, session.id, inject],
   );
 
   const claimFocus = useCallback(
@@ -358,7 +376,7 @@ function TerminalScreen({
   useEffect(() => {
     const unsubscribeFrame = client.subscribeFrame((frame) => {
       if (frame.type === FRAME_OUT && frame.channel === channelRef.current) {
-        inject(`window.__acro.write("${bytesToB64(frame.data)}")`);
+        inject(`${bridgeExpression}?.write("${bytesToB64(frame.data)}")`);
       }
     });
     // 占用变化实时反映:他人接管 → 遮罩;释放/自己 → 解除
@@ -377,11 +395,16 @@ function TerminalScreen({
       unsubscribeEvent();
       void client.rpc("session.detach", { sessionId: session.id }).catch(() => {});
     };
-  }, [client, session.id, claimFocus, inject]);
+  }, [bridgeExpression, client, session.id, claimFocus, inject]);
 
   const takeOver = () => {
     void claimFocus(true).catch(() => {});
   };
+
+  const openExternalUrl = useCallback((raw: string) => {
+    const url = safeTerminalExternalUrl(raw);
+    if (url) void Linking.openURL(url).catch(() => {});
+  }, []);
 
   const sendBytes = (text: string) => {
     const channel = channelRef.current;
@@ -401,20 +424,33 @@ function TerminalScreen({
       </View>
       <WebView
         ref={webRef}
-        source={{ html: terminalHtml }}
+        source={terminalSource}
         style={styles.flex}
         originWhitelist={["*"]}
         keyboardDisplayRequiresUserAction={false}
+        onShouldStartLoadWithRequest={(request) => {
+          if (isTerminalDocumentUrl(request.url)) return true;
+          openExternalUrl(request.url);
+          return false;
+        }}
+        onOpenWindow={(event) => openExternalUrl(event.nativeEvent.targetUrl)}
+        onLoadStart={(event) => {
+          terminalDocumentActiveRef.current = isTerminalDocumentUrl(event.nativeEvent.url);
+        }}
         onMessage={(ev) => {
-          const msg = JSON.parse(ev.nativeEvent.data) as
-            | { type: "ready"; cols: number; rows: number }
-            | { type: "input"; dataB64: string }
-            | { type: "resize"; cols: number; rows: number };
+          const msg = parseTerminalBridgeMessage(
+            ev.nativeEvent.data,
+            ev.nativeEvent.url,
+            bridgeToken,
+          );
+          if (!msg) return;
           if (msg.type === "ready") {
             void attach(msg.cols, msg.rows).catch(() => {});
           } else if (msg.type === "input") {
             const channel = channelRef.current;
             if (channel !== null) client.sendBinary(encodeInFrame(channel, b64ToBytes(msg.dataB64)));
+          } else if (msg.type === "open") {
+            openExternalUrl(msg.url);
           } else if (msg.type === "resize") {
             void client
               .rpc("session.resize", { sessionId: session.id, cols: msg.cols, rows: msg.rows })
