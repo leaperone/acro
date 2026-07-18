@@ -258,6 +258,44 @@ final class WorkbenchLayoutStateTests: XCTestCase {
     }
 
     @MainActor
+    func testInvalidSelectedServerDoesNotFallBackToAnotherRuntime() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("acro-workbench-server-\(UUID().uuidString)")
+        let file = root.appendingPathComponent("client.json")
+        setenv("ACRO_CLIENT_CONFIG", file.path, 1)
+        let pub = Data(repeating: 1, count: 32).base64EncodedString()
+        let first = ServerEntry(
+            localId: "server-a", name: "A", deviceId: "device-a", token: "token-a",
+            pub: pub, endpoints: ["127.0.0.1:1"]
+        )
+        let second = ServerEntry(
+            localId: "server-b", name: "B", deviceId: "device-b", token: "token-b",
+            pub: pub, endpoints: ["127.0.0.1:2"]
+        )
+        ClientConfig(v: 2, servers: [first, second], active: first.id).save()
+        let hub = RuntimeHub()
+        hub.reload()
+        defer {
+            ClientConfig(v: 2, servers: [], active: nil).save()
+            hub.reload()
+            unsetenv("ACRO_CLIENT_CONFIG")
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let model = WorkbenchModel(hub: hub)
+        let remainingRuntime = try XCTUnwrap(hub.connection(for: second.id))
+        ServerDirectory.remove(first.id, hub: hub)
+
+        XCTAssertNil(hub.connection(for: first.id))
+        XCTAssertFalse(model.runtime === remainingRuntime)
+
+        model.reconcileLayoutState()
+
+        XCTAssertEqual(model.selectedServerId, second.id)
+        XCTAssertTrue(model.runtime === remainingRuntime)
+    }
+
+    @MainActor
     func testTerminalCloseMutatesOriginServerAfterSelectionChanges() throws {
         var first = WorkspaceTerminalLayout()
         first.adopt("shared-session")

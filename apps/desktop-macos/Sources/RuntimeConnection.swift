@@ -405,16 +405,7 @@ final class RuntimeConnection: ObservableObject {
                 self.server = server
             }
             connectedEndpoint = server.map { $0.orderedEndpoints[endpointIndex % $0.orderedEndpoints.count] }
-            let generation = generation
-            Task {
-                let ok = await refresh()
-                guard self.generation == generation else { return }
-                if ok {
-                    state = .connected
-                    reconnectAttempt = 0
-                    endpointIndex = 0
-                }
-            }
+            Task { await refresh() }
         case "res":
             guard let id = obj["id"] as? Int else { return }
             if obj["ok"] as? Bool == true {
@@ -470,24 +461,44 @@ final class RuntimeConnection: ObservableObject {
     @discardableResult
     func refresh() async -> Bool {
         refreshGeneration &+= 1
-        let generation = refreshGeneration
+        let refreshId = refreshGeneration
+        let connectionGeneration = generation
         do {
             let nextWorkspaceGroups = try await rpc("workspaceGroup.list", as: [WorkspaceGroup].self)
             let nextWorkspaces = try await rpc("workspace.list", as: [Workspace].self)
             let nextSessions = try await rpc("session.list", as: [Session].self)
             let nextFocus = try await rpc("session.focusList", as: [SessionFocus].self)
-            guard generation == refreshGeneration else { return false }
-            workspaceGroups = nextWorkspaceGroups
-            workspaces = nextWorkspaces
-            sessions = nextSessions
-            focusOwners = Dictionary(
-                uniqueKeysWithValues: nextFocus.map { ($0.sessionId, $0) })
-            snapshotLoaded = true
-            snapshotRevision &+= 1
+            guard refreshId == refreshGeneration,
+                  connectionGeneration == generation else { return false }
+            commitRefreshSnapshot(
+                workspaceGroups: nextWorkspaceGroups,
+                workspaces: nextWorkspaces,
+                sessions: nextSessions,
+                focus: nextFocus
+            )
             return true
         } catch {
             // 保留上一份完整快照;断线由 receiveLoop / probe 处理,恢复后会再刷新
             return false
+        }
+    }
+
+    func commitRefreshSnapshot(
+        workspaceGroups: [WorkspaceGroup],
+        workspaces: [Workspace],
+        sessions: [Session],
+        focus: [SessionFocus]
+    ) {
+        self.workspaceGroups = workspaceGroups
+        self.workspaces = workspaces
+        self.sessions = sessions
+        focusOwners = Dictionary(uniqueKeysWithValues: focus.map { ($0.sessionId, $0) })
+        snapshotLoaded = true
+        snapshotRevision &+= 1
+        if state == .connecting {
+            state = .connected
+            reconnectAttempt = 0
+            endpointIndex = 0
         }
     }
 }

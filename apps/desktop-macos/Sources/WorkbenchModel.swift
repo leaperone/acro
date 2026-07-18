@@ -45,7 +45,10 @@ final class WorkbenchModel: ObservableObject {
     private let fallbackRuntime = RuntimeConnection()
 
     var runtime: RuntimeConnection {
-        hub.connection(for: selectedServerId) ?? hub.entries.first?.connection ?? fallbackRuntime
+        if let selectedServerId {
+            return hub.connection(for: selectedServerId) ?? fallbackRuntime
+        }
+        return hub.entries.first?.connection ?? fallbackRuntime
     }
 
     // ---- 选择与布局 ----

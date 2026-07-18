@@ -72,6 +72,9 @@ struct WorkbenchView: View {
             guard runtime.snapshotLoaded, model.layoutWasRestored else { return }
             model.reconcileLayoutState()
         }
+        .onChange(of: model.hub.entries.map(\.id), initial: true) { _, _ in
+            model.reconcileLayoutState()
+        }
         .alert(
             model.editingWorkspaceGroupId == nil ? "新建分组" : "重命名分组",
             isPresented: $model.showingWorkspaceGroupEditor
