@@ -7,20 +7,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import WebSocket from "ws";
 import {
-  b64ToBytes,
-  ClientHandshake,
-  decodeFrame,
   decodePairingOffer,
-  type E2eeSession,
-  encodeInFrame,
-  FRAME_OUT,
-  type PairingOffer,
   type Session,
   type Workspace,
   type WorkspaceGroup,
 } from "@acro/protocol";
+import { E2eClient as Client } from "./e2e-client.ts";
 
 const PORT = 18790;
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-state-"));
@@ -77,104 +70,6 @@ async function waitHealthy(timeoutMs = 15000): Promise<void> {
   throw new Error("runtime did not become healthy");
 }
 
-class Client {
-  private ws!: WebSocket;
-  private session!: E2eeSession;
-  deviceId = "";
-  private nextId = 1;
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-  output = ""; // 附着后收到的所有终端输出
-  events: Array<{ event: string; payload: any }> = [];
-
-  // E2EE 握手 + 信道内认证。token 缺省取配对码里的
-  async connect(offer: PairingOffer, token?: string): Promise<void> {
-    this.ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
-    const handshake = new ClientHandshake(b64ToBytes(offer.pub));
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("handshake timeout")), 8000);
-      this.ws.on("open", () => this.ws.send(JSON.stringify(handshake.helloMessage())));
-      this.ws.on("error", reject);
-      this.ws.on("close", () => reject(new Error("closed during handshake")));
-      this.ws.once("message", (raw: Buffer) => {
-        try {
-          this.session = handshake.onReady(JSON.parse(raw.toString("utf8")));
-          this.ws.send(
-            this.session.sealText(JSON.stringify({ t: "auth", token: token ?? offer.token })),
-          );
-          this.ws.once("message", (authRaw: Buffer) => {
-            try {
-              const opened = this.session.open(new Uint8Array(authRaw));
-              if (opened.kind !== "text") throw new Error("expected authed");
-              const msg = JSON.parse(opened.text);
-              if (msg.t !== "authed") throw new Error(`unexpected: ${opened.text}`);
-              this.deviceId = msg.deviceId;
-              clearTimeout(timer);
-              this.ws.removeAllListeners();
-              this.listen();
-              resolve();
-            } catch (err) {
-              reject(err as Error);
-            }
-          });
-        } catch (err) {
-          reject(err as Error);
-        }
-      });
-    });
-  }
-
-  private listen(): void {
-    this.ws.on("message", (raw: Buffer) => {
-      const opened = this.session.open(new Uint8Array(raw));
-      if (opened.kind === "binary") {
-        const frame = decodeFrame(opened.data);
-        if (frame.type === FRAME_OUT) this.output += Buffer.from(frame.data).toString("utf8");
-        return;
-      }
-      const msg = JSON.parse(opened.text);
-      if (msg.t === "res") {
-        const p = this.pending.get(msg.id);
-        if (!p) return;
-        this.pending.delete(msg.id);
-        if (msg.ok) p.resolve(msg.result);
-        else p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
-      } else if (msg.t === "evt") {
-        this.events.push({ event: msg.event, payload: msg.payload });
-      }
-    });
-  }
-
-  rpc<T = any>(method: string, params: unknown = {}): Promise<T> {
-    const id = this.nextId++;
-    this.ws.send(this.session.sealText(JSON.stringify({ t: "req", id, method, params })));
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      setTimeout(() => {
-        if (this.pending.delete(id)) reject(new Error(`rpc timeout: ${method}`));
-      }, 10000);
-    });
-  }
-
-  sendInput(channel: number, text: string): void {
-    this.ws.send(this.session.sealBinary(encodeInFrame(channel, Buffer.from(text, "utf8"))), {
-      binary: true,
-    });
-  }
-
-  async waitOutput(needle: string, timeoutMs = 8000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (this.output.includes(needle)) return;
-      await sleep(100);
-    }
-    throw new Error(`output did not contain ${JSON.stringify(needle)}; got: ${JSON.stringify(this.output.slice(-500))}`);
-  }
-
-  close(): void {
-    this.ws.close();
-  }
-}
-
 async function main(): Promise<void> {
   const fixtureRepo = makeFixtureRepo();
   let runtime = startRuntime();
@@ -215,9 +110,7 @@ async function main(): Promise<void> {
     const second = new Client();
     await second.connect(shareOffer);
     assert.equal(second.deviceId, share.deviceId);
-    const closedPromise = new Promise<void>((resolve) =>
-      (second as any).ws.on("close", () => resolve()),
-    );
+    const closedPromise = second.waitClosed();
     await client.rpc("device.revoke", { deviceId: share.deviceId });
     await closedPromise;
     // 被撤销的 token 不能再连

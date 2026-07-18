@@ -1,4 +1,4 @@
-// CLI 端到端:pair → projects → run(管道模式跑命令并收输出) → sessions。
+// CLI 端到端:pair → run(管道模式跑命令并收输出) → sessions。
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -8,7 +8,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PORT = 18794;
-const PAIR_CODE = "E2ECLITEST1";
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-cli-state-"));
 const clientDir = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-cli-client-"));
 const projectsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-cli-projects-"));
@@ -19,8 +18,6 @@ const runtimeEnv = {
   ...process.env,
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
-  ACRO_PAIR_CODE: PAIR_CODE,
-  ACRO_PROJECT_ROOTS: projectsRoot,
 };
 const cliEnv = { ...process.env, ACRO_CLIENT_CONFIG: path.join(clientDir, "client.json") };
 
@@ -59,17 +56,15 @@ async function main(): Promise<void> {
       }
     }
 
-    const pairOut = cli("pair", `127.0.0.1:${PORT}`, "--code", PAIR_CODE, "--name", "e2e-cli");
-    assert.match(pairOut, /paired as e2e-cli/);
+    const offer = fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim();
+    const pairOut = cli("pair", offer, "--name", "e2e-cli");
+    assert.match(pairOut, /已配对 e2e-cli/);
     console.log("[e2e] pair ok");
-
-    const projects = cli("projects");
-    assert.match(projects, /demo/);
 
     // run:管道模式,命令自然退出,CLI 跟随退出并带回输出
     const runOut = execFileSync(
       process.execPath,
-      [cliEntry, "run", "--project", "demo", "echo CLI_RUN_OK && pwd"],
+      [cliEntry, "run", "--cwd", repo, "echo CLI_RUN_OK && pwd"],
       { env: cliEnv, encoding: "utf8" },
     );
     assert.match(runOut, /CLI_RUN_OK/);
@@ -80,7 +75,7 @@ async function main(): Promise<void> {
     assert.match(sessions, /exit=0/);
     console.log("[e2e] sessions ok");
 
-    console.log("\nE2E-CLI PASS ✅  pair/projects/run/sessions 全部通过");
+    console.log("\nE2E-CLI PASS ✅  pair/run/sessions 全部通过");
   } finally {
     runtime.kill("SIGTERM");
     await sleep(300);

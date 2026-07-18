@@ -8,12 +8,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import WebSocket from "ws";
-import { decodeFrame, encodeInFrame, FRAME_BROWSER } from "@acro/protocol";
+import { decodePairingOffer, FRAME_BROWSER } from "@acro/protocol";
+import { E2eClient } from "./e2e-client.ts";
 
 const PORT = 18791;
 const PAGE_PORT = 18792;
-const PAIR_CODE = "E2EBROWSER1";
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-browser-"));
 const runtimeEntry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 
@@ -21,8 +20,6 @@ const env = {
   ...process.env,
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
-  ACRO_PAIR_CODE: PAIR_CODE,
-  ACRO_PROJECT_ROOTS: stateDir,
   ACRO_BROWSER_HEADLESS: "1",
 };
 
@@ -58,45 +55,13 @@ async function main(): Promise<void> {
         await sleep(150);
       }
     }
-    const pairRes = await fetch(`http://127.0.0.1:${PORT}/pair`, {
-      method: "POST",
-      body: JSON.stringify({ code: PAIR_CODE, deviceName: "e2e-browser" }),
-    });
-    const { token } = (await pairRes.json()) as { token: string };
-
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${token}`);
-    await new Promise<void>((resolve, reject) => {
-      ws.on("open", () => resolve());
-      ws.on("error", reject);
-    });
-
-    let nextId = 1;
-    const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
-    const frames: Buffer[] = [];
-    ws.on("message", (raw: Buffer, isBinary: boolean) => {
-      if (isBinary) {
-        const frame = decodeFrame(raw);
-        if (frame.type === FRAME_BROWSER) frames.push(Buffer.from(frame.data));
-        return;
-      }
-      const msg = JSON.parse(raw.toString("utf8"));
-      if (msg.t !== "res") return;
-      const p = pending.get(msg.id);
-      if (!p) return;
-      pending.delete(msg.id);
-      if (msg.ok) p.resolve(msg.result);
-      else p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
-    });
-    const rpc = <T = any>(method: string, params: unknown = {}): Promise<T> => {
-      const id = nextId++;
-      ws.send(JSON.stringify({ t: "req", id, method, params }));
-      return new Promise<T>((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        setTimeout(() => {
-          if (pending.delete(id)) reject(new Error(`rpc timeout: ${method}`));
-        }, 30000);
-      });
-    };
+    const offer = decodePairingOffer(
+      fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim(),
+    );
+    const client = new E2eClient();
+    await client.connect(offer);
+    const rpc = <T = any>(method: string, params: unknown = {}) =>
+      client.rpc<T>(method, params, 30000);
 
     // 开浏览器指向假 dev server
     const { browserId } = await rpc<{ browserId: string }>("browser.open", {
@@ -106,20 +71,25 @@ async function main(): Promise<void> {
     });
     console.log("[e2e] browser opened");
 
-    const attach = await rpc<{ channel: number; width: number }>("browser.attach", { browserId });
+    const attach = await rpc<{ channel: number; width: number }>("browser.attach", {
+      browserId,
+    });
     assert.equal(attach.width, 800);
 
     // 至少收到一帧合法 JPEG
-    const frameDeadline = Date.now() + 15000;
-    while (frames.length === 0 && Date.now() < frameDeadline) await sleep(200);
-    assert.ok(frames.length > 0, "must receive screencast frames");
-    const jpeg = frames[0]!;
+    const jpeg = Buffer.from((await client.waitFrame(FRAME_BROWSER)).data);
     assert.ok(jpeg[0] === 0xff && jpeg[1] === 0xd8, "frame must be JPEG");
-    console.log(`[e2e] received ${frames.length} screencast frame(s), first ${jpeg.length}B`);
+    console.log(`[e2e] received screencast frame, ${jpeg.length}B`);
 
     // 输入:点击输入框并打字(页面接受即可,验证输入链路不报错)
-    await rpc("browser.input", { browserId, event: { kind: "click", x: 100, y: 200 } });
-    await rpc("browser.input", { browserId, event: { kind: "type", text: "hello" } });
+    await rpc("browser.input", {
+      browserId,
+      event: { kind: "click", x: 100, y: 200 },
+    });
+    await rpc("browser.input", {
+      browserId,
+      event: { kind: "type", text: "hello" },
+    });
     console.log("[e2e] input ok");
 
     // 导航
@@ -135,7 +105,7 @@ async function main(): Promise<void> {
 
     await rpc("browser.close", { browserId });
     assert.equal((await rpc<any[]>("browser.list")).length, 0);
-    ws.close();
+    client.close();
     console.log("\nE2E-BROWSER PASS ✅  打开/取流/输入/导航/关闭 全部通过");
   } finally {
     runtime.kill("SIGTERM");
