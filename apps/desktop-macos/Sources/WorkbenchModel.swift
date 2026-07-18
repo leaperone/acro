@@ -51,6 +51,13 @@ final class WorkbenchModel: ObservableObject {
         didSet { UserDefaults.standard.set(sidebarViewMode.rawValue, forKey: Self.sidebarModeKey) }
     }
 
+    // 设置窗口打开请求(Commands 里 openWindow 不可用,经视图转发)
+    @Published private(set) var settingsOpenRequest = 0
+
+    func requestOpenSettings() {
+        settingsOpenRequest &+= 1
+    }
+
     // ---- 终端焦点与注意力闪环 ----
     @Published private(set) var terminalFocusRequest = 0
     @Published private(set) var flashSessionId: String?
@@ -106,11 +113,59 @@ final class WorkbenchModel: ObservableObject {
             return event
         }
         NotificationCenter.default.addObserver(
-            forName: .acroCloseTabShortcut, object: nil, queue: .main
-        ) { [weak self] _ in
+            forName: .acroShortcutAction, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?["action"] as? String,
+                  let action = ShortcutAction(rawValue: raw) else { return }
             MainActor.assumeIsolated {
-                self?.requestKillFocusedTab()
+                self?.perform(action)
             }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .acroSelectWorkspace, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let index = note.userInfo?["index"] as? Int else { return }
+            MainActor.assumeIsolated {
+                self?.selectWorkspace(at: index)
+            }
+        }
+    }
+
+    // 快捷键与菜单的统一入口;无效时机的调用由各方法的 guard 空操作
+    func perform(_ action: ShortcutAction) {
+        switch action {
+        case .newTerminalTab:
+            if let workspace = selectedWorkspace { requestNewTerminal(in: workspace) }
+        case .newWorkspace:
+            Task { await createWorkspace() }
+        case .newWorkspaceGroup:
+            presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
+        case .commandPalette:
+            showingCommandPalette = true
+        case .toggleSidebar:
+            leftSidebarVisible.toggle()
+        case .toggleInspector:
+            inspectorVisible.toggle()
+        case .splitRight:
+            splitTerminal(.horizontal)
+        case .splitDown:
+            splitTerminal(.vertical)
+        case .equalizeSplits:
+            equalizeSplits()
+        case .previousPane:
+            focusAdjacentPane(offset: -1)
+        case .nextPane:
+            focusAdjacentPane(offset: 1)
+        case .closeTab:
+            requestKillFocusedTab()
+        case .previousTab:
+            selectAdjacentTab(offset: -1)
+        case .nextTab:
+            selectAdjacentTab(offset: 1)
+        case .focusTerminal:
+            requestTerminalFocus()
+        case .openSettings:
+            requestOpenSettings()
         }
     }
 
@@ -310,13 +365,25 @@ final class WorkbenchModel: ObservableObject {
         requestTerminalFocus()
     }
 
-    // 关闭标签 = 确认后真正终止终端;terminateSession 成功后会把标签摘掉
+    // 关闭标签二次确认开关(设置窗口可关;cmux confirmQuit 同款思路)
+    static let confirmCloseTabKey = "acro.confirm-close-tab"
+
+    private var confirmCloseTab: Bool {
+        UserDefaults.standard.object(forKey: Self.confirmCloseTabKey) == nil
+            || UserDefaults.standard.bool(forKey: Self.confirmCloseTabKey)
+    }
+
+    // 关闭标签 = 真正终止终端;开着二次确认时先弹框,terminateSession 成功后把标签摘掉
     func requestKillTab(_ sessionId: String) {
         guard let session = session(sessionId) else {
             closeTab(sessionId)
             return
         }
-        pendingSessionTermination = session
+        if confirmCloseTab {
+            pendingSessionTermination = session
+        } else {
+            Task { await terminateSession(session) }
+        }
     }
 
     func requestKillFocusedTab() {
@@ -358,6 +425,17 @@ final class WorkbenchModel: ObservableObject {
         mutateCurrentLayout { layout in
             layout.focusedPaneId = paneId
         }
+    }
+
+    // 分隔线拖动;ratio 持久化在布局树里
+    func setSplitRatio(_ splitId: UUID, ratio: Double) {
+        mutateCurrentLayout { $0.setSplitRatio(splitId, ratio: ratio) }
+    }
+
+    // 均分窗格(CmuxPanes equalizeDividerPlan)
+    func equalizeSplits() {
+        mutateCurrentLayout { $0.equalizeSplits() }
+        requestTerminalFocus()
     }
 
     func focusAdjacentPane(offset: Int) {

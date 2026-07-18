@@ -7,7 +7,17 @@ import AppKit
 import SwiftUI
 
 extension Notification.Name {
-    static let acroCloseTabShortcut = Notification.Name("acro.shortcut.closeTab")
+    // 全部应用快捷键与菜单点击统一走这两条通知,由 WorkbenchModel 执行。
+    // (cmux 的 AppDelegate 快捷键路由模式;SwiftUI Commands 的 FocusedValue /
+    // @ObservedObject 在本应用形态下都不可靠,菜单只做哑触发器。)
+    static let acroShortcutAction = Notification.Name("acro.shortcut.action")
+    static let acroSelectWorkspace = Notification.Name("acro.shortcut.selectWorkspace")
+}
+
+func postShortcut(_ action: ShortcutAction) {
+    NotificationCenter.default.post(
+        name: .acroShortcutAction, object: nil, userInfo: ["action": action.rawValue]
+    )
 }
 
 final class AcroAppDelegate: NSObject, NSApplicationDelegate {
@@ -17,15 +27,23 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
-        // File 菜单的系统 Close 也绑 ⌘W 且排在工作台菜单之前;
-        // 在菜单分发前拦截,路由到"关闭标签(终止终端)"。设置窗口放行给系统关窗。
+        // 在菜单分发之前拦截应用快捷键并路由到 model:
+        // 系统 Close(⌘W)、终端按键竞争、菜单状态冻结全部绕开。
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard ShortcutSettings.stored(.closeTab).matches(event),
-                  !event.isARepeat,
-                  event.window?.title != Self.settingsWindowTitle
-            else { return event }
-            NotificationCenter.default.post(name: .acroCloseTabShortcut, object: nil)
-            return nil
+            guard !event.isARepeat else { return event }
+            // 设置窗口保持系统语义(⌘W 关窗等)
+            if event.window?.title == Self.settingsWindowTitle { return event }
+            if let digit = ShortcutSettings.workspaceDigit(event) {
+                NotificationCenter.default.post(
+                    name: .acroSelectWorkspace, object: nil, userInfo: ["index": digit - 1]
+                )
+                return nil
+            }
+            if let action = ShortcutSettings.action(for: event) {
+                postShortcut(action)
+                return nil
+            }
+            return event
         }
     }
 
@@ -34,158 +52,68 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-struct WorkbenchActions {
-    let openSettings: () -> Void
-    let newWorkspaceGroup: () -> Void
-    let newWorkspace: () -> Void
-    let newTerminalTab: () -> Void
-    let showCommandPalette: () -> Void
-    let splitRight: () -> Void
-    let splitDown: () -> Void
-    let focusPreviousPane: () -> Void
-    let focusNextPane: () -> Void
-    let closeTab: () -> Void
-    let toggleLeftSidebar: () -> Void
-    let toggleInspector: () -> Void
-    let previousTab: () -> Void
-    let nextTab: () -> Void
-    let selectWorkspaceAtIndex: (Int) -> Void
-    let focusTerminal: () -> Void
-    let canCreateTerminal: Bool
-    let canSplitTerminal: Bool
-    let canNavigatePanes: Bool
-    let canCloseTab: Bool
-    let canNavigateTabs: Bool
-    let canFocusTerminal: Bool
-    let workspaceCount: Int
-    let leftSidebarVisible: Bool
-    let inspectorVisible: Bool
-}
-
-private struct WorkbenchActionsKey: FocusedValueKey {
-    typealias Value = WorkbenchActions
-}
-
-extension FocusedValues {
-    var workbenchActions: WorkbenchActions? {
-        get { self[WorkbenchActionsKey.self] }
-        set { self[WorkbenchActionsKey.self] = newValue }
-    }
-}
-
+// 菜单项 = 哑触发器:点击发通知;快捷键显示仅作提示(实际触发在 keyMonitor)。
 struct AcroWorkbenchCommands: Commands {
-    @FocusedValue(\.workbenchActions) private var actions
+    private func item(
+        _ title: String,
+        _ symbol: String,
+        _ action: ShortcutAction
+    ) -> some View {
+        Button(title, systemImage: symbol) {
+            postShortcut(action)
+        }
+        .keyboardShortcut(ShortcutSettings.keyboardShortcut(action))
+    }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("新建标签", systemImage: "terminal") {
-                actions?.newTerminalTab()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.newTerminalTab))
-            .disabled(actions?.canCreateTerminal != true)
-
-            Button("新建工作区", systemImage: "plus") {
-                actions?.newWorkspace()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.newWorkspace))
-
-            Button("新建分组", systemImage: "folder.badge.plus") {
-                actions?.newWorkspaceGroup()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.newWorkspaceGroup))
+            item("新建标签", "terminal", .newTerminalTab)
+            item("新建工作区", "plus", .newWorkspace)
+            item("新建分组", "folder.badge.plus", .newWorkspaceGroup)
         }
 
         CommandMenu("工作台") {
-            Button("设置…", systemImage: "gearshape") {
-                actions?.openSettings()
-            }
-            .keyboardShortcut(",", modifiers: .command)
-
-            Button("命令面板", systemImage: "command") {
-                actions?.showCommandPalette()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.commandPalette))
+            item("设置…", "gearshape", .openSettings)
+            item("命令面板", "command", .commandPalette)
 
             Divider()
 
-            Button(actions?.leftSidebarVisible == true ? "隐藏左侧栏" : "显示左侧栏", systemImage: "sidebar.left") {
-                actions?.toggleLeftSidebar()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.toggleSidebar))
-
-            Button(actions?.inspectorVisible == true ? "隐藏右侧栏" : "显示右侧栏", systemImage: "sidebar.right") {
-                actions?.toggleInspector()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.toggleInspector))
+            item("切换左侧栏", "sidebar.left", .toggleSidebar)
+            item("切换右侧栏", "sidebar.right", .toggleInspector)
 
             Divider()
 
-            Button("向右分屏", systemImage: "rectangle.split.2x1") {
-                actions?.splitRight()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.splitRight))
-            .disabled(actions?.canSplitTerminal != true)
-
-            Button("向下分屏", systemImage: "rectangle.split.1x2") {
-                actions?.splitDown()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.splitDown))
-            .disabled(actions?.canSplitTerminal != true)
-
-            Button("上一个窗格", systemImage: "chevron.left") {
-                actions?.focusPreviousPane()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.previousPane))
-            .disabled(actions?.canNavigatePanes != true)
-
-            Button("下一个窗格", systemImage: "chevron.right") {
-                actions?.focusNextPane()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.nextPane))
-            .disabled(actions?.canNavigatePanes != true)
+            item("向右分屏", "rectangle.split.2x1", .splitRight)
+            item("向下分屏", "rectangle.split.1x2", .splitDown)
+            item("均分窗格", "rectangle.split.3x1", .equalizeSplits)
+            item("上一个窗格", "chevron.left", .previousPane)
+            item("下一个窗格", "chevron.right", .nextPane)
 
             Divider()
 
-            Button("上一个标签", systemImage: "chevron.left") {
-                actions?.previousTab()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.previousTab))
-            .disabled(actions?.canNavigateTabs != true)
-
-            Button("下一个标签", systemImage: "chevron.right") {
-                actions?.nextTab()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.nextTab))
-            .disabled(actions?.canNavigateTabs != true)
-
-            Button("关闭标签", systemImage: "xmark.rectangle") {
-                actions?.closeTab()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.closeTab))
-            .disabled(actions?.canCloseTab != true)
-            .help("终止终端并移除标签")
+            item("上一个标签", "chevron.left", .previousTab)
+            item("下一个标签", "chevron.right", .nextTab)
+            item("关闭标签", "xmark.rectangle", .closeTab)
 
             Divider()
 
             Menu("切换工作区", systemImage: "square.stack.3d.up") {
                 ForEach(1...9, id: \.self) { number in
                     Button("工作区 \(number)") {
-                        actions?.selectWorkspaceAtIndex(number - 1)
+                        NotificationCenter.default.post(
+                            name: .acroSelectWorkspace,
+                            object: nil,
+                            userInfo: ["index": number - 1]
+                        )
                     }
                     .keyboardShortcut(
                         KeyEquivalent(Character(String(number))),
                         modifiers: .command
                     )
-                    .disabled((actions?.workspaceCount ?? 0) < number)
                 }
             }
-            .disabled((actions?.workspaceCount ?? 0) == 0)
 
-            Button("聚焦终端", systemImage: "text.cursor") {
-                actions?.focusTerminal()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.focusTerminal))
-            .disabled(actions?.canFocusTerminal != true)
+            item("聚焦终端", "text.cursor", .focusTerminal)
         }
     }
 }
@@ -212,6 +140,8 @@ struct AcroApp: App {
                     }
                 }
         }
+        // 紧凑模式(cmux compact):无标题栏,内容顶到窗口顶部,tab 条即顶行
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 800)
         .commands {
             AcroWorkbenchCommands()

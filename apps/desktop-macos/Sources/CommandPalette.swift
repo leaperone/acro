@@ -1,53 +1,10 @@
 // 命令面板:模糊匹配 + 命中高亮 + 键盘导航。
 // 交互与视觉对标 cmux 的 CommandPaletteOverlay(GPL-3.0-or-later,
-// Copyright (c) 2024-present Manaflow, Inc.);模糊匹配用 Swift 重写(cmux 走 Rust nucleo FFI)。
+// Copyright (c) 2024-present Manaflow, Inc.);
+// 排序与命中高亮走 Vendor/CmuxCommandPalette 的 CommandPaletteSearchEngine(cmux 原引擎)。
 
+import CmuxCommandPalette
 import SwiftUI
-
-enum FuzzyMatcher {
-    struct Match {
-        let score: Int
-        let indices: Set<Int>
-    }
-
-    // 贪心子序列匹配:词首 +16、连续 +8、前缀起始 +4、间隔 -1
-    static func match(query: String, in candidate: String) -> Match? {
-        let queryChars = Array(query.lowercased())
-        let candidateChars = Array(candidate.lowercased())
-        guard !queryChars.isEmpty else { return Match(score: 0, indices: []) }
-        var score = 0
-        var indices: Set<Int> = []
-        var candidateIndex = 0
-        var previousMatch = -2
-
-        for queryChar in queryChars {
-            var found = false
-            while candidateIndex < candidateChars.count {
-                if candidateChars[candidateIndex] == queryChar {
-                    if candidateIndex == 0 {
-                        score += 20
-                    } else if isBoundary(candidateChars[candidateIndex - 1]) {
-                        score += 16
-                    }
-                    if candidateIndex == previousMatch + 1 { score += 8 }
-                    score -= max(0, candidateIndex - previousMatch - 1) / 4
-                    indices.insert(candidateIndex)
-                    previousMatch = candidateIndex
-                    candidateIndex += 1
-                    found = true
-                    break
-                }
-                candidateIndex += 1
-            }
-            if !found { return nil }
-        }
-        return Match(score: score, indices: indices)
-    }
-
-    private static func isBoundary(_ char: Character) -> Bool {
-        char == " " || char == "/" || char == "-" || char == "_" || char == "·" || char == "."
-    }
-}
 
 struct CommandPaletteItem: Identifiable {
     let id: String
@@ -73,23 +30,25 @@ struct CommandPalette: View {
     @State private var hoveredIndex: Int?
     @FocusState private var searchFocused: Bool
 
+    // ponytail: 每次 body 求值重建 corpus,条目上千时再缓存到 State
     private var rankedItems: [RankedItem] {
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else {
             return items.map { RankedItem(item: $0, matchedIndices: []) }
         }
-        return items.compactMap { item -> (RankedItem, Int)? in
-            if let match = FuzzyMatcher.match(query: value, in: item.title) {
-                return (RankedItem(item: item, matchedIndices: match.indices), match.score + 100)
+        let engine = CommandPaletteSearchEngine(
+            entries: items.enumerated().map { index, item in
+                CommandPaletteSearchCorpusEntry(
+                    payload: index,
+                    rank: index,
+                    title: item.title,
+                    searchableTexts: [item.subtitle, item.kind].compactMap { $0 }
+                )
             }
-            if let subtitle = item.subtitle,
-               let match = FuzzyMatcher.match(query: value, in: subtitle) {
-                return (RankedItem(item: item, matchedIndices: []), match.score)
-            }
-            return nil
+        )
+        return engine.search(query: value, historyBoost: { _, _ in 0 }).map { result in
+            RankedItem(item: items[result.payload], matchedIndices: result.titleMatchIndices)
         }
-        .sorted { $0.1 > $1.1 }
-        .map(\.0)
     }
 
     var body: some View {
@@ -331,6 +290,14 @@ extension WorkbenchModel {
                         symbol: "rectangle.split.1x2",
                         kind: "命令",
                         action: { self.splitTerminal(.vertical) }
+                    ),
+                    CommandPaletteItem(
+                        id: "command:equalize-splits",
+                        title: "均分窗格",
+                        subtitle: "所有窗格平均分配空间",
+                        symbol: "rectangle.split.3x1",
+                        kind: "命令",
+                        action: { self.equalizeSplits() }
                     ),
                 ])
             }

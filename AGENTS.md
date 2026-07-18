@@ -14,6 +14,7 @@ Acro 是团队内部使用的远程开发控制台。它管理工作区、项目
 ## Monorepo
 
 - `apps/`：服务端、桌面端和移动端应用。
+- `apps/desktop-macos/Vendor/`：整包搬运的 cmux SPM 包与 Bonsplit shim，见目录内 `NOTICE.md`。
 - `packages/`：跨端协议和确有复用价值的共享代码。
 - `.planning/`：需要跨会话维护的产品和技术蓝图。
 - `.tmp/`：本地参考源码和临时文件，不进入 Git。

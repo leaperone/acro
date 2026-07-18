@@ -38,26 +38,7 @@ struct WorkbenchView: View {
                     )
                 }
                 .navigationTitle(model.windowTitle)
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            model.showingCommandPalette = true
-                        } label: {
-                            Image(systemName: "command")
-                        }
-                        .help("命令面板")
-                        .accessibilityLabel("命令面板")
-                    }
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            model.inspectorVisible.toggle()
-                        } label: {
-                            Image(systemName: "sidebar.right")
-                        }
-                        .help(model.inspectorVisible ? "隐藏右侧栏" : "显示右侧栏")
-                        .accessibilityLabel(model.inspectorVisible ? "隐藏右侧栏" : "显示右侧栏")
-                    }
-                }
+                .toolbar(.hidden, for: .windowToolbar)
             }
 
             reconnectBanner
@@ -136,6 +117,7 @@ struct WorkbenchView: View {
                     Task { await model.terminateSession(session) }
                 }
             }
+            .keyboardShortcut(.defaultAction)
             Button("取消", role: .cancel) {}
         } message: {
             Text("终端中的运行进程会被结束。")
@@ -146,7 +128,9 @@ struct WorkbenchView: View {
         .sheet(isPresented: terminalProjectPickerPresented) {
             TerminalProjectPicker(model: model)
         }
-        .focusedSceneValue(\.workbenchActions, workbenchActions)
+        .onChange(of: model.settingsOpenRequest) { _, _ in
+            openWindow(id: "settings")
+        }
     }
 
     // 断线时置顶提示;探针判死后由指数退避自动重连
@@ -173,44 +157,6 @@ struct WorkbenchView: View {
             .zIndex(5)
             .animation(.easeOut(duration: 0.2), value: runtime.state)
         }
-    }
-
-    private var workbenchActions: WorkbenchActions {
-        WorkbenchActions(
-            openSettings: { openWindow(id: "settings") },
-            newWorkspaceGroup: {
-                model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
-            },
-            newWorkspace: { Task { await model.createWorkspace() } },
-            newTerminalTab: {
-                if let workspace = model.selectedWorkspace {
-                    model.requestNewTerminal(in: workspace)
-                }
-            },
-            showCommandPalette: { model.showingCommandPalette = true },
-            splitRight: { model.splitTerminal(.horizontal) },
-            splitDown: { model.splitTerminal(.vertical) },
-            focusPreviousPane: { model.focusAdjacentPane(offset: -1) },
-            focusNextPane: { model.focusAdjacentPane(offset: 1) },
-            closeTab: { model.requestKillFocusedTab() },
-            toggleLeftSidebar: { model.leftSidebarVisible.toggle() },
-            toggleInspector: { model.inspectorVisible.toggle() },
-            previousTab: { model.selectAdjacentTab(offset: -1) },
-            nextTab: { model.selectAdjacentTab(offset: 1) },
-            selectWorkspaceAtIndex: { model.selectWorkspace(at: $0) },
-            focusTerminal: { model.requestTerminalFocus() },
-            canCreateTerminal: model.selectedWorkspace.map { !model.projects(in: $0).isEmpty } ?? false,
-            canSplitTerminal: model.selectedWorkspace != nil
-                && model.selectedProject != nil
-                && model.selectedSession != nil,
-            canNavigatePanes: model.currentLayout?.root?.panes.count ?? 0 > 1,
-            canCloseTab: model.currentLayout?.focusedSessionId != nil,
-            canNavigateTabs: model.currentLayout?.focusedPane?.sessionIds.count ?? 0 > 1,
-            canFocusTerminal: model.selectedSession != nil,
-            workspaceCount: model.orderedWorkspaces.count,
-            leftSidebarVisible: model.leftSidebarVisible,
-            inspectorVisible: model.inspectorVisible
-        )
     }
 
     // ---- Binding 包装 ----

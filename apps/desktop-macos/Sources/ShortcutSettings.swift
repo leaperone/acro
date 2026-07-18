@@ -96,12 +96,14 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case toggleInspector
     case splitRight
     case splitDown
+    case equalizeSplits
     case previousPane
     case nextPane
     case closeTab
     case previousTab
     case nextTab
     case focusTerminal
+    case openSettings
 
     var id: String { rawValue }
 
@@ -115,12 +117,14 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .toggleInspector: "显示 / 隐藏右侧栏"
         case .splitRight: "向右分屏"
         case .splitDown: "向下分屏"
+        case .equalizeSplits: "均分窗格"
         case .previousPane: "上一个窗格"
         case .nextPane: "下一个窗格"
         case .closeTab: "关闭标签(终止终端)"
         case .previousTab: "上一个标签"
         case .nextTab: "下一个标签"
         case .focusTerminal: "聚焦终端"
+        case .openSettings: "打开设置"
         }
     }
 }
@@ -139,16 +143,18 @@ final class ShortcutStore: ObservableObject {
         .newWorkspace: StoredShortcut(key: "n", command: true),
         .newWorkspaceGroup: StoredShortcut(key: "n", command: true, shift: true),
         .commandPalette: StoredShortcut(key: "p", command: true, shift: true),
-        .toggleSidebar: StoredShortcut(key: "b", command: true, option: true),
-        .toggleInspector: StoredShortcut(key: "i", command: true, option: true),
+        .toggleSidebar: StoredShortcut(key: "b", command: true),
+        .toggleInspector: StoredShortcut(key: "l", command: true),
         .splitRight: StoredShortcut(key: "d", command: true),
         .splitDown: StoredShortcut(key: "d", command: true, shift: true),
+        .equalizeSplits: StoredShortcut(key: "=", command: true, option: true),
         .previousPane: StoredShortcut(key: "left", command: true, option: true),
         .nextPane: StoredShortcut(key: "right", command: true, option: true),
         .closeTab: StoredShortcut(key: "w", command: true),
         .previousTab: StoredShortcut(key: "[", command: true, shift: true),
         .nextTab: StoredShortcut(key: "]", command: true, shift: true),
         .focusTerminal: StoredShortcut(key: "t", command: true, option: true),
+        .openSettings: StoredShortcut(key: ",", command: true),
     ]
 
     private init() {
@@ -226,8 +232,11 @@ enum ShortcutSettings {
     // 终端 NSView 用它判断哪些按键属于应用而不能被终端吃掉
     static func isAppShortcut(_ event: NSEvent) -> Bool {
         if workspaceDigit(event) != nil { return true }
-        // ⌘, 设置窗口(固定,不进 Action 表)
-        if StoredShortcut(key: ",", command: true).matches(event) { return true }
         return ShortcutAction.allCases.contains { stored($0).matches(event) }
+    }
+
+    // 事件 → 命中的 action(cmux AppDelegate 路由模式的 acro 版)
+    static func action(for event: NSEvent) -> ShortcutAction? {
+        ShortcutAction.allCases.first { stored($0).matches(event) }
     }
 }

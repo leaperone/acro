@@ -25,6 +25,7 @@ struct SettingsView: View {
 
 private struct GeneralSettingsPane: View {
     @ObservedObject var runtime: RuntimeConnection
+    @AppStorage(WorkbenchModel.confirmCloseTabKey) private var confirmCloseTab = true
     private let config = ClientConfig.load()
 
     var body: some View {
@@ -45,6 +46,16 @@ private struct GeneralSettingsPane: View {
                         .textSelection(.enabled)
                 }
                 LabeledContent("工作区 / 终端", value: "\(runtime.workspaces.count) / \(runtime.sessions.count { $0.alive })")
+            }
+
+            Section {
+                Toggle("关闭标签时二次确认", isOn: $confirmCloseTab)
+            } header: {
+                Text("行为")
+            } footer: {
+                Text("开启时,⌘W 或点击标签 × 会先弹出确认框(回车可直接确认);关闭后立即终止终端。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("配置文件") {

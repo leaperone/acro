@@ -400,7 +400,9 @@ struct SidebarView: View {
                     guard let dragId = model.draggingWorkspaceId else { return false }
                     model.draggingWorkspaceId = nil
                     Task {
-                        await model.reorderWorkspace(dragId, toGroup: nil, index: .max / 2)
+                        await model.reorderWorkspace(
+                            dragId, toGroup: nil, index: model.ungroupedWorkspaces.count
+                        )
                     }
                     return true
                 }
@@ -450,7 +452,8 @@ struct SidebarView: View {
             .help("新建工作区")
             .accessibilityLabel("新建工作区")
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 76) // 红绿灯让位(紧凑模式无标题栏)
+        .padding(.trailing, 12)
         .frame(height: 38)
     }
 
@@ -519,7 +522,11 @@ struct SidebarView: View {
                 performWorkspaceDrop: {
                     guard let dragId = model.draggingWorkspaceId else { return false }
                     model.draggingWorkspaceId = nil
-                    Task { await model.reorderWorkspace(dragId, toGroup: group.id, index: .max / 2) }
+                    Task {
+                        await model.reorderWorkspace(
+                            dragId, toGroup: group.id, index: group.workspaceIds.count
+                        )
+                    }
                     return true
                 }
             )

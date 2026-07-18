@@ -6,6 +6,12 @@ import PackageDescription
 let package = Package(
     name: "AcroDesktop",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        // Vendor/ 下是整包搬运的 cmux SPM 包(GPL-3.0-or-later),见 Vendor/NOTICE.md
+        .package(path: "Vendor/bonsplit"),
+        .package(path: "Vendor/CmuxPanes"),
+        .package(path: "Vendor/CmuxCommandPalette"),
+    ],
     targets: [
         .target(
             name: "GhosttyKit",
@@ -14,7 +20,12 @@ let package = Package(
         ),
         .executableTarget(
             name: "AcroDesktop",
-            dependencies: ["GhosttyKit"],
+            dependencies: [
+                "GhosttyKit",
+                .product(name: "Bonsplit", package: "bonsplit"),
+                .product(name: "CmuxPanes", package: "CmuxPanes"),
+                .product(name: "CmuxCommandPalette", package: "CmuxCommandPalette"),
+            ],
             path: "Sources",
             linkerSettings: [
                 .unsafeFlags([

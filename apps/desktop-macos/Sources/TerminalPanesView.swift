@@ -82,18 +82,89 @@ struct TerminalPanesView: View {
         switch node {
         case .pane(let group):
             return AnyView(PaneView(model: model, pane: group))
-        case .split(let direction, let first, let second):
-            if direction == .horizontal {
-                return AnyView(HSplitView {
-                    layoutView(first)
-                    layoutView(second)
-                })
-            }
-            return AnyView(VSplitView {
-                layoutView(first)
-                layoutView(second)
-            })
+        case .split(let splitNode):
+            return AnyView(RatioSplitView(
+                node: splitNode,
+                content: { layoutView($0) },
+                onRatioChange: { ratio in
+                    guard let splitId = UUID(uuidString: splitNode.id) else { return }
+                    model.setSplitRatio(splitId, ratio: ratio)
+                }
+            ))
         }
+    }
+}
+
+// ---- 比例分屏容器:ratio 持久化在布局树,分隔线可拖(几何算法来自 CmuxPanes) ----
+
+private struct RatioSplitView: View {
+    let node: SplitNode
+    let content: (TerminalLayoutNode) -> AnyView
+    let onRatioChange: (Double) -> Void
+
+    private static let dividerHitThickness: CGFloat = 7
+
+    var body: some View {
+        GeometryReader { geometry in
+            let horizontal = node.direction == .horizontal
+            let total = horizontal ? geometry.size.width : geometry.size.height
+            let firstLength = max(
+                0, total * node.ratio - Self.dividerHitThickness / 2
+            )
+            let secondLength = max(0, total - firstLength - Self.dividerHitThickness)
+            Group {
+                if horizontal {
+                    HStack(spacing: 0) {
+                        content(node.first)
+                            .frame(width: firstLength)
+                        divider(horizontal: true, total: total)
+                        content(node.second)
+                            .frame(width: secondLength)
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        content(node.first)
+                            .frame(height: firstLength)
+                        divider(horizontal: false, total: total)
+                        content(node.second)
+                            .frame(height: secondLength)
+                    }
+                }
+            }
+            .coordinateSpace(name: "split-\(node.id)")
+        }
+    }
+
+    private func divider(horizontal: Bool, total: CGFloat) -> some View {
+        ZStack {
+            Color.clear
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(
+                    width: horizontal ? 1 : nil,
+                    height: horizontal ? nil : 1
+                )
+        }
+        .frame(
+            width: horizontal ? Self.dividerHitThickness : nil,
+            height: horizontal ? nil : Self.dividerHitThickness
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering {
+                (horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .named("split-\(node.id)"))
+                .onChanged { value in
+                    guard total > 0 else { return }
+                    let position = horizontal ? value.location.x : value.location.y
+                    onRatioChange(Double(position / total))
+                }
+        )
     }
 }
 

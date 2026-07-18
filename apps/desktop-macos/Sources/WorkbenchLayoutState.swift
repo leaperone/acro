@@ -1,6 +1,9 @@
 // 工作区布局树:分屏节点的叶子是"标签组窗格"(cmux/Bonsplit 模型——
 // 每个窗格自带一组标签,split 与 tab 同树)。纯值类型,不依赖 UI。
+// 分屏几何(均分/比例)由 Vendor/CmuxPanes 计算,经 externalTree 桥接。
 
+import Bonsplit
+import CmuxPanes
 import Foundation
 
 enum TerminalSplitDirection: String, Codable, Equatable {
@@ -53,20 +56,55 @@ struct PaneTabGroup: Codable, Equatable, Identifiable {
     }
 }
 
-indirect enum TerminalLayoutNode: Codable, Equatable {
-    case pane(PaneTabGroup)
-    case split(
+// 分屏节点:id 供几何计划寻址,ratio 是第一子的空间占比
+struct SplitNode: Equatable {
+    let id: String
+    var direction: TerminalSplitDirection
+    var ratio: Double
+    var first: TerminalLayoutNode
+    var second: TerminalLayoutNode
+
+    init(
+        id: String = UUID().uuidString,
         direction: TerminalSplitDirection,
+        ratio: Double = 0.5,
         first: TerminalLayoutNode,
         second: TerminalLayoutNode
-    )
+    ) {
+        self.id = id
+        self.direction = direction
+        self.ratio = ratio
+        self.first = first
+        self.second = second
+    }
+}
+
+extension SplitNode: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, direction, ratio, first, second
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        direction = try container.decode(TerminalSplitDirection.self, forKey: .direction)
+        first = try container.decode(TerminalLayoutNode.self, forKey: .first)
+        second = try container.decode(TerminalLayoutNode.self, forKey: .second)
+        // 旧版持久化没有 id/ratio:补默认值
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        ratio = try container.decodeIfPresent(Double.self, forKey: .ratio) ?? 0.5
+    }
+}
+
+indirect enum TerminalLayoutNode: Equatable {
+    case pane(PaneTabGroup)
+    case split(SplitNode)
 
     var panes: [PaneTabGroup] {
         switch self {
         case .pane(let group):
             [group]
-        case .split(_, let first, let second):
-            first.panes + second.panes
+        case .split(let node):
+            node.first.panes + node.second.panes
         }
     }
 
@@ -88,12 +126,24 @@ indirect enum TerminalLayoutNode: Codable, Equatable {
             guard group.id == paneId else { return self }
             transform(&group)
             return .pane(group)
-        case .split(let direction, let first, let second):
-            return .split(
-                direction: direction,
-                first: first.updatingPane(paneId, transform: transform),
-                second: second.updatingPane(paneId, transform: transform)
-            )
+        case .split(var node):
+            node.first = node.first.updatingPane(paneId, transform: transform)
+            node.second = node.second.updatingPane(paneId, transform: transform)
+            return .split(node)
+        }
+    }
+
+    func updatingSplit(_ splitId: UUID, transform: (inout SplitNode) -> Void) -> TerminalLayoutNode {
+        switch self {
+        case .pane:
+            return self
+        case .split(var node):
+            node.first = node.first.updatingSplit(splitId, transform: transform)
+            node.second = node.second.updatingSplit(splitId, transform: transform)
+            if UUID(uuidString: node.id) == splitId {
+                transform(&node)
+            }
+            return .split(node)
         }
     }
 
@@ -108,18 +158,16 @@ indirect enum TerminalLayoutNode: Codable, Equatable {
         case .pane(let group):
             guard group.id == paneId else { return self }
             return newPaneFirst
-                ? .split(direction: direction, first: .pane(newPane), second: self)
-                : .split(direction: direction, first: self, second: .pane(newPane))
-        case .split(let currentDirection, let first, let second):
-            return .split(
-                direction: currentDirection,
-                first: first.splitting(
-                    paneId: paneId, direction: direction, newPane: newPane, newPaneFirst: newPaneFirst
-                ),
-                second: second.splitting(
-                    paneId: paneId, direction: direction, newPane: newPane, newPaneFirst: newPaneFirst
-                )
+                ? .split(SplitNode(direction: direction, first: .pane(newPane), second: self))
+                : .split(SplitNode(direction: direction, first: self, second: .pane(newPane)))
+        case .split(var node):
+            node.first = node.first.splitting(
+                paneId: paneId, direction: direction, newPane: newPane, newPaneFirst: newPaneFirst
             )
+            node.second = node.second.splitting(
+                paneId: paneId, direction: direction, newPane: newPane, newPaneFirst: newPaneFirst
+            )
+            return .split(node)
         }
     }
 
@@ -128,10 +176,12 @@ indirect enum TerminalLayoutNode: Codable, Equatable {
         switch self {
         case .pane(let group):
             return group.sessionIds.isEmpty ? nil : self
-        case .split(let direction, let first, let second):
-            switch (first.compacted(), second.compacted()) {
+        case .split(var node):
+            switch (node.first.compacted(), node.second.compacted()) {
             case (let first?, let second?):
-                return .split(direction: direction, first: first, second: second)
+                node.first = first
+                node.second = second
+                return .split(node)
             case (let remaining?, nil), (nil, let remaining?):
                 return remaining
             case (nil, nil):
@@ -152,18 +202,76 @@ indirect enum TerminalLayoutNode: Codable, Equatable {
         switch self {
         case .pane(var group):
             return group.keepValidTabs(validSessionIds) ? nil : .pane(group)
-        case .split(let direction, let first, let second):
+        case .split(var node):
             switch (
-                first.pruning(validSessionIds: validSessionIds),
-                second.pruning(validSessionIds: validSessionIds)
+                node.first.pruning(validSessionIds: validSessionIds),
+                node.second.pruning(validSessionIds: validSessionIds)
             ) {
             case (let first?, let second?):
-                return .split(direction: direction, first: first, second: second)
+                node.first = first
+                node.second = second
+                return .split(node)
             case (let remaining?, nil), (nil, let remaining?):
                 return remaining
             case (nil, nil):
                 return nil
             }
+        }
+    }
+
+    // 桥接 CmuxPanes 几何:Bonsplit 快照树(frame 仅均分不需要,置零)
+    var externalTree: ExternalTreeNode {
+        switch self {
+        case .pane(let group):
+            .pane(ExternalPaneNode(
+                id: group.id,
+                frame: PixelRect(x: 0, y: 0, width: 0, height: 0),
+                tabs: [],
+                selectedTabId: nil
+            ))
+        case .split(let node):
+            .split(ExternalSplitNode(
+                id: node.id,
+                orientation: node.direction == .horizontal ? "horizontal" : "vertical",
+                dividerPosition: node.ratio,
+                first: node.first.externalTree,
+                second: node.second.externalTree
+            ))
+        }
+    }
+}
+
+extension TerminalLayoutNode: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case pane, split
+    }
+
+    // 合成编码把关联值包在 "_0" 里,旧数据是这个形状
+    private enum WrappedKeys: String, CodingKey {
+        case wrapped = "_0"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if container.contains(.pane) {
+            if let nested = try? container.nestedContainer(keyedBy: WrappedKeys.self, forKey: .pane),
+               let group = try? nested.decode(PaneTabGroup.self, forKey: .wrapped) {
+                self = .pane(group)
+            } else {
+                self = .pane(try container.decode(PaneTabGroup.self, forKey: .pane))
+            }
+            return
+        }
+        self = .split(try container.decode(SplitNode.self, forKey: .split))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .pane(let group):
+            try container.encode(group, forKey: .pane)
+        case .split(let node):
+            try container.encode(node, forKey: .split)
         }
     }
 }
@@ -225,7 +333,7 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
         reconcileFocus()
     }
 
-    // 拖拽:把标签移入目标窗格 index 处(负数表示末尾)
+    // 拖拽:把标签移入目标窗格 index 处(nil 表示末尾)
     mutating func moveTab(_ sessionId: String, toPane paneId: String, at index: Int?) {
         guard root?.pane(withId: paneId) != nil else { return }
         if let source = root?.paneContaining(sessionId), source.id != paneId {
@@ -264,6 +372,27 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
         root = root?.compacted()
         focusedPaneId = newPane.id
         reconcileFocus()
+    }
+
+    // 拖动分隔线;clamp 与 cmux resize 计划一致(0.1-0.9)
+    mutating func setSplitRatio(_ splitId: UUID, ratio: Double) {
+        root = root?.updatingSplit(splitId) { node in
+            node.ratio = min(max(ratio, 0.1), 0.9)
+        }
+    }
+
+    // 均分所有窗格:CmuxPanes 的 equalizeDividerPlan(cmux 均分算法原样)
+    mutating func equalizeSplits() {
+        guard let root else { return }
+        let plan = root.externalTree.equalizeDividerPlan()
+        guard plan.foundSplit else { return }
+        var next = root
+        for adjustment in plan.adjustments {
+            next = next.updatingSplit(adjustment.splitId) { node in
+                node.ratio = min(max(Double(adjustment.position), 0.1), 0.9)
+            }
+        }
+        self.root = next
     }
 
     mutating func prune(validSessionIds: Set<String>) {
