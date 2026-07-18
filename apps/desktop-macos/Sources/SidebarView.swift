@@ -485,6 +485,9 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+        } else if hub.entries.count == 1, let only = hub.entries.first {
+            // 单服务器(通常就是本机)不显示分组头,内容直接铺开;多台才需要区分归属
+            serverContent(only)
         } else {
             ForEach(hub.entries) { entry in
                 serverSection(entry)
