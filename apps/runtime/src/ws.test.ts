@@ -21,6 +21,7 @@ function fixture(bufferedAmount: number) {
   } as unknown as WebSocket;
   const conn = {
     ws,
+    abortController: new AbortController(),
     session: {
       sealBinary(data: Uint8Array) {
         sealed += 1;
@@ -84,6 +85,17 @@ test("terminal daemon loss terminates all authenticated connections", () => {
   try {
     gateway.terminateAll();
     assert.deepEqual(counts(), { sealed: 0, sent: 0, terminated: 1, closed: 1 });
+  } finally {
+    close();
+  }
+});
+
+test("connection removal aborts in-flight RPC work", () => {
+  const { gateway, conn, close } = fixture(0);
+  try {
+    gateway.terminateDevice(conn.device!.id);
+    assert.equal(conn.abortController.signal.aborted, true);
+    assert.match((conn.abortController.signal.reason as Error).message, /connection closed/);
   } finally {
     close();
   }

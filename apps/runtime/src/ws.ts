@@ -28,6 +28,7 @@ export function removeSurfaceChannels(channels: Map<number, string>, surfaceId: 
 
 export interface Conn {
   ws: WebSocket;
+  abortController: AbortController;
   // E2EE 握手完成后建立;认证前只允许 auth 消息
   session: E2eeSession | null;
   device: Device | null;
@@ -108,6 +109,7 @@ export class Gateway {
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       const conn: Conn = {
         ws,
+        abortController: new AbortController(),
         session: null,
         device: null,
         attached: new Map(),
@@ -134,6 +136,7 @@ export class Gateway {
 
   private removeConn(conn: Conn): void {
     if (!this.conns.delete(conn)) return;
+    conn.abortController.abort(new Error("connection closed"));
     if (conn.device) this.onConnClosed?.(conn);
   }
 
@@ -342,7 +345,7 @@ export class Gateway {
 
   close(): void {
     clearInterval(this.heartbeat);
-    for (const conn of this.conns) conn.ws.close();
+    this.terminateAll();
     this.wss.close();
   }
 }

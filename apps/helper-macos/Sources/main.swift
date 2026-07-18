@@ -12,8 +12,46 @@ let socketPath =
     ProcessInfo.processInfo.environment["ACRO_HELPER_SOCKET"]
     ?? ("\(NSHomeDirectory())/.acro/helper.sock")
 let usesDefaultSocket = ProcessInfo.processInfo.environment["ACRO_HELPER_SOCKET"] == nil
+let helperTesting = ProcessInfo.processInfo.environment["ACRO_HELPER_TESTING"] == "1"
+var testPermissionsDelayMs = helperTesting
+    ? Int(ProcessInfo.processInfo.environment["ACRO_HELPER_TEST_PERMISSIONS_DELAY_MS"] ?? "") ?? 0
+    : 0
+let testPermissionsStartedMarker = ProcessInfo.processInfo.environment[
+    "ACRO_HELPER_TEST_PERMISSIONS_STARTED_MARKER"]
+let testPermissionsFinishedMarker = ProcessInfo.processInfo.environment[
+    "ACRO_HELPER_TEST_PERMISSIONS_FINISHED_MARKER"]
 let maxRequestBytes = 2 * 1024 * 1024
 let maxTypeScalars = 2048
+
+final class AsyncRequestGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if held {
+                waiters.append(continuation)
+                lock.unlock()
+            } else {
+                held = true
+                lock.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    func release() {
+        lock.lock()
+        let next = waiters.isEmpty ? nil : waiters.removeFirst()
+        if next == nil { held = false }
+        lock.unlock()
+        next?.resume()
+    }
+}
+
+let requestGate = AsyncRequestGate()
 
 // ---- 方法实现 ----
 
@@ -31,9 +69,10 @@ func requestPermissions() -> [String: Any] {
     return ["accessibility": ax, "screenRecording": screen]
 }
 
-func captureScreen() async throws -> [String: Any] {
+func captureScreen(deadlineMs: Int64?, clientFd: Int32) async throws -> [String: Any] {
     let content = try await SCShareableContent.excludingDesktopWindows(
         false, onScreenWindowsOnly: true)
+    try requireRequestActive(deadlineMs, clientFd: clientFd)
     guard let display = content.displays.first else {
         throw HelperError.message("no display")
     }
@@ -43,11 +82,15 @@ func captureScreen() async throws -> [String: Any] {
     config.height = display.height
     let image = try await SCScreenshotManager.captureImage(
         contentFilter: filter, configuration: config)
+    try requireRequestActive(deadlineMs, clientFd: clientFd)
     let rep = NSBitmapImageRep(cgImage: image)
     guard let png = rep.representation(using: .png, properties: [:]) else {
         throw HelperError.message("png encode failed")
     }
-    return ["png": png.base64EncodedString(), "width": display.width, "height": display.height]
+    try requireRequestActive(deadlineMs, clientFd: clientFd)
+    let encoded = png.base64EncodedString()
+    try requireRequestActive(deadlineMs, clientFd: clientFd)
+    return ["png": encoded, "width": display.width, "height": display.height]
 }
 
 func listWindows() -> [String: Any] {
@@ -67,7 +110,7 @@ func listWindows() -> [String: Any] {
     return ["windows": windows]
 }
 
-func click(x: Double, y: Double, deadlineMs: Int64?) throws {
+func click(x: Double, y: Double, deadlineMs: Int64?, clientFd: Int32) throws {
     let point = CGPoint(x: x, y: y)
     guard
         let down = CGEvent(
@@ -77,9 +120,10 @@ func click(x: Double, y: Double, deadlineMs: Int64?) throws {
             mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point,
             mouseButton: .left)
     else { throw HelperError.message("event create failed") }
-    try requireBeforeDeadline(deadlineMs)
+    try requireRequestActive(deadlineMs, clientFd: clientFd)
     down.post(tap: .cghidEventTap)
     usleep(30_000)
+    // 已经按下时必须发送抬起,即使对端刚断开,否则会留下卡住的鼠标状态。
     up.post(tap: .cghidEventTap)
 }
 
@@ -89,16 +133,30 @@ func requireBeforeDeadline(_ deadlineMs: Int64?) throws {
     guard nowMs < deadlineMs else { throw HelperError.message("request deadline exceeded") }
 }
 
-func typeText(_ text: String, deadlineMs: Int64?) throws {
+func requirePeerConnected(_ fd: Int32) throws {
+    var byte: UInt8 = 0
+    let result = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+    if result == 0 { throw HelperError.message("client disconnected") }
+    if result < 0 && errno != EAGAIN && errno != EWOULDBLOCK {
+        throw HelperError.message("client disconnected")
+    }
+}
+
+func requireRequestActive(_ deadlineMs: Int64?, clientFd: Int32) throws {
+    try requireBeforeDeadline(deadlineMs)
+    try requirePeerConnected(clientFd)
+}
+
+func typeText(_ text: String, deadlineMs: Int64?, clientFd: Int32) throws {
     for scalar in text.unicodeScalars {
-        try requireBeforeDeadline(deadlineMs)
+        try requireRequestActive(deadlineMs, clientFd: clientFd)
         var utf16 = Array(String(scalar).utf16)
         guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
             let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
         else { throw HelperError.message("event create failed") }
         down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
         up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-        try requireBeforeDeadline(deadlineMs)
+        try requireRequestActive(deadlineMs, clientFd: clientFd)
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         usleep(5_000)
@@ -107,7 +165,7 @@ func typeText(_ text: String, deadlineMs: Int64?) throws {
 
 func pressKey(
     keyCode: Int, command: Bool, option: Bool, control: Bool, shift: Bool,
-    deadlineMs: Int64?
+    deadlineMs: Int64?, clientFd: Int32
 ) throws {
     guard let keyCode = CGKeyCode(exactly: keyCode) else {
         throw HelperError.message("keyCode out of range")
@@ -124,21 +182,67 @@ func pressKey(
     if shift { flags.insert(.maskShift) }
     down.flags = flags
     up.flags = flags
-    try requireBeforeDeadline(deadlineMs)
+    try requireRequestActive(deadlineMs, clientFd: clientFd)
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
 }
 
-func activateApp(bundleId: String) -> Bool {
+func terminateLaunchedApplication(_ app: NSRunningApplication) async throws {
+    if app.terminate() {
+        let gracefulDeadline = ContinuousClock.now + .milliseconds(500)
+        while !app.isTerminated && ContinuousClock.now < gracefulDeadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+    if !app.isTerminated {
+        guard app.forceTerminate() else {
+            throw HelperError.message("failed to stop cancelled application launch")
+        }
+        let forcedDeadline = ContinuousClock.now + .seconds(2)
+        while !app.isTerminated && ContinuousClock.now < forcedDeadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+    guard app.isTerminated else {
+        throw HelperError.message("cancelled application launch did not terminate")
+    }
+}
+
+func activateApp(
+    bundleId: String, deadlineMs: Int64?, clientFd: Int32
+) async throws -> Bool {
     if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
         return app.activate()
     }
     guard
         let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId)
     else { return false }
-    NSWorkspace.shared.openApplication(
-        at: url, configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil)
-    return true
+    let configuration = NSWorkspace.OpenConfiguration()
+    // 未运行分支必须拥有独立实例,撤销时才能安全回滚,不误关竞态中由用户启动的进程。
+    configuration.createsNewApplicationInstance = true
+    // completion 返回且连接仍有效后再显式激活;取消中的启动不能抢走下一设备的输入焦点。
+    configuration.activates = false
+    let app = try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<NSRunningApplication, Error>) in
+        NSWorkspace.shared.openApplication(
+            at: url, configuration: configuration
+        ) { app, error in
+            if let error {
+                continuation.resume(throwing: error)
+            } else if let app {
+                continuation.resume(returning: app)
+            } else {
+                continuation.resume(throwing: HelperError.message("application launch failed"))
+            }
+        }
+    }
+    do {
+        try requireRequestActive(deadlineMs, clientFd: clientFd)
+    } catch {
+        try await terminateLaunchedApplication(app)
+        throw error
+    }
+    return app.activate()
 }
 
 enum HelperError: Error {
@@ -147,33 +251,67 @@ enum HelperError: Error {
 
 // ---- 分发 ----
 
-func handle(method: String, params: [String: Any], deadlineMs: Int64?) async throws
+func handle(
+    method: String, params: [String: Any], deadlineMs: Int64?, clientFd: Int32
+) async throws
     -> [String: Any]
 {
-    try requireBeforeDeadline(deadlineMs)
+    try requireRequestActive(deadlineMs, clientFd: clientFd)
     switch method {
     case "ping":
-        return ["pid": ProcessInfo.processInfo.processIdentifier]
+        if helperTesting, let delayMs = params["delayMs"] as? Int,
+            (0...2_000).contains(delayMs)
+        {
+            // E2E 专用:模拟断线后仍需完成的输入清理,验证新连接不会并发执行。
+            usleep(useconds_t(delayMs * 1_000))
+        }
+        if helperTesting, let marker = params["markerPath"] as? String {
+            try? Data("started".utf8).write(
+                to: URL(fileURLWithPath: marker), options: .atomic)
+        }
+        var result: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier]
+        if helperTesting, let responseBytes = params["responseBytes"] as? Int,
+            (0...(8 * 1024 * 1024)).contains(responseBytes)
+        {
+            result["payload"] = String(repeating: "x", count: responseBytes)
+        }
+        return result
     case "permissions.check":
-        return checkPermissions()
+        var delayedForTest = false
+        if testPermissionsDelayMs > 0 {
+            delayedForTest = true
+            let delayMs = min(testPermissionsDelayMs, 2_000)
+            testPermissionsDelayMs = 0
+            if let marker = testPermissionsStartedMarker {
+                try? Data("started".utf8).write(
+                    to: URL(fileURLWithPath: marker), options: .atomic)
+            }
+            usleep(useconds_t(delayMs * 1_000))
+        }
+        let permissions = checkPermissions()
+        if delayedForTest, let marker = testPermissionsFinishedMarker {
+            try? Data("finished".utf8).write(
+                to: URL(fileURLWithPath: marker), options: .atomic)
+        }
+        return permissions
     case "permissions.request":
         return requestPermissions()
     case "screen.capture":
-        return try await captureScreen()
+        return try await captureScreen(deadlineMs: deadlineMs, clientFd: clientFd)
     case "window.list":
         return listWindows()
     case "input.click":
         guard let x = params["x"] as? Double, let y = params["y"] as? Double else {
             throw HelperError.message("x/y required")
         }
-        try click(x: x, y: y, deadlineMs: deadlineMs)
+        try click(x: x, y: y, deadlineMs: deadlineMs, clientFd: clientFd)
         return [:]
     case "input.type":
         guard let text = params["text"] as? String else { throw HelperError.message("text required") }
         guard text.unicodeScalars.count <= maxTypeScalars else {
             throw HelperError.message("text too long")
         }
-        try typeText(text, deadlineMs: deadlineMs)
+        try typeText(text, deadlineMs: deadlineMs, clientFd: clientFd)
         return [:]
     case "input.key":
         guard let keyCode = params["keyCode"] as? Int else {
@@ -185,13 +323,17 @@ func handle(method: String, params: [String: Any], deadlineMs: Int64?) async thr
             option: params["option"] as? Bool ?? false,
             control: params["control"] as? Bool ?? false,
             shift: params["shift"] as? Bool ?? false,
-            deadlineMs: deadlineMs)
+            deadlineMs: deadlineMs,
+            clientFd: clientFd)
         return [:]
     case "app.activate":
         guard let bundleId = params["bundleId"] as? String else {
             throw HelperError.message("bundleId required")
         }
-        return ["activated": activateApp(bundleId: bundleId)]
+        return [
+            "activated": try await activateApp(
+                bundleId: bundleId, deadlineMs: deadlineMs, clientFd: clientFd)
+        ]
     default:
         throw HelperError.message("unknown method \(method)")
     }
@@ -271,13 +413,16 @@ func handleLine(_ line: Data, fd: Int32) async {
     else { return }
     let params = obj["params"] as? [String: Any] ?? [:]
     let deadlineMs = (obj["deadlineMs"] as? NSNumber)?.int64Value
+    await requestGate.acquire()
     var response: [String: Any]
     do {
-        let result = try await handle(method: method, params: params, deadlineMs: deadlineMs)
+        let result = try await handle(
+            method: method, params: params, deadlineMs: deadlineMs, clientFd: fd)
         response = ["id": id, "ok": true, "result": result]
     } catch {
         response = ["id": id, "ok": false, "error": "\(error)"]
     }
+    requestGate.release()
     guard var data = try? JSONSerialization.data(withJSONObject: response) else { return }
     data.append(0x0A)
     data.withUnsafeBytes { raw in

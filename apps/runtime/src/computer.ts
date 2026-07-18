@@ -17,13 +17,23 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   timer: NodeJS.Timeout;
+  cleanup: () => void;
 }
 
 interface QueuedRequest {
   method: string;
   params: Record<string, unknown>;
+  deadlineMs: number;
+  signal?: AbortSignal;
+  abortListener?: () => void;
+  deadlineTimer: NodeJS.Timeout | null;
+  settled: boolean;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error("helper request aborted");
 }
 
 export class HelperClient {
@@ -36,6 +46,7 @@ export class HelperClient {
   private pending = new Map<number, Pending>();
   private queue: QueuedRequest[] = [];
   private active = false;
+  private activeRequest: QueuedRequest | null = null;
   private closed = false;
   private readonly timeoutMs: number;
   private readonly maxQueue: number;
@@ -80,7 +91,7 @@ export class HelperClient {
   private onClose(socket: net.Socket): void {
     if (!this.resetSocket(socket)) return;
     for (const p of this.pending.values()) {
-      clearTimeout(p.timer);
+      p.cleanup();
       p.reject(new Error("helper connection lost"));
     }
     this.pending.clear();
@@ -115,7 +126,7 @@ export class HelperClient {
         const p = this.pending.get(msg.id);
         if (!p) continue;
         this.pending.delete(msg.id);
-        clearTimeout(p.timer);
+        p.cleanup();
         if (msg.ok) p.resolve(msg.result ?? {});
         else p.reject(new Error(msg.error ?? "helper error"));
       } catch {
@@ -124,20 +135,67 @@ export class HelperClient {
     }
   }
 
-  request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    signal?: AbortSignal,
+  ): Promise<T> {
     if (this.closed) return Promise.reject(new Error("helper client closed"));
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     if (this.queue.length >= this.maxQueue) {
       return Promise.reject(new Error("helper request queue full"));
     }
     return new Promise<T>((resolve, reject) => {
-      this.queue.push({
+      const queued: QueuedRequest = {
         method,
         params,
+        deadlineMs: Date.now() + this.timeoutMs,
+        ...(signal ? { signal } : {}),
+        deadlineTimer: null,
+        settled: false,
         resolve: resolve as (value: unknown) => void,
         reject,
-      });
+      };
+      queued.deadlineTimer = setTimeout(
+        () => this.cancelRequest(queued, new Error(`helper timeout: ${method}`)),
+        this.timeoutMs,
+      );
+      if (signal) {
+        queued.abortListener = () => this.cancelRequest(queued, abortError(signal));
+        signal.addEventListener("abort", queued.abortListener, { once: true });
+      }
+      this.queue.push(queued);
       void this.pump();
     });
+  }
+
+  private cleanupRequest(queued: QueuedRequest): void {
+    if (queued.deadlineTimer) clearTimeout(queued.deadlineTimer);
+    queued.deadlineTimer = null;
+    if (queued.signal && queued.abortListener) {
+      queued.signal.removeEventListener("abort", queued.abortListener);
+    }
+  }
+
+  private resolveRequest(queued: QueuedRequest, value: unknown): void {
+    if (queued.settled) return;
+    queued.settled = true;
+    this.cleanupRequest(queued);
+    queued.resolve(value);
+  }
+
+  private rejectRequest(queued: QueuedRequest, error: Error): void {
+    if (queued.settled) return;
+    queued.settled = true;
+    this.cleanupRequest(queued);
+    queued.reject(error);
+  }
+
+  private cancelRequest(queued: QueuedRequest, error: Error): void {
+    const index = this.queue.indexOf(queued);
+    if (index >= 0) this.queue.splice(index, 1);
+    if (this.activeRequest === queued) this.dropSocket();
+    this.rejectRequest(queued, error);
   }
 
   private async pump(): Promise<void> {
@@ -145,44 +203,83 @@ export class HelperClient {
     const queued = this.queue.shift();
     if (!queued) return;
     this.active = true;
+    this.activeRequest = queued;
     try {
+      if (queued.signal?.aborted) throw abortError(queued.signal);
       await this.ensureConnected();
-      queued.resolve(await this.send(queued.method, queued.params));
+      if (queued.settled) return;
+      if (queued.signal?.aborted) {
+        this.dropSocket();
+        throw abortError(queued.signal);
+      }
+      if (Date.now() >= queued.deadlineMs) {
+        throw new Error(`helper timeout: ${queued.method}`);
+      }
+      if (queued.deadlineTimer) clearTimeout(queued.deadlineTimer);
+      queued.deadlineTimer = null;
+      this.resolveRequest(
+        queued,
+        await this.send(queued.method, queued.params, queued.deadlineMs, queued.signal),
+      );
     } catch (error) {
-      queued.reject(error as Error);
+      this.rejectRequest(queued, error as Error);
     } finally {
+      if (this.activeRequest === queued) this.activeRequest = null;
       this.active = false;
       void this.pump();
     }
   }
 
-  private send(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private dropSocket(): void {
+    const socket = this.socket;
+    if (socket && this.resetSocket(socket)) socket.destroy();
+  }
+
+  private send(
+    method: string,
+    params: Record<string, unknown>,
+    deadlineMs: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     const id = this.nextId++;
-    const deadlineMs = Date.now() + this.timeoutMs;
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) return Promise.reject(new Error(`helper timeout: ${method}`));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (!this.pending.delete(id)) return;
-        const socket = this.socket;
-        if (socket && this.resetSocket(socket)) socket.destroy();
-        reject(new Error(`helper timeout: ${method}`));
-      }, this.timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.socket!.write(`${JSON.stringify({ id, method, params, deadlineMs })}\n`, (error) => {
-        if (!error) return;
+      let abortListener: (() => void) | undefined;
+      const cleanup = () => {
+        clearTimeout(timer);
+        if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+      };
+      const fail = (error: Error) => {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        clearTimeout(pending.timer);
-        const socket = this.socket;
-        if (socket && this.resetSocket(socket)) socket.destroy();
+        pending.cleanup();
+        this.dropSocket();
         reject(error);
+      };
+      const timer = setTimeout(() => {
+        fail(new Error(`helper timeout: ${method}`));
+      }, remainingMs);
+      abortListener = () => fail(abortError(signal!));
+      this.pending.set(id, { resolve, reject, timer, cleanup });
+      if (signal) signal.addEventListener("abort", abortListener, { once: true });
+      this.socket!.write(`${JSON.stringify({ id, method, params, deadlineMs })}\n`, (error) => {
+        if (!error) return;
+        fail(error);
       });
     });
   }
 
   close(): void {
     this.closed = true;
-    for (const queued of this.queue.splice(0)) queued.reject(new Error("helper client closed"));
+    for (const queued of this.queue.splice(0)) {
+      this.rejectRequest(queued, new Error("helper client closed"));
+    }
+    if (this.activeRequest) {
+      this.rejectRequest(this.activeRequest, new Error("helper client closed"));
+    }
     this.socket?.destroy();
   }
 }
