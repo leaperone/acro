@@ -10,6 +10,11 @@ permissions:
 jobs:
   package:
     runs-on: macos-15
+    # secrets 上下文不能出现在 step 的 if 里，先映射到 job env 再判断
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
     steps:
       - uses: actions/checkout@v4
       - name: setup ghostty assets
@@ -17,10 +22,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash apps/desktop-macos/scripts/setup-ghostty.sh
       - name: import signing certificate
-        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 != '' }}
-        env:
-          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' }}
         run: |
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
@@ -32,9 +34,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
           security list-keychains -d user -s "$KEYCHAIN" login.keychain
       - name: prepare notary key
-        if: ${{ secrets.APPLE_API_KEY_BASE64 != '' }}
-        env:
-          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        if: ${{ env.APPLE_API_KEY_BASE64 != '' }}
         run: |
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
           echo "ACRO_NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
