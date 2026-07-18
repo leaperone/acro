@@ -16,7 +16,7 @@ import {
   ServerIdentity,
   writeBootstrapOffer,
 } from "./share.ts";
-import { Gateway, type Handlers } from "./ws.ts";
+import { Gateway, type Conn, type Handlers } from "./ws.ts";
 import { ensureStateDirs, paths } from "./paths.ts";
 
 interface SnapshotResult {
@@ -39,6 +39,27 @@ async function main(): Promise<void> {
   const workspaces = new WorkspaceRegistry();
   // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
+  // 终端尺寸仲裁(tmux 模型):PTY 尺寸 = 各在挂客户端报告尺寸的最小值,
+  // 谁都能看全;单靠 last-writer-wins 会让多端互相顶掉对方的尺寸。
+  // 内存态:客户端重连后重新报告(attach 时同步一次 + SIGWINCH)。
+  const sessionSizes = new Map<string, Map<Conn, { cols: number; rows: number }>>();
+  const appliedSizes = new Map<string, { cols: number; rows: number }>();
+  const applySessionSize = async (sessionId: string): Promise<void> => {
+    const votes = [...(sessionSizes.get(sessionId)?.values() ?? [])];
+    if (votes.length === 0) return;
+    const cols = Math.min(...votes.map((v) => v.cols));
+    const rows = Math.min(...votes.map((v) => v.rows));
+    const applied = appliedSizes.get(sessionId);
+    if (applied && applied.cols === cols && applied.rows === rows) return;
+    appliedSizes.set(sessionId, { cols, rows });
+    await daemon.request("session.resize", { sessionId, cols, rows });
+  };
+  const dropSizeVote = (conn: Conn, sessionId: string): void => {
+    const votes = sessionSizes.get(sessionId);
+    if (!votes?.delete(conn)) return;
+    if (votes.size === 0) sessionSizes.delete(sessionId);
+    void applySessionSize(sessionId);
+  };
 
   const handlers: Handlers = {
     "device.list": () => registry.list(),
@@ -140,10 +161,17 @@ async function main(): Promise<void> {
       for (const [channel, st] of conn.attached) {
         if (st.sessionId === sessionId) conn.attached.delete(channel);
       }
+      dropSizeVote(conn, sessionId);
       return { detached: true };
     },
-    "session.resize": async (_conn, params) => {
-      await daemon.request("session.resize", params);
+    "session.resize": async (conn, params) => {
+      let votes = sessionSizes.get(params.sessionId);
+      if (!votes) {
+        votes = new Map();
+        sessionSizes.set(params.sessionId, votes);
+      }
+      votes.set(conn, { cols: params.cols, rows: params.rows });
+      await applySessionSize(params.sessionId);
       return { resized: true };
     },
     "session.kill": async (_conn, { sessionId }) => {
@@ -217,7 +245,11 @@ async function main(): Promise<void> {
     // 会话结束即清占用,不留脏条目
     if (evt.event === "session.exit") {
       const sessionId = (evt.payload as { sessionId?: string }).sessionId;
-      if (sessionId) focusOwners.delete(sessionId);
+      if (sessionId) {
+        focusOwners.delete(sessionId);
+        sessionSizes.delete(sessionId);
+        appliedSizes.delete(sessionId);
+      }
     }
     gateway.broadcastEvent(evt);
   });
@@ -227,6 +259,7 @@ async function main(): Promise<void> {
   };
   // 占用设备的连接全部断开后自动释放,其他设备无需手动接管
   gateway.onConnClosed = (conn) => {
+    for (const sessionId of [...sessionSizes.keys()]) dropSizeVote(conn, sessionId);
     const deviceId = conn.device?.id;
     if (!deviceId || gateway.hasDeviceConnection(deviceId)) return;
     for (const [sessionId, owner] of focusOwners) {
