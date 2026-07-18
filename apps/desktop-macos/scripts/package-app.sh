@@ -26,6 +26,15 @@ cp -RL Resources/terminfo "$APP/Contents/Resources/terminfo"
 (cd ../cli && pnpm build)
 cp ../cli/dist/cli.cjs "$APP/Contents/Resources/cli.cjs"
 
+# 内置本地 runtime + daemon(本地优先:App 自动拉起本机服务)。
+# node-pty(原生模块)与 playwright-core 保持 external,随 node_modules 附带
+(cd ../runtime && pnpm build)
+RT="$APP/Contents/Resources/runtime"
+mkdir -p "$RT/node_modules"
+cp ../runtime/dist/runtime.cjs ../runtime/dist/daemon.cjs "$RT/"
+cp -RL ../runtime/node_modules/node-pty "$RT/node_modules/node-pty"
+cp -RL ../runtime/node_modules/playwright-core "$RT/node_modules/playwright-core"
+
 # Sparkle 自动更新框架(可执行文件 rpath 指向 ../Frameworks)
 SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"

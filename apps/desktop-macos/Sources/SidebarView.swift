@@ -373,6 +373,10 @@ struct SidebarView: View {
     // 多主机:所有已配对服务器同时在线,每台一个手风琴段,各自实时显示各自的工作区。
     // 折叠状态仅本地;选择/操作某台服务器的内容前先 activate 把动作路由过去。
     @State private var collapsedServerIds: Set<String> = []
+    // 服务器接入与编辑(共享配对码的生成仍在设置 → 远程)
+    @State private var connectSheetPresented = false
+    @State private var editingServerId: EditingServerId?
+    @State private var pendingServerRemoval: ServerEntry?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -403,6 +407,29 @@ struct SidebarView: View {
                 }
         }
         .background(.bar)
+        .sheet(isPresented: $connectSheetPresented) {
+            ConnectServerSheet(hub: hub)
+        }
+        .sheet(item: $editingServerId) { editing in
+            EditServerSheet(serverId: editing.id, hub: hub)
+        }
+        .confirmationDialog(
+            "移除服务器「\(pendingServerRemoval?.name ?? "")」?",
+            isPresented: Binding(
+                get: { pendingServerRemoval != nil },
+                set: { if !$0 { pendingServerRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移除(不影响服务器上的会话)", role: .destructive) {
+                guard let server = pendingServerRemoval else { return }
+                pendingServerRemoval = nil
+                ServerDirectory.remove(server.id, hub: hub)
+            }
+            Button("取消", role: .cancel) { pendingServerRemoval = nil }
+        } message: {
+            Text("只删除本机的连接凭据;服务器上的工作区与终端不受影响,可重新配对接入。")
+        }
     }
 
     private var header: some View {
@@ -463,26 +490,49 @@ struct SidebarView: View {
             .help(help)
     }
 
+    // 本地优先:本机内容(回环入口条目)永远无头铺在最前;
+    // 每台远程服务器一个手风琴段。接入/编辑服务器都在这里完成。
     @ViewBuilder
     private var content: some View {
+        let locals = hub.entries.filter { $0.server.isLocal }
+        let remotes = hub.entries.filter { !$0.server.isLocal }
         if hub.entries.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Text("未配对任何服务器")
+                Text("本机 Runtime 未就绪")
                     .foregroundStyle(.secondary)
-                Text("在设置(⌘,)→ 远程 里粘贴配对码。")
+                Text("正在自动拉起本地服务;远程服务器用下方「连接服务器…」接入。")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-        } else if hub.entries.count == 1, let only = hub.entries.first {
-            // 单服务器(通常就是本机)不显示分组头,内容直接铺开;多台才需要区分归属
-            serverContent(only)
-        } else {
-            ForEach(hub.entries) { entry in
-                serverSection(entry)
-            }
         }
+        ForEach(locals) { entry in
+            serverContent(entry)
+        }
+        if !locals.isEmpty && !remotes.isEmpty {
+            Divider()
+                .padding(.vertical, 4)
+        }
+        ForEach(remotes) { entry in
+            serverSection(entry)
+        }
+        connectServerRow
+    }
+
+    private var connectServerRow: some View {
+        Button {
+            connectSheetPresented = true
+        } label: {
+            Label("连接服务器…", systemImage: "plus.rectangle.on.rectangle")
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("粘贴另一台服务器的配对码接入")
     }
 
     // 每台服务器一个手风琴段,内容来自它自己的连接,同时在线互不影响
@@ -531,6 +581,9 @@ struct SidebarView: View {
                 model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
             }
             .disabled(!entry.connection.connected)
+            Divider()
+            Button("编辑服务器…") { editingServerId = EditingServerId(id: entry.id) }
+            Button("移除服务器", role: .destructive) { pendingServerRemoval = entry.server }
             Divider()
             Button("远程设置…") { model.requestOpenSettings() }
         }

@@ -112,7 +112,9 @@ export class DaemonClient extends EventEmitter {
 }
 
 function spawnDaemon(): void {
-  const entry = fileURLToPath(new URL("./daemon.ts", import.meta.url));
+  // 打包形态(app 内置 runtime.cjs)下 daemon 入口由环境变量显式指定
+  const entry =
+    process.env.ACRO_DAEMON_ENTRY ?? fileURLToPath(new URL("./daemon.ts", import.meta.url));
   const logFd = fs.openSync(paths.daemonLog, "a");
   // dev 下 execArgv 带着 tsx loader,daemon 跟随同一运行方式;build 后是纯 js
   const child = spawn(process.execPath, [...process.execArgv, entry], {
