@@ -278,12 +278,12 @@ export const methods = {
     result: z.object({}),
   },
   "computer.type": {
-    params: z.object({ text: z.string() }),
+    params: z.object({ text: z.string().max(2048) }),
     result: z.object({}),
   },
   "computer.key": {
     params: z.object({
-      keyCode: z.number().int(),
+      keyCode: z.number().int().min(0).max(65535),
       command: z.boolean().optional(),
       option: z.boolean().optional(),
       control: z.boolean().optional(),

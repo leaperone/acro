@@ -19,29 +19,45 @@ interface Pending {
 
 export class HelperClient {
   private socket: net.Socket | null = null;
+  private connecting: Promise<void> | null = null;
+  private readonly socketPath: string;
   private buffer = "";
   private decoder = new StringDecoder("utf8");
   private nextId = 1;
   private pending = new Map<number, Pending>();
 
-  private async ensureConnected(): Promise<void> {
-    if (this.socket) return;
-    await new Promise<void>((resolve, reject) => {
-      const socket = net.connect(helperSocket);
+  constructor(socketPath = helperSocket) {
+    this.socketPath = socketPath;
+  }
+
+  private ensureConnected(): Promise<void> {
+    if (this.socket) return Promise.resolve();
+    this.connecting ??= this.connect().finally(() => {
+      this.connecting = null;
+    });
+    return this.connecting;
+  }
+
+  private connect(): Promise<void> {
+    if (this.socket) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const socket = net.connect(this.socketPath);
+      const fail = () =>
+        reject(new Error("acro-helper 未运行;在图形会话中启动 acro-helper 并授予权限"));
+      socket.once("error", fail);
       socket.on("connect", () => {
+        socket.off("error", fail);
         this.socket = socket;
         socket.on("data", (chunk) => this.onData(this.decoder.write(chunk)));
-        socket.on("close", () => this.onClose());
+        socket.on("close", () => this.onClose(socket));
         socket.on("error", () => {});
         resolve();
       });
-      socket.on("error", () =>
-        reject(new Error("acro-helper 未运行;在图形会话中启动 acro-helper 并授予权限")),
-      );
     });
   }
 
-  private onClose(): void {
+  private onClose(socket: net.Socket): void {
+    if (this.socket !== socket) return;
     this.socket = null;
     this.buffer = "";
     this.decoder = new StringDecoder("utf8");

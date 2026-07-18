@@ -45,6 +45,34 @@ function sendOversizedRequest(): Promise<void> {
   });
 }
 
+function rawHelperRequest(request: unknown): Promise<{ ok: boolean; error?: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(env.ACRO_HELPER_SOCKET);
+    let buffer = "";
+    socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      socket.end();
+      resolve(JSON.parse(buffer.slice(0, newline)) as { ok: boolean; error?: string });
+    });
+    socket.on("error", reject);
+  });
+}
+
+function disconnectBeforeHelperResponse(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(env.ACRO_HELPER_SOCKET);
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({ id: 2, method: "permissions.check", params: {} })}\n`);
+      socket.destroy();
+      resolve();
+    });
+    socket.on("error", reject);
+  });
+}
+
 async function main(): Promise<void> {
   assert.ok(fs.existsSync(helperBin), "build helper first: swift build in apps/helper-macos");
   const helper: ChildProcess = spawn(helperBin, [], { env, stdio: "ignore" });
@@ -69,6 +97,15 @@ async function main(): Promise<void> {
     assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
     assert.equal(fs.statSync(path.join(stateDir, "helper.sock")).mode & 0o777, 0o600);
     await sendOversizedRequest();
+    const invalidKey = await rawHelperRequest({
+      id: 1,
+      method: "input.key",
+      params: { keyCode: -1 },
+    });
+    assert.equal(invalidKey.ok, false);
+    assert.match(invalidKey.error ?? "", /keyCode out of range/);
+    await disconnectBeforeHelperResponse();
+    await sleep(200);
     const client = new E2eClient();
     await client.connect(offer);
     const rpc = <T = any>(method: string, params: unknown = {}) =>

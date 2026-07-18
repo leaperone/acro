@@ -63,13 +63,20 @@ async function main(): Promise<void> {
     const rpc = <T = any>(method: string, params: unknown = {}) =>
       client.rpc<T>(method, params, 30000);
 
-    // 开浏览器指向假 dev server
-    const { browserId } = await rpc<{ browserId: string }>("browser.open", {
-      url: `http://127.0.0.1:${PAGE_PORT}/`,
-      width: 800,
-      height: 600,
-    });
-    console.log("[e2e] browser opened");
+    // 冷启动并发 open 必须复用同一个 persistent context,不能争抢 profile 锁
+    const [{ browserId }, { browserId: secondBrowserId }] = await Promise.all([
+      rpc<{ browserId: string }>("browser.open", {
+        url: `http://127.0.0.1:${PAGE_PORT}/`,
+        width: 800,
+        height: 600,
+      }),
+      rpc<{ browserId: string }>("browser.open", {
+        url: `http://127.0.0.1:${PAGE_PORT}/second`,
+        width: 640,
+        height: 480,
+      }),
+    ]);
+    console.log("[e2e] concurrent browser open ok");
 
     const attach = await rpc<{ channel: number; width: number }>("browser.attach", {
       browserId,
@@ -99,11 +106,12 @@ async function main(): Promise<void> {
     });
     assert.ok(nav.url.endsWith("/second"));
     const list = await rpc<Array<{ browserId: string; url: string }>>("browser.list");
-    assert.equal(list.length, 1);
-    assert.ok(list[0]!.url.endsWith("/second"));
+    assert.equal(list.length, 2);
+    assert.ok(list.find((item) => item.browserId === browserId)?.url.endsWith("/second"));
     console.log("[e2e] navigate ok");
 
     await rpc("browser.close", { browserId });
+    await rpc("browser.close", { browserId: secondBrowserId });
     assert.equal((await rpc<any[]>("browser.list")).length, 0);
     client.close();
     console.log("\nE2E-BROWSER PASS ✅  打开/取流/输入/导航/关闭 全部通过");

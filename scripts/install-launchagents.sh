@@ -32,10 +32,8 @@ cat > "$AGENTS_DIR/one.leaper.acro.runtime.plist" <<EOF
 EOF
 
 HELPER_BIN="${ROOT}/apps/helper-macos/.build/release/acro-helper"
-if [ ! -x "$HELPER_BIN" ]; then
-  echo "building helper (release)…"
-  (cd "${ROOT}/apps/helper-macos" && swift build -c release)
-fi
+echo "building helper (release)…"
+(cd "${ROOT}/apps/helper-macos" && swift build -c release)
 
 cat > "$AGENTS_DIR/one.leaper.acro.helper.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

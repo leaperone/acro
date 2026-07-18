@@ -130,8 +130,8 @@ function spawnDaemon(): void {
     entry = fileURLToPath(new URL("./daemon.ts", import.meta.url));
   }
   const logFd = fs.openSync(paths.daemonLog, "a");
-  // dev 下 execArgv 带着 tsx loader,daemon 跟随同一运行方式;build 后是纯 js
-  const child = spawn(process.execPath, [...process.execArgv, entry], {
+  // Node 22+ 直接运行 .ts;父进程的 --inspect/--input-type 等参数不能透传给文件入口
+  const child = spawn(process.execPath, [entry], {
     detached: true,
     stdio: ["ignore", logFd, logFd],
     env: process.env,
