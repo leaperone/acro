@@ -722,10 +722,28 @@ private struct ShortcutSettingsPane: View {
 enum TerminalAppearance {
     static let confPath = "\(NSHomeDirectory())/.config/acro/ghostty.conf"
 
+    // 系统等宽字体族(终端场景);空串 = ghostty 默认。用户从列表选,不用记名字。
+    static var monospaceFonts: [String] {
+        NSFontManager.shared.availableFontFamilies
+            .filter { NSFont(name: $0, size: 12)?.isFixedPitch ?? false }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    // ghostty 内置主题名(GHOSTTY_RESOURCES_DIR/themes 目录);空串 = 默认。
+    static var themes: [String] {
+        guard let dir = ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] else { return [] }
+        return (try? FileManager.default.contentsOfDirectory(atPath: "\(dir)/themes"))?
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending } ?? []
+    }
+
     static func write(fontFamily: String, fontSize: Int, theme: String) {
         var lines: [String] = ["# 由 Acro 设置窗口生成;重启应用后生效"]
         let family = fontFamily.trimmingCharacters(in: .whitespaces)
         if !family.isEmpty { lines.append("font-family = \(family)") }
+        // 中文回退:主字体(或 ghostty 默认)缺 CJK 字形时映射到苹方,避免落到宋体
+        lines.append(
+            "font-codepoint-map = U+2E80-U+9FFF,U+F900-U+FAFF,U+FE30-U+FE4F,U+FF00-U+FFEF=PingFang SC"
+        )
         if fontSize > 0 { lines.append("font-size = \(fontSize)") }
         let trimmedTheme = theme.trimmingCharacters(in: .whitespaces)
         if !trimmedTheme.isEmpty { lines.append("theme = \(trimmedTheme)") }
@@ -744,17 +762,25 @@ private struct AppearanceSettingsPane: View {
     var body: some View {
         Form {
             Section {
-                TextField("字体(留空使用默认)", text: $fontFamily, prompt: Text("JetBrains Mono"))
+                Picker("字体", selection: $fontFamily) {
+                    Text("默认(JetBrains Mono)").tag("")
+                    Divider()
+                    ForEach(TerminalAppearance.monospaceFonts, id: \.self) { Text($0).tag($0) }
+                }
                 LabeledContent("字号") {
                     Stepper(value: $fontSize, in: 0...32) {
                         Text(fontSize > 0 ? "\(fontSize) pt" : "默认")
                     }
                 }
-                TextField("主题(ghostty 主题名,留空使用默认)", text: $theme, prompt: Text("catppuccin-mocha"))
+                Picker("主题", selection: $theme) {
+                    Text("默认").tag("")
+                    Divider()
+                    ForEach(TerminalAppearance.themes, id: \.self) { Text($0).tag($0) }
+                }
             } header: {
                 Text("终端")
             } footer: {
-                Text("写入 ~/.config/acro/ghostty.conf,重启应用后生效。主题名参考 ghostty 内置主题列表。")
+                Text("写入 ~/.config/acro/ghostty.conf,重启应用后生效。中文自动回退到苹方(PingFang SC)。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
