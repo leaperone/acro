@@ -608,7 +608,9 @@ struct SidebarView: View {
                     model.activate(serverId: entry.id)
                     model.pendingWorkspaceGroupRemoval = group
                 },
-                acceptWorkspaceDrop: { model.draggingWorkspaceId != nil },
+                acceptWorkspaceDrop: {
+                    model.draggingWorkspaceId != nil && model.draggingWorkspaceServerId == entry.id
+                },
                 performWorkspaceDrop: {
                     guard let dragId = model.draggingWorkspaceId else { return false }
                     model.draggingWorkspaceId = nil
@@ -714,10 +716,12 @@ struct SidebarView: View {
                 },
                 beginDrag: {
                     model.draggingWorkspaceId = workspace.id
+                    model.draggingWorkspaceServerId = entry.id
                     return NSItemProvider(object: workspace.id as NSString)
                 },
                 acceptDrop: {
                     model.draggingWorkspaceId != nil && model.draggingWorkspaceId != workspace.id
+                        && model.draggingWorkspaceServerId == entry.id
                 },
                 performDrop: {
                     guard let dragId = model.draggingWorkspaceId else { return false }

@@ -24,12 +24,15 @@ final class RuntimeHub: ObservableObject {
         for server in servers {
             seen.insert(server.id)
             if let existing = entries.first(where: { $0.id == server.id }) {
-                if existing.server == server {
-                    next.append(existing)
-                } else {
+                // 只有影响连接的字段(入口/凭据)变了才重连;
+                // deviceId 补写、改名等元数据变化不打断在线连接
+                let needsReconnect = existing.server.endpoints != server.endpoints
+                    || existing.server.token != server.token
+                    || existing.server.pub != server.pub
+                if needsReconnect {
                     existing.connection.connect(server: server)
-                    next.append(Entry(server: server, connection: existing.connection))
                 }
+                next.append(Entry(server: server, connection: existing.connection))
                 continue
             }
             let connection = RuntimeConnection()

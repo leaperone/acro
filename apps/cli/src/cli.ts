@@ -73,6 +73,7 @@ async function cmdPair(args: string[]): Promise<void> {
   const config = loadOrEmptyConfig();
   // 同名服务器覆盖(重新配对场景)
   const entry = {
+    localId: crypto.randomUUID(),
     name,
     deviceId: "",
     token: offer.token,
@@ -85,7 +86,7 @@ async function cmdPair(args: string[]): Promise<void> {
   client.close();
   config.servers = config.servers.filter((s) => s.name !== name);
   config.servers.push(entry);
-  config.active = entry.deviceId;
+  config.active = entry.localId; // active 存稳定 id
   saveClientConfig(config);
   console.log(`已配对 ${name},入口: ${offer.endpoints.join(", ")}`);
 }
@@ -213,10 +214,10 @@ function flagValue(args: string[], flag: string): string | undefined {
 }
 
 async function main(): Promise<void> {
-  const [cmd, ...rawArgs] = process.argv.slice(2);
-  // 全局 --server <deviceId|名称>:多主机下指定目标(缺省用配置里的默认服务器)
-  const serverRef = flagValue(rawArgs, "--server");
-  const args = rawArgs.filter((a, i) => a !== "--server" && rawArgs[i - 1] !== "--server");
+  // 全局 --server <localId|deviceId|名称>:先于命令解析,前置后置都支持
+  const argv = process.argv.slice(2);
+  const serverRef = flagValue(argv, "--server");
+  const [cmd, ...args] = argv.filter((a, i) => a !== "--server" && argv[i - 1] !== "--server");
   if (!cmd || cmd === "help" || cmd === "--help") {
     console.log(
       [

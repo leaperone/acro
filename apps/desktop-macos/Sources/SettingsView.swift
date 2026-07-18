@@ -192,8 +192,8 @@ private struct RemoteSettingsPane: View {
         .task {
             config = ClientConfig.load()
         }
-        .onChange(of: hub.entries.map(\.id)) { _, _ in
-            // 配对/删除后 hub 重载,同步重读配置
+        .onReceive(hub.objectWillChange) { _ in
+            // 认证补写 deviceId、配对/删除等都会经 hub 冒泡,保持显示与磁盘一致
             config = ClientConfig.load()
         }
     }
@@ -302,11 +302,12 @@ private struct ConnectServersSection: View {
         }
     }
 
-    // 粘贴配对码:落盘 → 立即连接;deviceId 在认证成功后由连接层补写
+    // 粘贴配对码:写入前重读磁盘(配置由设置页、CLI、连接层多方写入,
+    // 用 @State 快照 save 会静默覆盖别处的修改);deviceId 认证后由连接层补写
     private func pair() {
         do {
             let offer = try PairingOffer.decode(pairInput)
-            var next = config ?? ClientConfig(v: 2, servers: [], active: nil)
+            var next = ClientConfig.load() ?? ClientConfig(v: 2, servers: [], active: nil)
             let name = pairName.trimmingCharacters(in: .whitespaces).isEmpty
                 ? (offer.endpoints.first ?? "Runtime")
                 : pairName.trimmingCharacters(in: .whitespaces)
@@ -333,7 +334,7 @@ private struct ConnectServersSection: View {
     }
 
     private func remove(_ server: ServerEntry) {
-        guard var next = config else { return }
+        guard var next = ClientConfig.load() else { return }
         next.servers.removeAll { $0.id == server.id }
         if next.active == server.id { next.active = next.servers.first?.id }
         next.save()
@@ -489,7 +490,8 @@ private struct EndpointsSection: View {
     }
 
     private func mutate(_ change: (inout ServerEntry) -> Void) {
-        guard var next = config,
+        // 写入前重读磁盘,避免用过期快照覆盖连接层刚补写的 deviceId
+        guard var next = ClientConfig.load(),
               let idx = next.servers.firstIndex(where: { $0.id == serverId })
         else { return }
         change(&next.servers[idx])

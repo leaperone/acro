@@ -74,6 +74,8 @@ final class WorkbenchModel: ObservableObject {
     // ---- 拖拽与快捷键提示 ----
     @Published var draggingTab: TabDragPayload?
     @Published var draggingWorkspaceId: String?
+    // 工作区拖拽的来源服务器:禁止拖进另一台服务器的分组
+    @Published var draggingWorkspaceServerId: String?
     @Published private(set) var cmdHeld = false
 
     // ---- 对话框与浮层 ----
@@ -84,9 +86,22 @@ final class WorkbenchModel: ObservableObject {
     @Published var showingWorkspaceEditor = false
     @Published var editingWorkspaceId: String?
     @Published var workspaceName = ""
-    @Published var pendingWorkspaceDeletion: Workspace?
-    @Published var pendingWorkspaceGroupRemoval: WorkspaceGroup?
-    @Published var pendingSessionTermination: Session?
+    @Published var pendingWorkspaceDeletion: Workspace? {
+        didSet { if pendingWorkspaceDeletion != nil { pendingServerId = selectedServerId } }
+    }
+    @Published var pendingWorkspaceGroupRemoval: WorkspaceGroup? {
+        didSet { if pendingWorkspaceGroupRemoval != nil { pendingServerId = selectedServerId } }
+    }
+    @Published var pendingSessionTermination: Session? {
+        didSet { if pendingSessionTermination != nil { pendingServerId = selectedServerId } }
+    }
+    // 弹框/编辑器打开时的目标服务器:确认动作按它路由,
+    // 避免弹框期间切换服务器把破坏性 RPC 发错目标
+    private var pendingServerId: String?
+
+    private var pendingRuntime: RuntimeConnection {
+        hub.connection(for: pendingServerId) ?? runtime
+    }
     @Published var projectPickerWorkspace: Workspace?
     @Published var terminalProjectPickerWorkspace: Workspace?
     @Published var errorMessage: String?
@@ -543,12 +558,13 @@ final class WorkbenchModel: ObservableObject {
     }
 
     func terminateSession(_ session: Session) async {
+        let connection = pendingRuntime
         do {
             let workspaceId = workspace(containing: session.id)?.id
-            _ = try await runtime.rpc("session.kill", ["sessionId": session.id])
+            _ = try await connection.rpc("session.kill", ["sessionId": session.id])
             pendingSessionTermination = nil
             TerminalSurfaceCache.shared.evict(session.id)
-            await runtime.refresh()
+            await connection.refresh()
             if let workspaceId, var layout = workspaceLayouts[workspaceId] {
                 layout.removeTab(session.id)
                 workspaceLayouts[workspaceId] = layout
@@ -587,32 +603,35 @@ final class WorkbenchModel: ObservableObject {
     }
 
     func presentWorkspaceGroupEditor(workspaceGroupId: String?, name: String) {
+        pendingServerId = selectedServerId
         editingWorkspaceGroupId = workspaceGroupId
         workspaceGroupName = name
         showingWorkspaceGroupEditor = true
     }
 
     func presentWorkspaceRename(workspaceId: String, name: String) {
+        pendingServerId = selectedServerId
         editingWorkspaceId = workspaceId
         workspaceName = name
         showingWorkspaceEditor = true
     }
 
     func saveWorkspaceGroup() async {
+        let connection = pendingRuntime
         do {
             let name = workspaceGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
             if let editingWorkspaceGroupId {
-                _ = try await runtime.rpc("workspaceGroup.update", [
+                _ = try await connection.rpc("workspaceGroup.update", [
                     "workspaceGroupId": editingWorkspaceGroupId,
                     "name": name,
                 ])
             } else {
-                let group = try await runtime.rpc(
+                let group = try await connection.rpc(
                     "workspaceGroup.create", ["name": name], as: WorkspaceGroup.self
                 )
                 expandedWorkspaceGroupIds.insert(group.id)
             }
-            await runtime.refresh()
+            await connection.refresh()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -636,20 +655,22 @@ final class WorkbenchModel: ObservableObject {
 
     func saveWorkspaceName() async {
         guard let editingWorkspaceId else { return }
+        let connection = pendingRuntime
         do {
-            _ = try await runtime.rpc("workspace.update", [
+            _ = try await connection.rpc("workspace.update", [
                 "workspaceId": editingWorkspaceId,
                 "name": workspaceName.trimmingCharacters(in: .whitespacesAndNewlines),
             ])
-            await runtime.refresh()
+            await connection.refresh()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     func deleteWorkspace(_ workspace: Workspace) async {
+        let connection = pendingRuntime
         do {
-            _ = try await runtime.rpc("workspace.remove", ["workspaceId": workspace.id])
+            _ = try await connection.rpc("workspace.remove", ["workspaceId": workspace.id])
             workspaceLayouts.removeValue(forKey: workspace.id)
             expandedWorkspaceIds.remove(workspace.id)
             if selectedWorkspaceId == workspace.id {
@@ -658,7 +679,7 @@ final class WorkbenchModel: ObservableObject {
                 selectedSessionId = nil
             }
             pendingWorkspaceDeletion = nil
-            await runtime.refresh()
+            await connection.refresh()
         } catch {
             pendingWorkspaceDeletion = nil
             errorMessage = error.localizedDescription
@@ -666,11 +687,12 @@ final class WorkbenchModel: ObservableObject {
     }
 
     func removeWorkspaceGroup(_ group: WorkspaceGroup) async {
+        let connection = pendingRuntime
         do {
-            _ = try await runtime.rpc("workspaceGroup.remove", ["workspaceGroupId": group.id])
+            _ = try await connection.rpc("workspaceGroup.remove", ["workspaceGroupId": group.id])
             expandedWorkspaceGroupIds.remove(group.id)
             pendingWorkspaceGroupRemoval = nil
-            await runtime.refresh()
+            await connection.refresh()
         } catch {
             pendingWorkspaceGroupRemoval = nil
             errorMessage = error.localizedDescription
@@ -828,10 +850,15 @@ final class WorkbenchModel: ObservableObject {
     var layoutWasRestored: Bool { layoutRestored }
 
     func reconcileLayoutState() {
-        guard runtime.snapshotLoaded else { return }
-        // 布局/缓存的清理跨所有服务器取并集;有服务器还没拉到快照时跳过清理,
-        // 避免把离线服务器的布局和 surface 误当失效数据删掉
+        // 选中的服务器被删除时回落到第一台,避免 runtime 静默指向与选中态不一致
+        if let selectedServerId, hub.connection(for: selectedServerId) == nil {
+            self.selectedServerId = hub.entries.first?.id
+        }
+        if selectedServerId == nil { selectedServerId = hub.entries.first?.id }
         let loadedConnections = hub.entries.map(\.connection).filter(\.snapshotLoaded)
+        guard !loadedConnections.isEmpty else { return }
+        // surface 缓存只会为已加载服务器的会话创建,按已加载并集清理是安全的;
+        // 布局/展开态可能属于从未上线的服务器,只有全部就绪才收缩,宁多留不误删
         let allLoaded = hub.entries.allSatisfy { $0.connection.snapshotLoaded }
         let validWorkspaceGroupIds = Set(loadedConnections.flatMap { $0.workspaceGroups.map(\.id) })
         if workspaceGroupsInitialized {
@@ -842,13 +869,13 @@ final class WorkbenchModel: ObservableObject {
         }
         let validWorkspaceIds = Set(loadedConnections.flatMap { $0.workspaces.map(\.id) })
         let selectedValidWorkspaceIds = Set(runtime.workspaces.map(\.id))
+        let aliveSessionIds = Set(
+            loadedConnections.flatMap { connection in
+                connection.sessions.filter(\.alive).map(\.id)
+            }
+        )
+        TerminalSurfaceCache.shared.retainOnly(aliveSessionIds)
         if allLoaded {
-            let aliveSessionIds = Set(
-                loadedConnections.flatMap { connection in
-                    connection.sessions.filter(\.alive).map(\.id)
-                }
-            )
-            TerminalSurfaceCache.shared.retainOnly(aliveSessionIds)
             expandedWorkspaceIds.formIntersection(validWorkspaceIds)
             workspaceLayouts = workspaceLayouts.filter { validWorkspaceIds.contains($0.key) }
         }
