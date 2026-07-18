@@ -333,6 +333,27 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
         focusedPane?.selectedSessionId
     }
 
+    // Ctrl+Tab 按布局树顺序跨全部分屏与标签循环。
+    func adjacentTab(offset: Int) -> (sessionId: String, paneId: String)? {
+        guard let root, let focusedSessionId else { return nil }
+        let sessionIds = root.sessionIds
+        guard sessionIds.count > 1,
+              let index = sessionIds.firstIndex(of: focusedSessionId)
+        else { return nil }
+        let sessionId = sessionIds[(index + offset + sessionIds.count) % sessionIds.count]
+        guard let paneId = root.paneContaining(sessionId)?.id else { return nil }
+        return (sessionId, paneId)
+    }
+
+    func tab(number: Int) -> (sessionId: String, paneId: String)? {
+        guard let pane = focusedPane,
+              let index = NumberedShortcutMapper.index(
+                  forDigit: number, count: pane.sessionIds.count
+              )
+        else { return nil }
+        return (pane.sessionIds[index], pane.id)
+    }
+
     // 把会话并入布局:已在某窗格则选中该标签,否则加进焦点窗格(无树则新建窗格)
     mutating func adopt(_ sessionId: String) {
         if let pane = root?.paneContaining(sessionId) {

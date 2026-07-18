@@ -57,7 +57,7 @@ struct StoredShortcut: Codable, Equatable {
     var hasModifier: Bool { command || option || control }
 
     func matches(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let flags = Self.normalizedModifiers(event)
         var expected: NSEvent.ModifierFlags = []
         if command { expected.insert(.command) }
         if shift { expected.insert(.shift) }
@@ -69,6 +69,18 @@ struct StoredShortcut: Codable, Equatable {
 
     static func eventKey(_ event: NSEvent) -> String {
         switch event.keyCode {
+        case 48: "\t"
+        case 18: "1"
+        case 19: "2"
+        case 20: "3"
+        case 21: "4"
+        case 23: "5"
+        case 22: "6"
+        case 26: "7"
+        case 28: "8"
+        case 25: "9"
+        case 33: "["
+        case 30: "]"
         case 123: "left"
         case 124: "right"
         case 125: "down"
@@ -78,7 +90,7 @@ struct StoredShortcut: Codable, Equatable {
     }
 
     static func from(_ event: NSEvent) -> StoredShortcut {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let flags = normalizedModifiers(event)
         return StoredShortcut(
             key: eventKey(event),
             command: flags.contains(.command),
@@ -86,6 +98,11 @@ struct StoredShortcut: Codable, Equatable {
             option: flags.contains(.option),
             control: flags.contains(.control)
         )
+    }
+
+    static func normalizedModifiers(_ event: NSEvent) -> NSEvent.ModifierFlags {
+        event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
     }
 }
 
@@ -106,6 +123,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case closeTab
     case previousTab
     case nextTab
+    case previousWorkspace
+    case nextWorkspace
     case focusTerminal
     case openSettings
 
@@ -129,6 +148,8 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .closeTab: "关闭标签(终止终端)"
         case .previousTab: "上一个标签"
         case .nextTab: "下一个标签"
+        case .previousWorkspace: "上一个工作区"
+        case .nextWorkspace: "下一个工作区"
         case .focusTerminal: "聚焦终端"
         case .openSettings: "打开设置"
         }
@@ -161,6 +182,8 @@ final class ShortcutStore: ObservableObject {
         .closeTab: StoredShortcut(key: "w", command: true),
         .previousTab: StoredShortcut(key: "\t", shift: true, control: true),
         .nextTab: StoredShortcut(key: "\t", control: true),
+        .previousWorkspace: StoredShortcut(key: "[", command: true, control: true),
+        .nextWorkspace: StoredShortcut(key: "]", command: true, control: true),
         .focusTerminal: StoredShortcut(key: "t", command: true, option: true),
         .openSettings: StoredShortcut(key: ",", command: true),
     ]
@@ -217,6 +240,20 @@ final class ShortcutStore: ObservableObject {
     }
 }
 
+enum NumberedShortcutMapper {
+    static func index(forDigit digit: Int, count: Int) -> Int? {
+        guard count > 0, (1...9).contains(digit) else { return nil }
+        if digit == 9 { return count - 1 }
+        let index = digit - 1
+        return index < count ? index : nil
+    }
+
+    static func digit(forIndex index: Int, count: Int) -> Int? {
+        guard (0..<count).contains(index) else { return nil }
+        return (1...9).first { self.index(forDigit: $0, count: count) == index }
+    }
+}
+
 // 旧调用点的静态门面
 enum ShortcutSettings {
     static func stored(_ action: ShortcutAction) -> StoredShortcut {
@@ -227,24 +264,42 @@ enum ShortcutSettings {
         stored(action).keyboardShortcut ?? ShortcutStore.defaults[action]!.keyboardShortcut!
     }
 
-    // ⌘1-9 固定切换工作区(cmux selectWorkspaceByNumber)
+    // 数字族沿用 cmux 语义:1...8 固定位置,9 永远是最后一个。
     static func workspaceDigit(_ event: NSEvent) -> Int? {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags == .command,
-              let digit = Int(event.charactersIgnoringModifiers ?? ""),
-              (1...9).contains(digit)
-        else { return nil }
-        return digit
+        numberedDigit(event, modifiers: .command)
+    }
+
+    static func tabDigit(_ event: NSEvent) -> Int? {
+        numberedDigit(event, modifiers: .control)
+    }
+
+    static func reservedNumberedShortcutDescription(_ shortcut: StoredShortcut) -> String? {
+        guard let digit = Int(shortcut.key), (1...9).contains(digit),
+              !shortcut.shift, !shortcut.option else { return nil }
+        if shortcut.command && !shortcut.control { return "⌘1-9 固定用于切换工作区" }
+        if shortcut.control && !shortcut.command { return "⌃1-9 固定用于切换焦点窗格标签" }
+        return nil
     }
 
     // 终端 NSView 用它判断哪些按键属于应用而不能被终端吃掉
     static func isAppShortcut(_ event: NSEvent) -> Bool {
-        if workspaceDigit(event) != nil { return true }
+        if workspaceDigit(event) != nil || tabDigit(event) != nil { return true }
         return ShortcutAction.allCases.contains { stored($0).matches(event) }
     }
 
     // 事件 → 命中的 action(cmux AppDelegate 路由模式的 acro 版)
     static func action(for event: NSEvent) -> ShortcutAction? {
         ShortcutAction.allCases.first { stored($0).matches(event) }
+    }
+
+    private static func numberedDigit(
+        _ event: NSEvent,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Int? {
+        guard StoredShortcut.normalizedModifiers(event) == modifiers,
+              let digit = Int(StoredShortcut.eventKey(event)),
+              (1...9).contains(digit)
+        else { return nil }
+        return digit
     }
 }

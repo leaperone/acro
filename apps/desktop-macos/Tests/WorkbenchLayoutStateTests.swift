@@ -81,6 +81,55 @@ final class WorkbenchLayoutStateTests: XCTestCase {
         XCTAssertEqual(layout.paneId(toward: .down), rightBottomPaneId)
     }
 
+    func testAdjacentTabNavigationCrossesSplitPanes() throws {
+        var layout = WorkspaceTerminalLayout()
+        layout.adopt("left-one")
+        layout.adopt("left-two")
+        let leftPaneId = try XCTUnwrap(layout.focusedPane?.id)
+        layout.split(fromPane: leftPaneId, direction: .horizontal, newSessionId: "right-one")
+        let rightPaneId = try XCTUnwrap(layout.focusedPane?.id)
+        layout.adopt("right-two")
+
+        layout.selectTab("left-one", inPane: leftPaneId)
+        var target = try XCTUnwrap(layout.adjacentTab(offset: 1))
+        XCTAssertEqual(target.sessionId, "left-two")
+        XCTAssertEqual(target.paneId, leftPaneId)
+
+        layout.selectTab("left-two", inPane: leftPaneId)
+        target = try XCTUnwrap(layout.adjacentTab(offset: 1))
+        XCTAssertEqual(target.sessionId, "right-one")
+        XCTAssertEqual(target.paneId, rightPaneId)
+
+        layout.selectTab("right-one", inPane: rightPaneId)
+        target = try XCTUnwrap(layout.adjacentTab(offset: -1))
+        XCTAssertEqual(target.sessionId, "left-two")
+        XCTAssertEqual(target.paneId, leftPaneId)
+
+        layout.selectTab("right-two", inPane: rightPaneId)
+        target = try XCTUnwrap(layout.adjacentTab(offset: 1))
+        XCTAssertEqual(target.sessionId, "left-one")
+        XCTAssertEqual(target.paneId, leftPaneId)
+    }
+
+    func testNumberedTabNavigationUsesFocusedPaneAndNineMeansLast() throws {
+        var layout = WorkspaceTerminalLayout()
+        layout.adopt("left-one")
+        layout.adopt("left-two")
+        let leftPaneId = try XCTUnwrap(layout.focusedPane?.id)
+        layout.split(fromPane: leftPaneId, direction: .horizontal, newSessionId: "right-one")
+        let rightPaneId = try XCTUnwrap(layout.focusedPane?.id)
+        layout.adopt("right-two")
+
+        layout.selectTab("left-one", inPane: leftPaneId)
+        XCTAssertEqual(layout.tab(number: 1)?.sessionId, "left-one")
+        XCTAssertEqual(layout.tab(number: 9)?.sessionId, "left-two")
+
+        layout.selectTab("right-one", inPane: rightPaneId)
+        XCTAssertEqual(layout.tab(number: 1)?.sessionId, "right-one")
+        XCTAssertEqual(layout.tab(number: 9)?.sessionId, "right-two")
+        XCTAssertNil(layout.tab(number: 8))
+    }
+
     func testSamePaneReorder() throws {
         var layout = WorkspaceTerminalLayout()
         layout.adopt("a")
