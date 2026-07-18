@@ -196,7 +196,7 @@ async function main(): Promise<void> {
       "wrong token must be rejected",
     );
 
-    const client = new Client();
+    let client = new Client();
     await client.connect(offer);
     assert.ok(client.deviceId.length > 0);
     log("e2ee ws connected");
@@ -224,22 +224,49 @@ async function main(): Promise<void> {
     await assert.rejects(new Client().connect(shareOffer), "revoked token must fail");
     log("share + revoke ok");
 
+    const [workspace] = await client.rpc<Workspace[]>("workspace.list");
+    assert.equal(workspace?.name, "工作区 1");
+    const initialSession = (await client.rpc<Session[]>("session.list")).find((session) =>
+      workspace?.sessionIds.includes(session.id),
+    );
+    assert.equal(initialSession?.alive, true, "first startup must create a live terminal");
+    await client.rpc("session.kill", { sessionId: initialSession!.id });
+    await sleep(500);
+    client.close();
+    runtime.kill("SIGTERM");
+    await sleep(800);
+    runtime = startRuntime();
+    await waitHealthy();
+    client = new Client();
+    await client.connect(offer);
+    const repairedWorkspace = (await client.rpc<Workspace[]>("workspace.list")).find(
+      (item) => item.id === workspace?.id,
+    );
+    const repairedSession = (await client.rpc<Session[]>("session.list")).find(
+      (session) => session.alive && repairedWorkspace?.sessionIds.includes(session.id),
+    );
+    assert.notEqual(repairedSession?.id, initialSession?.id);
+    assert.equal(repairedSession?.alive, true, "startup must repair an empty workspace");
+    await client.rpc("session.kill", { sessionId: repairedSession!.id });
+    log("initial workspace + terminal repair ok");
+
     const workspaceGroup = await client.rpc<WorkspaceGroup>("workspaceGroup.create", {
       name: "E2E Group",
     });
-    const workspace = await client.rpc<Workspace>("workspace.create", {
+    const updatedWorkspace = await client.rpc<Workspace>("workspace.update", {
+      workspaceId: workspace!.id,
       name: "E2E",
       workspaceGroupId: workspaceGroup.id,
     });
     assert.deepEqual(
       (await client.rpc<WorkspaceGroup[]>("workspaceGroup.list"))[0]?.workspaceIds,
-      [workspace.id],
+      [updatedWorkspace.id],
     );
-    log("workspace created");
+    log("workspace updated");
 
     // 会话:显式 cwd 指到 fixture 仓库,跑 /bin/sh(避免用户 shell 配置噪音)
     const session = await client.rpc<Session>("session.create", {
-      workspaceId: workspace.id,
+      workspaceId: updatedWorkspace.id,
       cwd: fixtureRepo,
       command: "/bin/sh",
       cols: 80,
@@ -249,11 +276,11 @@ async function main(): Promise<void> {
     assert.equal(session.cwd, fixtureRepo);
 
     const workspaceWithSession = (await client.rpc<Workspace[]>("workspace.list")).find(
-      (item) => item.id === workspace.id,
+      (item) => item.id === updatedWorkspace.id,
     );
     assert.ok(workspaceWithSession?.sessionIds.includes(session.id));
     await assert.rejects(
-      client.rpc("workspace.remove", { workspaceId: workspace.id }),
+      client.rpc("workspace.remove", { workspaceId: updatedWorkspace.id }),
       /workspace has active sessions/,
     );
 
@@ -271,7 +298,7 @@ async function main(): Promise<void> {
     client.sendInput(attach1.channel, "cd /private/tmp && echo CD_DONE_XYZ\n");
     await client.waitOutput("CD_DONE_XYZ");
     const inherited = await client.rpc<Session>("session.create", {
-      workspaceId: workspace.id,
+      workspaceId: updatedWorkspace.id,
       inheritCwdFrom: session.id,
       command: "/bin/sh",
       cols: 80,
@@ -384,7 +411,7 @@ async function main(): Promise<void> {
     const survived = sessions.find((s) => s.id === session.id);
     assert.ok(survived?.alive, "session must survive runtime restart");
     const restoredWorkspace = (await client3.rpc<Workspace[]>("workspace.list")).find(
-      (item) => item.id === workspace.id,
+      (item) => item.id === updatedWorkspace.id,
     );
     assert.ok(restoredWorkspace?.sessionIds.includes(session.id));
     const attach3 = await client3.rpc<{ channel: number; snapshot: string }>("session.attach", {
@@ -473,7 +500,7 @@ async function main(): Promise<void> {
     assert.equal(after.find((s) => s.id === session.id)?.alive, false);
     log("kill + exit event ok");
 
-    await client4.rpc("workspace.remove", { workspaceId: workspace.id });
+    await client4.rpc("workspace.remove", { workspaceId: updatedWorkspace.id });
     assert.equal((await client4.rpc<Workspace[]>("workspace.list")).length, 0);
     await client4.rpc("workspaceGroup.remove", { workspaceGroupId: workspaceGroup.id });
     assert.equal((await client4.rpc<WorkspaceGroup[]>("workspaceGroup.list")).length, 0);

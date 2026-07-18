@@ -34,6 +34,7 @@ mkdir -p "$RT/node_modules"
 cp ../runtime/dist/runtime.cjs ../runtime/dist/daemon.cjs "$RT/"
 cp -RL ../runtime/node_modules/node-pty "$RT/node_modules/node-pty"
 cp -RL ../runtime/node_modules/playwright-core "$RT/node_modules/playwright-core"
+find "$RT/node_modules/node-pty/prebuilds" -type f -name "spawn-helper" -exec chmod 755 {} +
 
 # Sparkle 自动更新框架(可执行文件 rpath 指向 ../Frameworks)
 SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
@@ -79,6 +80,11 @@ else
     find "$APP/Contents/Resources/runtime" -type f \( -name "*.node" -o -name "spawn-helper" \) \
         -exec codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" {} \;
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+fi
+
+if [[ -n "$(find "$RT/node_modules/node-pty/prebuilds" -type f -name "spawn-helper" ! -perm -111 -print -quit)" ]]; then
+    echo "spawn-helper is not executable" >&2
+    exit 1
 fi
 
 ZIP="dist/Acro-v${VERSION}-macos.zip"
