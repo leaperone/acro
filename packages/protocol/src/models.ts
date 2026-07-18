@@ -8,31 +8,11 @@ export const Device = z.object({
 });
 export type Device = z.infer<typeof Device>;
 
-export const Project = z.object({
-  id: z.string(),
-  name: z.string(),
-  path: z.string(),
-});
-export type Project = z.infer<typeof Project>;
-
-export const DirectoryEntry = z.object({
-  name: z.string(),
-  path: z.string(),
-});
-export type DirectoryEntry = z.infer<typeof DirectoryEntry>;
-
-export const DirectoryListing = z.object({
-  path: z.string(),
-  parent: z.string().nullable(),
-  home: z.string(),
-  entries: z.array(DirectoryEntry),
-});
-export type DirectoryListing = z.infer<typeof DirectoryListing>;
-
+// Workspace 是纯分组与界面容器(cmux 语义):不持路径、不持项目。
+// 终端路径遵循"既定事实"继承(见 session.create 的 inheritCwdFrom)。
 export const Workspace = z.object({
   id: z.string(),
   name: z.string(),
-  projectIds: z.array(z.string()),
   sessionIds: z.array(z.string()),
   createdAt: z.string(),
   // 分屏/标签布局:客户端自定义的 opaque JSON,服务端只存储转发不解释。
@@ -54,7 +34,7 @@ export type WorkspaceGroup = z.infer<typeof WorkspaceGroup>;
 
 export const Session = z.object({
   id: z.string(),
-  projectId: z.string().nullable(),
+  // cwd 是创建时目录;daemon 查询实时目录成功后会回写此字段
   cwd: z.string(),
   command: z.string(),
   cols: z.number().int(),

@@ -13,12 +13,10 @@ import {
   ClientHandshake,
   decodeFrame,
   decodePairingOffer,
-  type DirectoryListing,
   type E2eeSession,
   encodeInFrame,
   FRAME_OUT,
   type PairingOffer,
-  type Project,
   type Session,
   type Workspace,
   type WorkspaceGroup,
@@ -226,16 +224,6 @@ async function main(): Promise<void> {
     await assert.rejects(new Client().connect(shareOffer), "revoked token must fail");
     log("share + revoke ok");
 
-    // 项目由用户显式注册；目录浏览发生在 Runtime 文件系统。
-    assert.deepEqual(await client.rpc<Project[]>("project.list"), []);
-    const listing = await client.rpc<DirectoryListing>("filesystem.listDirectories", {
-      path: projectsRoot,
-    });
-    assert.equal(listing.entries[0]?.name, "demo");
-    const project = await client.rpc<Project>("project.register", { path: fixtureRepo });
-    assert.equal(project.name, "demo");
-    assert.deepEqual(await client.rpc<Project[]>("project.list"), [project]);
-
     const workspaceGroup = await client.rpc<WorkspaceGroup>("workspaceGroup.create", {
       name: "E2E Group",
     });
@@ -243,28 +231,23 @@ async function main(): Promise<void> {
       name: "E2E",
       workspaceGroupId: workspaceGroup.id,
     });
-    assert.deepEqual(workspace.projectIds, []);
     assert.deepEqual(
       (await client.rpc<WorkspaceGroup[]>("workspaceGroup.list"))[0]?.workspaceIds,
       [workspace.id],
     );
-    const configuredWorkspace = await client.rpc<Workspace>("workspace.update", {
-      workspaceId: workspace.id,
-      projectIds: [project.id],
-    });
-    assert.deepEqual(configuredWorkspace.projectIds, [project.id]);
     log("workspace created");
 
-    // 会话:在项目目录里跑 /bin/sh(避免用户 shell 配置噪音)
+    // 会话:显式 cwd 指到 fixture 仓库,跑 /bin/sh(避免用户 shell 配置噪音)
     const session = await client.rpc<Session>("session.create", {
       workspaceId: workspace.id,
-      projectId: project.id,
+      cwd: fixtureRepo,
       command: "/bin/sh",
       cols: 80,
       rows: 24,
     });
     assert.equal(session.alive, true);
-    assert.equal(session.cwd, project.path);
+    assert.equal(session.cwd, fixtureRepo);
+
     const workspaceWithSession = (await client.rpc<Workspace[]>("workspace.list")).find(
       (item) => item.id === workspace.id,
     );
@@ -281,8 +264,22 @@ async function main(): Promise<void> {
     client.sendInput(attach1.channel, "echo MARK_${RANDOM}_ONE; pwd\n");
     client.sendInput(attach1.channel, "echo BEFORE_DISCONNECT_XYZ\n");
     await client.waitOutput("BEFORE_DISCONNECT_XYZ");
-    await client.waitOutput(project.path); // pwd 确认跑在项目目录里
+    await client.waitOutput(fixtureRepo); // pwd 确认跑在指定目录里
     log("session io ok");
+
+    // 路径继承既定事实:源会话 cd 之后,不传 cwd 的新会话应落在它的实时目录
+    client.sendInput(attach1.channel, "cd /private/tmp && echo CD_DONE_XYZ\n");
+    await client.waitOutput("CD_DONE_XYZ");
+    const inherited = await client.rpc<Session>("session.create", {
+      workspaceId: workspace.id,
+      inheritCwdFrom: session.id,
+      command: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    assert.equal(inherited.cwd, "/private/tmp", "inherited session must start in source live cwd");
+    await client.rpc("session.kill", { sessionId: inherited.id });
+    log("cwd inheritance ok");
 
     // 断开重连:会话必须还在,快照必须包含断开前的输出,且不重发旧帧
     client.close();

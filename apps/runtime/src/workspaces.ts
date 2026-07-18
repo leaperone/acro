@@ -56,7 +56,6 @@ export class WorkspaceRegistry {
     const workspace: Workspace = {
       id: crypto.randomUUID(),
       name: name?.trim() || this.nextWorkspaceName(),
-      projectIds: [],
       sessionIds: [],
       createdAt: new Date().toISOString(),
       layout: null,
@@ -79,13 +78,11 @@ export class WorkspaceRegistry {
     workspaceId: string,
     patch: {
       name?: string | undefined;
-      projectIds?: string[] | undefined;
       workspaceGroupId?: string | null | undefined;
     },
   ): Workspace {
     const workspace = this.getMutable(workspaceId);
     if (patch.name !== undefined) workspace.name = patch.name.trim();
-    if (patch.projectIds !== undefined) workspace.projectIds = [...new Set(patch.projectIds)];
     if (patch.workspaceGroupId !== undefined) {
       const target = patch.workspaceGroupId
         ? this.getGroupMutable(patch.workspaceGroupId)
@@ -226,7 +223,6 @@ export class WorkspaceRegistry {
 function cloneWorkspace(workspace: Workspace): Workspace {
   return {
     ...workspace,
-    projectIds: [...workspace.projectIds],
     sessionIds: [...workspace.sessionIds],
   };
 }

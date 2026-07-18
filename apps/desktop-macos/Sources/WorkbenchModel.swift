@@ -51,7 +51,6 @@ final class WorkbenchModel: ObservableObject {
     // ---- 选择与布局 ----
     @Published var selectedServerId: String? { didSet { persistLayout() } }
     @Published var selectedWorkspaceId: String? { didSet { persistLayout() } }
-    @Published var selectedProjectId: String?
     @Published var selectedSessionId: String?
     @Published var workspaceLayouts: [String: WorkspaceTerminalLayout] = [:] {
         didSet {
@@ -120,19 +119,9 @@ final class WorkbenchModel: ObservableObject {
     private var pendingRuntime: RuntimeConnection {
         hub.connection(for: pendingServerId) ?? runtime
     }
-    @Published var projectPickerWorkspace: Workspace?
-    @Published var terminalProjectPickerWorkspace: Workspace?
     @Published var errorMessage: String?
 
     // ---- 项目目录选择器 ----
-    @Published var projectQuery = ""
-    @Published var projectPathInput = "~"
-    @Published var projectPathPreview = ""
-    @Published var projectDirectoryPath = ""
-    @Published var projectDirectoryParent: String?
-    @Published var projectDirectoryHome = ""
-    @Published var projectDirectoryEntries: [DirectoryEntry] = []
-    @Published var projectPickerLoading = false
 
     private var layoutRestored = false
     private var workspaceGroupsInitialized = false
@@ -224,7 +213,6 @@ final class WorkbenchModel: ObservableObject {
         guard selectedServerId != serverId else { return }
         selectedServerId = serverId
         selectedWorkspaceId = nil
-        selectedProjectId = nil
         selectedSessionId = nil
         reconcileLayoutState()
     }
@@ -248,20 +236,12 @@ final class WorkbenchModel: ObservableObject {
         runtime.workspaces.first { $0.id == selectedWorkspaceId }
     }
 
-    var selectedProject: Project? {
-        guard let selectedProjectId,
-              let selectedWorkspace,
-              selectedWorkspace.projectIds.contains(selectedProjectId)
-        else { return nil }
-        return runtime.projects.first { $0.id == selectedProjectId }
-    }
-
     var selectedSession: Session? {
         activeSessions.first { $0.id == selectedSessionId }
     }
 
     var windowTitle: String {
-        selectedProject?.name ?? selectedWorkspace?.name ?? "Acro"
+        selectedWorkspace?.name ?? "Acro"
     }
 
     var ungroupedWorkspaces: [Workspace] {
@@ -295,11 +275,6 @@ final class WorkbenchModel: ObservableObject {
         (connection ?? runtime).workspaceGroups.first { $0.workspaceIds.contains(workspaceId) }
     }
 
-    func projects(in workspace: Workspace, on connection: RuntimeConnection? = nil) -> [Project] {
-        let source = connection ?? runtime
-        return workspace.projectIds.compactMap { id in source.projects.first { $0.id == id } }
-    }
-
     func sessions(in workspace: Workspace, on connection: RuntimeConnection? = nil) -> [Session] {
         let sessionIds = Set(workspace.sessionIds)
         return (connection ?? runtime).sessions
@@ -312,10 +287,6 @@ final class WorkbenchModel: ObservableObject {
         return activeSessions.count { sessionIds.contains($0.id) }
     }
 
-    func project(for session: Session, on connection: RuntimeConnection? = nil) -> Project? {
-        (connection ?? runtime).projects.first { $0.id == session.projectId }
-    }
-
     func workspace(containing sessionId: String) -> Workspace? {
         runtime.workspaces.first { $0.sessionIds.contains(sessionId) }
     }
@@ -326,13 +297,19 @@ final class WorkbenchModel: ObservableObject {
 
     func sessionDisplayName(_ session: Session, on connection: RuntimeConnection? = nil) -> String {
         let source = connection ?? runtime
-        let projectName = project(for: session, on: source)?.name ?? "终端"
+        let base = Self.sessionTitle(session)
         guard let workspace = source.workspaces.first(where: { $0.sessionIds.contains(session.id) })
-        else { return projectName }
-        let related = sessions(in: workspace, on: source).filter { $0.projectId == session.projectId }
+        else { return base }
+        let related = sessions(in: workspace, on: source).filter { Self.sessionTitle($0) == base }
         guard related.count > 1, let index = related.firstIndex(where: { $0.id == session.id })
-        else { return projectName }
-        return "\(projectName) · \(index + 1)"
+        else { return base }
+        return "\(base) · \(index + 1)"
+    }
+
+    // 标题 = 工作目录尾段(既定事实的最短表达);根目录等退化为"终端"
+    static func sessionTitle(_ session: Session) -> String {
+        let last = (session.cwd as NSString).lastPathComponent
+        return last.isEmpty || last == "/" ? "终端" : last
     }
 
     // ---- 布局变更入口(集中同步选中态与持久化) ----
@@ -351,12 +328,10 @@ final class WorkbenchModel: ObservableObject {
         else {
             if currentLayout?.root == nil {
                 selectedSessionId = nil
-                selectedProjectId = nil
             }
             return
         }
         if selectedSessionId != session.id { selectedSessionId = session.id }
-        if selectedProjectId != session.projectId { selectedProjectId = session.projectId }
     }
 
     // ---- 焦点与导航 ----
@@ -534,36 +509,37 @@ final class WorkbenchModel: ObservableObject {
     // ---- 终端动作 ----
 
     func requestNewTerminal(in workspace: Workspace, paneId: String? = nil) {
-        let workspaceProjects = projects(in: workspace)
         selectedWorkspaceId = workspace.id
         expandGroupContaining(workspace.id)
         expandedWorkspaceIds.insert(workspace.id)
         if let paneId { mutateCurrentLayout { $0.focusedPaneId = paneId } }
-        switch workspaceProjects.count {
-        case 0:
-            presentProjectPicker(for: workspace)
-        case 1:
-            Task { _ = await openTerminal(project: workspaceProjects[0], workspace: workspace) }
-        default:
-            // 有当前项目时新标签直接跟随当前项目(cmux newTab 语义),否则再弹选择器
-            if let selectedProject {
-                Task { _ = await openTerminal(project: selectedProject, workspace: workspace) }
-            } else {
-                terminalProjectPickerWorkspace = workspace
-                projectQuery = ""
-            }
+        Task { _ = await openTerminal(in: workspace) }
+    }
+
+    // 路径继承源:聚焦终端优先;fallback 工作区第一个存活终端;都没有交给服务端(家目录)
+    private func inheritCwdSource(in workspace: Workspace) -> String? {
+        if selectedWorkspaceId == workspace.id,
+           let focused = currentLayout?.focusedSessionId,
+           session(focused) != nil {
+            return focused
         }
+        return sessions(in: workspace).first?.id
     }
 
     @discardableResult
-    func openTerminal(project: Project, workspace: Workspace, activate: Bool = true) async -> Session? {
+    func openTerminal(
+        in workspace: Workspace, activate: Bool = true, inheritFrom explicit: String? = nil
+    ) async -> Session? {
+        var params: [String: Any] = [
+            "workspaceId": workspace.id,
+            "cols": 140,
+            "rows": 40,
+        ]
+        if let inheritFrom = explicit ?? inheritCwdSource(in: workspace) {
+            params["inheritCwdFrom"] = inheritFrom
+        }
         do {
-            let session = try await runtime.rpc("session.create", [
-                "workspaceId": workspace.id,
-                "projectId": project.id,
-                "cols": 140,
-                "rows": 40,
-            ], as: Session.self)
+            let session = try await runtime.rpc("session.create", params, as: Session.self)
             await runtime.refresh()
             if activate { showSession(session) }
             return session
@@ -575,15 +551,11 @@ final class WorkbenchModel: ObservableObject {
 
     func splitTerminal(_ direction: TerminalSplitDirection) {
         guard let sourcePaneId = currentLayout?.focusedPane?.id,
-              let selectedWorkspace,
-              let selectedProject
+              let selectedWorkspace
         else { return }
         Task {
-            guard let session = await openTerminal(
-                project: selectedProject,
-                workspace: selectedWorkspace,
-                activate: false
-            ) else { return }
+            guard let session = await openTerminal(in: selectedWorkspace, activate: false)
+            else { return }
             guard selectedWorkspaceId == selectedWorkspace.id else { return }
             mutateCurrentLayout {
                 $0.split(fromPane: sourcePaneId, direction: direction, newSessionId: session.id)
@@ -681,7 +653,6 @@ final class WorkbenchModel: ObservableObject {
             if let workspaceGroupId { expandedWorkspaceGroupIds.insert(workspaceGroupId) }
             expandedWorkspaceIds.insert(workspace.id)
             selectedWorkspaceId = workspace.id
-            selectedProjectId = nil
             selectedSessionId = nil
             await runtime.refresh()
         } catch {
@@ -711,7 +682,6 @@ final class WorkbenchModel: ObservableObject {
             expandedWorkspaceIds.remove(workspace.id)
             if selectedWorkspaceId == workspace.id {
                 selectedWorkspaceId = nil
-                selectedProjectId = nil
                 selectedSessionId = nil
             }
             pendingWorkspaceDeletion = nil
@@ -760,110 +730,6 @@ final class WorkbenchModel: ObservableObject {
             await runtime.refresh()
         } catch {
             errorMessage = error.localizedDescription
-        }
-    }
-
-    // ---- 项目动作 ----
-
-    func presentProjectPicker(for workspace: Workspace) {
-        resetProjectPicker()
-        projectPickerWorkspace = workspace
-    }
-
-    func resetProjectPicker() {
-        projectPathInput = "~"
-        projectPathPreview = ""
-        projectDirectoryPath = ""
-        projectDirectoryParent = nil
-        projectDirectoryHome = ""
-        projectDirectoryEntries = []
-        projectPickerLoading = false
-    }
-
-    func loadProjectDirectory(_ requestedPath: String) async {
-        guard projectPickerWorkspace != nil else { return }
-        projectPickerLoading = true
-        defer { projectPickerLoading = false }
-        do {
-            let listing = try await runtime.rpc(
-                "filesystem.listDirectories",
-                ["path": requestedPath],
-                as: DirectoryListing.self
-            )
-            projectPathInput = listing.path
-            projectPathPreview = listing.path
-            projectDirectoryPath = listing.path
-            projectDirectoryParent = listing.parent
-            projectDirectoryHome = listing.home
-            projectDirectoryEntries = listing.entries
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func registerProjectAndOpenTerminal() async {
-        guard let workspace = projectPickerWorkspace, !projectPathPreview.isEmpty else { return }
-        projectPickerLoading = true
-        do {
-            let project = try await runtime.rpc(
-                "project.register", ["path": projectPathPreview], as: Project.self
-            )
-            guard await addProject(project, to: workspace) else {
-                projectPickerLoading = false
-                return
-            }
-            projectPickerWorkspace = nil
-            resetProjectPicker()
-            _ = await openTerminal(project: project, workspace: workspace)
-        } catch {
-            projectPickerLoading = false
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    @discardableResult
-    func addProject(_ project: Project, to workspace: Workspace) async -> Bool {
-        do {
-            _ = try await runtime.rpc("workspace.update", [
-                "workspaceId": workspace.id,
-                "projectIds": workspace.projectIds + [project.id],
-            ])
-            selectedWorkspaceId = workspace.id
-            selectedProjectId = project.id
-            selectedSessionId = nil
-            expandedWorkspaceIds.insert(workspace.id)
-            await runtime.refresh()
-            return true
-        } catch {
-            errorMessage = error.localizedDescription
-            return false
-        }
-    }
-
-    func removeProject(_ project: Project, from workspace: Workspace) async {
-        do {
-            _ = try await runtime.rpc("workspace.update", [
-                "workspaceId": workspace.id,
-                "projectIds": workspace.projectIds.filter { $0 != project.id },
-            ])
-            if selectedWorkspaceId == workspace.id, selectedProjectId == project.id {
-                selectedProjectId = nil
-                selectedSessionId = nil
-            }
-            await runtime.refresh()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    var filteredTerminalProjects: [Project] {
-        guard let workspace = terminalProjectPickerWorkspace else { return [] }
-        let values = projects(in: workspace)
-        let query = projectQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return values }
-        return values.filter {
-            $0.name.localizedCaseInsensitiveContains(query)
-                || $0.path.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -977,7 +843,6 @@ final class WorkbenchModel: ObservableObject {
             selectedWorkspaceId = runtime.workspaces.first?.id
         }
         guard selectedWorkspaceId != nil else {
-            selectedProjectId = nil
             selectedSessionId = nil
             return
         }

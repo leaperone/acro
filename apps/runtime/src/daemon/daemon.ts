@@ -6,6 +6,7 @@
 // - 输出帧带单调 seq,快照与 seq 对齐,客户端按 seq 过滤实现无缝续传
 // - checkpoint 落盘,daemon 重启后死会话仍可列出
 
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -66,6 +67,7 @@ class DaemonSession {
   readonly handle = nextHandle++;
   readonly meta: Session;
   private ptyProc: pty.IPty;
+  private hasCommand = false;
   private term: Terminal;
   private serializer: SerializeAddon;
   private seq = 0;
@@ -84,7 +86,6 @@ class DaemonSession {
 
   constructor(
     opts: {
-      projectId?: string | undefined;
       cwd?: string | undefined;
       command?: string | undefined;
       cols: number;
@@ -95,12 +96,12 @@ class DaemonSession {
   ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
+    this.hasCommand = opts.command !== undefined;
     const shell = process.env.SHELL ?? "/bin/zsh";
     const cwd = opts.cwd ?? os.homedir();
     const args = opts.command ? ["-lc", opts.command] : ["-l"];
     this.meta = {
       id: crypto.randomUUID(),
-      projectId: opts.projectId ?? null,
       cwd,
       command: opts.command ?? shell,
       cols: opts.cols,
@@ -213,6 +214,38 @@ class DaemonSession {
     this.pumping = false;
   }
 
+  // 命令型会话(zsh -lc cmd)的 cd 发生在 zsh 的子进程里,向下解析一层;
+  // 交互型会话 pty 进程就是用户 shell,直接用它
+  private resolveCwdPid(): Promise<number> {
+    if (!this.hasCommand) return Promise.resolve(this.ptyProc.pid);
+    return new Promise((resolve) => {
+      execFile("pgrep", ["-P", String(this.ptyProc.pid)], { timeout: 1000 }, (err, out) => {
+        const first = err ? NaN : Number(out.trim().split("\n")[0]);
+        resolve(Number.isFinite(first) && first > 0 ? first : this.ptyProc.pid);
+      });
+    });
+  }
+
+  // 实时工作目录:查 PTY shell 进程的 cwd(macOS 没有 pwdx,走 lsof)。
+  // 只在"新终端继承路径"时按需调用,不轮询。
+  async currentCwd(): Promise<string | null> {
+    if (!this.meta.alive) return null;
+    const lsof = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
+    const pid = await this.resolveCwdPid();
+    return new Promise((resolve) => {
+      execFile(lsof, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { timeout: 2000 },
+        (err, stdout) => {
+          if (err) return resolve(null);
+          const line = stdout.split("\n").find((l) => l.startsWith("n"));
+          const cwd = line && line.length > 1 ? line.slice(1) : null;
+          // spawn-helper chdir 前的瞬间窗口里,子进程 cwd 还是 daemon 自己的;
+          // 这种读数不可信,回退用会话档案里的目录
+          resolve(cwd === process.cwd() ? null : cwd);
+        },
+      );
+    });
+  }
+
   write(data: Buffer): void {
     if (this.meta.alive) this.ptyProc.write(data.toString("utf8"));
   }
@@ -299,7 +332,6 @@ type Handler = (params: any) => Promise<unknown> | unknown;
 const handlers: Record<string, Handler> = {
   "daemon.info": () => ({ boot, pid: process.pid }),
   "session.create": (params: {
-    projectId?: string;
     cwd?: string;
     command?: string;
     cols: number;
@@ -315,6 +347,17 @@ const handlers: Record<string, Handler> = {
     ...[...live.values()].map((s) => s.meta),
     ...dead.values(),
   ],
+  "session.cwd": async (params: { sessionId: string }) => {
+    const session = live.get(params.sessionId);
+    if (!session) throw new Error("session not alive");
+    const cwd = await session.currentCwd();
+    if (cwd && cwd !== session.meta.cwd) {
+      // 会话档案跟随事实:session.list 逐步反映真实目录
+      session.meta.cwd = cwd;
+      session.checkpoint();
+    }
+    return { cwd: cwd ?? session.meta.cwd };
+  },
   "session.snapshot": async (params: { sessionId: string }) => {
     const session = live.get(params.sessionId);
     if (!session) throw new Error("session not alive");

@@ -123,7 +123,6 @@ final class RuntimeConnection: ObservableObject {
     }
 
     @Published private(set) var state: ConnectionState = .disconnected
-    @Published private(set) var projects: [Project] = []
     @Published private(set) var workspaceGroups: [WorkspaceGroup] = []
     @Published private(set) var workspaces: [Workspace] = []
     @Published private(set) var sessions: [Session] = []
@@ -405,12 +404,10 @@ final class RuntimeConnection: ObservableObject {
         refreshGeneration &+= 1
         let generation = refreshGeneration
         do {
-            let nextProjects = try await rpc("project.list", as: [Project].self)
             let nextWorkspaceGroups = try await rpc("workspaceGroup.list", as: [WorkspaceGroup].self)
             let nextWorkspaces = try await rpc("workspace.list", as: [Workspace].self)
             let nextSessions = try await rpc("session.list", as: [Session].self)
             guard generation == refreshGeneration else { return false }
-            projects = nextProjects
             workspaceGroups = nextWorkspaceGroups
             workspaces = nextWorkspaces
             sessions = nextSessions

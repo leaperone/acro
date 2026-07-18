@@ -13,7 +13,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import * as SecureStore from "expo-secure-store";
 import { WebView } from "react-native-webview";
-import type { Project, Session } from "@acro/protocol";
+import type { Session } from "@acro/protocol";
 import { encodeInFrame, FRAME_BROWSER, FRAME_OUT, FRAME_SIM } from "@acro/protocol";
 import { MobileClient, pairWithOffer, type ServerConfig } from "./src/client.ts";
 import { terminalHtml } from "./src/terminal-html.ts";
@@ -187,13 +187,10 @@ function HomeScreen({
   client: MobileClient;
   onOpen: (route: Route) => void;
 }) {
-  const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sims, setSims] = useState<SimInfo[]>([]);
-  const [expanded, setExpanded] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    void client.rpc("project.list", {}).then(setProjects).catch(() => {});
     void client.rpc("session.list", {}).then(setSessions).catch(() => {});
     void client.rpc("simulator.list", {}).then(setSims).catch(() => {});
   }, [client]);
@@ -206,14 +203,9 @@ function HomeScreen({
     };
   }, [client, refresh]);
 
-  const openProject = (p: Project) => {
-    setExpanded(expanded === p.id ? null : p.id);
-  };
-
-  const createSession = (projectId?: string, command?: string) => {
+  const createSession = (command?: string) => {
     void client
       .rpc("session.create", {
-        ...(projectId ? { projectId } : {}),
         ...(command ? { command } : {}),
         cols: 80,
         rows: 24,
@@ -226,40 +218,30 @@ function HomeScreen({
     <View style={styles.flex}>
       <Text style={styles.header}>Acro</Text>
       <FlatList
-        data={projects}
-        keyExtractor={(p) => p.id}
-        ListHeaderComponent={<Text style={styles.section}>项目</Text>}
-        renderItem={({ item: p }) => (
+        data={sessions}
+        keyExtractor={(s) => s.id}
+        ListHeaderComponent={
           <View>
-            <Pressable style={styles.row} onPress={() => openProject(p)}>
-              <Text style={styles.rowText}>{p.name}</Text>
-              <Text style={styles.dim}>{expanded === p.id ? "▾" : "▸"}</Text>
+            <Pressable style={styles.row} onPress={() => createSession()}>
+              <Text style={styles.rowText}>新建终端</Text>
+              <Text style={styles.dim}>打开</Text>
             </Pressable>
-            {expanded === p.id && (
-              <View style={styles.sub}>
-                <Pressable style={styles.row} onPress={() => createSession(p.id)}>
-                  <Text style={styles.rowText}>终端</Text>
-                  <Text style={styles.dim}>打开</Text>
-                </Pressable>
-              </View>
-            )}
+            <Text style={styles.section}>会话</Text>
           </View>
+        }
+        renderItem={({ item: s }) => (
+          <Pressable
+            style={styles.row}
+            onPress={() => s.alive && onOpen({ name: "terminal", session: s })}
+          >
+            <Text style={[styles.rowText, !s.alive && styles.dead]} numberOfLines={1}>
+              {s.command}
+            </Text>
+            <Text style={styles.dim}>{s.alive ? "attach" : `exit ${s.exitCode ?? "?"}`}</Text>
+          </Pressable>
         )}
         ListFooterComponent={
           <View>
-            <Text style={styles.section}>会话</Text>
-            {sessions.map((s) => (
-              <Pressable
-                key={s.id}
-                style={styles.row}
-                onPress={() => s.alive && onOpen({ name: "terminal", session: s })}
-              >
-                <Text style={[styles.rowText, !s.alive && styles.dead]} numberOfLines={1}>
-                  {s.command}
-                </Text>
-                <Text style={styles.dim}>{s.alive ? "attach" : `exit ${s.exitCode ?? "?"}`}</Text>
-              </Pressable>
-            ))}
             <Text style={styles.section}>模拟器</Text>
             {sims.map((d) => (
               <Pressable

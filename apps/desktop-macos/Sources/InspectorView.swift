@@ -69,31 +69,16 @@ struct InspectorView: View {
                         }
                     }
 
-                    if let selectedProject = model.selectedProject {
-                        section("项目") {
-                            row("名称", selectedProject.name)
-                            row("路径", selectedProject.path, monospaced: true)
+                    if let selectedWorkspace = model.selectedWorkspace {
+                        section("工作区") {
+                            row("名称", selectedWorkspace.name)
+                            row("终端", "\(model.activeSessionCount(in: selectedWorkspace))")
                             Button {
-                                if let selectedWorkspace = model.selectedWorkspace {
-                                    Task {
-                                        _ = await model.openTerminal(
-                                            project: selectedProject,
-                                            workspace: selectedWorkspace
-                                        )
-                                    }
-                                }
+                                model.requestNewTerminal(in: selectedWorkspace)
                             } label: {
                                 Label("新建终端", systemImage: "plus")
                             }
                             .controlSize(.small)
-                        }
-                    }
-
-                    if let selectedWorkspace = model.selectedWorkspace {
-                        section("工作区") {
-                            row("名称", selectedWorkspace.name)
-                            row("项目", "\(selectedWorkspace.projectIds.count)")
-                            row("终端", "\(model.activeSessionCount(in: selectedWorkspace))")
                         }
                     }
 
