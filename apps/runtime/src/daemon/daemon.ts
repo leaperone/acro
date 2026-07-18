@@ -77,6 +77,7 @@ class DaemonSession {
   private outBytes = 0;
   private outFlushScheduled = false;
   private lastFlushAt = 0;
+  private lastOutputAt = 0;
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
   private onExit: (session: DaemonSession) => void;
@@ -129,6 +130,7 @@ class DaemonSession {
     this.ptyProc.onData((data) => {
       this.seq += 1;
       this.dirty = true;
+      this.lastOutputAt = Date.now();
       const buf = Buffer.from(data, "utf8");
       this.outChunks.push(buf);
       this.outBytes += buf.byteLength;
@@ -238,8 +240,10 @@ class DaemonSession {
     this.dirty = false;
   }
 
+  // checkpoint 的 scrollback 序列化是同步重活;只在输出静默后做,
+  // 洪峰期间不制造周期性输入卡顿(崩溃窗口略拉长,可接受)
   checkpointIfDirty(): void {
-    if (this.dirty) this.checkpoint();
+    if (this.dirty && Date.now() - this.lastOutputAt > 2000) this.checkpoint();
   }
 }
 
