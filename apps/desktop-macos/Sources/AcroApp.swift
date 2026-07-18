@@ -137,8 +137,8 @@ struct AcroApp: App {
             WorkbenchView(model: model, runtime: runtime)
                 .onAppear {
                     _ = Ghostty.shared // 初始化 libghostty
-                    if let config = ClientConfig.load() {
-                        runtime.connect(config: config)
+                    if let server = ClientConfig.load()?.activeServer {
+                        runtime.connect(server: server)
                     }
                 }
         }

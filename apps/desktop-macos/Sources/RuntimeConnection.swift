@@ -1,7 +1,8 @@
-// Runtime WS 连接:JSON RPC + 二进制帧 + 自动重连。
+// Runtime WS 连接:E2EE 信道内 JSON RPC + 二进制帧 + 自动重连。
 // 模型类型来自 Generated/ProtocolModels.swift(codegen,真源是 packages/protocol 的 zod)。
 // 重连策略取自 orca(MIT, Copyright (c) stablyai)web-runtime-client:
 // 指数退避 + 探针式心跳——只有"已发探针未获应答"才判死,避免误杀慢网络。
+// 多入口:同一 token 依次尝试 endpoints(在家 LAN 直连,出门 FRP 公网),失败轮换下一个。
 
 import Foundation
 
@@ -10,17 +11,48 @@ struct RpcError: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
-struct ClientConfig: Codable {
-    let host: String
-    let token: String
-    let deviceId: String
+// 一个远程 Runtime = 一个 token + 多个入口。与 acro CLI 共用 ~/.acro/client.json。
+struct ServerEntry: Codable, Identifiable, Equatable {
+    var name: String
+    var deviceId: String
+    var token: String
+    var pub: String
+    var endpoints: [String]
+    var id: String { deviceId.isEmpty ? name : deviceId }
+}
 
-    // 与 acro CLI 共用 ~/.acro/client.json,CLI 配对后桌面端直接可用
-    static func load() -> ClientConfig? {
-        let path = ProcessInfo.processInfo.environment["ACRO_CLIENT_CONFIG"]
+struct ClientConfig: Codable {
+    var v: Int
+    var servers: [ServerEntry]
+    var active: String?
+
+    static var path: String {
+        ProcessInfo.processInfo.environment["ACRO_CLIENT_CONFIG"]
             ?? "\(NSHomeDirectory())/.acro/client.json"
-        guard let data = FileManager.default.contents(atPath: path) else { return nil }
-        return try? JSONDecoder().decode(ClientConfig.self, from: data)
+    }
+
+    static func load() -> ClientConfig? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let config = try? JSONDecoder().decode(ClientConfig.self, from: data),
+              config.v == 2
+        else { return nil }
+        return config
+    }
+
+    func save() {
+        let dir = (Self.path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(self) {
+            try? data.write(to: URL(fileURLWithPath: Self.path), options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: Self.path)
+        }
+    }
+
+    var activeServer: ServerEntry? {
+        servers.first { $0.deviceId == active } ?? servers.first
     }
 }
 
@@ -40,11 +72,16 @@ final class RuntimeConnection: ObservableObject {
     @Published private(set) var snapshotLoaded = false
     @Published private(set) var snapshotRevision = 0
     @Published private(set) var reconnectAttempt = 0
+    // 当前实际连上的入口(设置页展示用)
+    @Published private(set) var connectedEndpoint: String?
 
     var connected: Bool { state == .connected }
 
-    private var config: ClientConfig?
+    private var server: ServerEntry?
     private var task: URLSessionWebSocketTask?
+    private var session: E2eeSession?
+    private var handshake: E2eeClientHandshake?
+    private var endpointIndex = 0
     private var generation = 0
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Any, Error>] = [:]
@@ -57,36 +94,51 @@ final class RuntimeConnection: ObservableObject {
     // orca RECONNECT_DELAYS_MS 的等价物,尾项为稳态重试间隔
     private static let reconnectDelays: [TimeInterval] = [0.5, 1, 2, 3, 5, 8]
 
-    func connect(config: ClientConfig) {
-        self.config = config
+    func connect(server: ServerEntry) {
+        self.server = server
+        endpointIndex = 0
         reconnectAttempt = 0
         openSocket()
     }
 
+    func disconnect() {
+        server = nil
+        generation += 1
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        session = nil
+        state = .disconnected
+        connectedEndpoint = nil
+        probeTimer?.invalidate()
+        probeTimer = nil
+        failPending(RpcError(message: "disconnected"))
+    }
+
     private func openSocket() {
-        guard let config,
-              let url = URL(string: "ws://\(config.host)/ws?token=\(config.token)")
+        guard let server, !server.endpoints.isEmpty else { return }
+        let endpoint = server.endpoints[endpointIndex % server.endpoints.count]
+        guard let url = URL(string: "ws://\(endpoint)/ws"),
+              let handshake = try? E2eeClientHandshake(expectedServerPubB64: server.pub)
         else { return }
         generation += 1
         let generation = generation
         failPending(RpcError(message: "reconnecting"))
         task?.cancel(with: .goingAway, reason: nil)
+        session = nil
+        self.handshake = handshake
 
         state = .connecting
         let task = URLSession.shared.webSocketTask(with: url)
         self.task = task
         task.resume()
+        // 明文 hello 开启握手;之后的一切都在加密信道内
+        task.send(.string(handshake.helloJSON())) { [weak self] error in
+            if error != nil {
+                Task { @MainActor in self?.handleDisconnect(generation: generation) }
+            }
+        }
         receiveLoop(generation: generation)
         startProbe(generation: generation)
-        Task {
-            let ok = await refresh()
-            guard self.generation == generation else { return }
-            if ok {
-                state = .connected
-                reconnectAttempt = 0
-            }
-            // refresh 失败时 receiveLoop 会随 socket 错误触发重连,这里不重复调度
-        }
     }
 
     // ---- 断线检测与重连 ----
@@ -121,14 +173,18 @@ final class RuntimeConnection: ObservableObject {
     private func handleDisconnect(generation: Int) {
         guard self.generation == generation else { return }
         state = .disconnected
+        connectedEndpoint = nil
+        session = nil
         probeTimer?.invalidate()
         probeTimer = nil
         failPending(RpcError(message: "disconnected"))
+        // 换下一个入口再试(LAN 不通就轮到公网入口)
+        endpointIndex += 1
         scheduleReconnect()
     }
 
     private func scheduleReconnect() {
-        guard config != nil, !reconnectScheduled else { return }
+        guard server != nil, !reconnectScheduled else { return }
         reconnectScheduled = true
         let delay = Self.reconnectDelays[min(reconnectAttempt, Self.reconnectDelays.count - 1)]
         reconnectAttempt += 1
@@ -159,51 +215,111 @@ final class RuntimeConnection: ObservableObject {
                 case .failure:
                     self.handleDisconnect(generation: generation)
                 case .success(let message):
-                    self.handle(message)
+                    self.handle(message, generation: generation)
                     self.receiveLoop(generation: generation)
                 }
             }
         }
     }
 
-    private func handle(_ message: URLSessionWebSocketTask.Message) {
+    private func handle(_ message: URLSessionWebSocketTask.Message, generation: Int) {
         switch message {
         case .string(let text):
-            guard let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
-            else { return }
-            if obj["t"] as? String == "res", let id = obj["id"] as? Int {
-                guard let cont = pending.removeValue(forKey: id) else { return }
-                if obj["ok"] as? Bool == true {
-                    cont.resume(returning: obj["result"] ?? [:])
-                } else {
-                    let err = (obj["error"] as? [String: Any])?["message"] as? String ?? "rpc error"
-                    cont.resume(throwing: RpcError(message: err))
+            // 唯一合法的明文消息:握手 ready
+            guard session == nil, let handshake, let server,
+                  let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+                  obj["t"] as? String == "ready", let pub = obj["pub"] as? String,
+                  let eph = obj["eph"] as? String,
+                  let newSession = try? handshake.onReady(pubB64: pub, ephB64: eph),
+                  let auth = try? newSession.sealText(#"{"t":"auth","token":"\#(server.token)"}"#)
+            else {
+                task?.cancel(with: .policyViolation, reason: nil)
+                handleDisconnect(generation: generation)
+                return
+            }
+            session = newSession
+            task?.send(.data(auth)) { [weak self] error in
+                if error != nil {
+                    Task { @MainActor in self?.handleDisconnect(generation: generation) }
                 }
-            } else if obj["t"] as? String == "evt" {
-                Task { await refresh() }
             }
         case .data(let data):
-            // FRAME_OUT = 0x01: u8 type | u32 channel | u32 seq | payload
-            guard data.count >= 9, data[data.startIndex] == 0x01 else { return }
-            let channel = data.subdata(in: 1..<5).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
-            let seq = data.subdata(in: 5..<9).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
-            onTerminalFrame?(channel, seq, data.subdata(in: 9..<data.count))
+            guard let session, let opened = try? session.open(data) else {
+                // 解密失败说明信道状态不同步,断开走重连
+                task?.cancel(with: .policyViolation, reason: nil)
+                handleDisconnect(generation: generation)
+                return
+            }
+            switch opened {
+            case .text(let text):
+                handleControl(text)
+            case .binary(let frame):
+                // FRAME_OUT = 0x01: u8 type | u32 channel | u32 seq | payload
+                guard frame.count >= 9, frame[frame.startIndex] == 0x01 else { return }
+                let channel = frame.subdata(in: 1..<5).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+                let seq = frame.subdata(in: 5..<9).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+                onTerminalFrame?(channel, seq, frame.subdata(in: 9..<frame.count))
+            }
         @unknown default:
             break
         }
     }
 
+    private func handleControl(_ text: String) {
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        else { return }
+        switch obj["t"] as? String {
+        case "authed":
+            // 认证完成:补写 deviceId(首次配对),拉全量快照
+            if var server, let deviceId = obj["deviceId"] as? String, server.deviceId != deviceId {
+                if var config = ClientConfig.load(),
+                   let idx = config.servers.firstIndex(where: { $0.name == server.name }) {
+                    config.servers[idx].deviceId = deviceId
+                    config.active = deviceId
+                    config.save()
+                }
+                server.deviceId = deviceId
+                self.server = server
+            }
+            connectedEndpoint = server.map { $0.endpoints[endpointIndex % $0.endpoints.count] }
+            let generation = generation
+            Task {
+                let ok = await refresh()
+                guard self.generation == generation else { return }
+                if ok {
+                    state = .connected
+                    reconnectAttempt = 0
+                    endpointIndex = 0
+                }
+            }
+        case "res":
+            guard let id = obj["id"] as? Int,
+                  let cont = pending.removeValue(forKey: id) else { return }
+            if obj["ok"] as? Bool == true {
+                cont.resume(returning: obj["result"] ?? [:])
+            } else {
+                let err = (obj["error"] as? [String: Any])?["message"] as? String ?? "rpc error"
+                cont.resume(throwing: RpcError(message: err))
+            }
+        case "evt":
+            Task { await refresh() }
+        default:
+            break
+        }
+    }
+
     func rpc(_ method: String, _ params: [String: Any] = [:]) async throws -> Any {
-        guard let task else { throw RpcError(message: "not connected") }
+        guard let task, let session else { throw RpcError(message: "not connected") }
         let id = nextId
         nextId += 1
         let payload: [String: Any] = ["t": "req", "id": id, "method": method, "params": params]
         let data = try JSONSerialization.data(withJSONObject: payload)
+        let sealed = try session.sealText(String(decoding: data, as: UTF8.self))
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
             Task {
                 do {
-                    try await task.send(.string(String(decoding: data, as: UTF8.self)))
+                    try await task.send(.data(sealed))
                 } catch {
                     pending.removeValue(forKey: id)?.resume(throwing: error)
                 }
@@ -216,6 +332,12 @@ final class RuntimeConnection: ObservableObject {
         let result = try await rpc(method, params)
         let data = try JSONSerialization.data(withJSONObject: result)
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    // 终端输入等二进制帧走加密信道
+    func sendBinary(_ frame: Data) {
+        guard let task, let session, let sealed = try? session.sealBinary(frame) else { return }
+        task.send(.data(sealed)) { _ in }
     }
 
     @discardableResult

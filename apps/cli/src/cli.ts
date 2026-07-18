@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 // acro CLI:MacBook 上的最小客户端,也是未来 libghostty surface command 的桥。
 // 用法:
-//   acro pair <host:port> [--code XXXX] [--name mac]
+//   acro pair [配对码] [--name <label>]   无参数时读本机 bootstrap 配对码
+//   acro endpoints [add|rm <host:port>]
 //   acro projects
 //   acro sessions
 //   acro run [--project <name|id>] [--] [command...]
 //   acro attach <sessionId>
 
-import readline from "node:readline";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 // 只引二进制帧模块:attach 冷启动不加载 zod(节省 ~150ms 空白期)
 import { encodeInFrame, FRAME_OUT } from "@acro/protocol/frames";
 import type { Project, Session } from "@acro/protocol";
-import { AcroClient, loadClientConfig, saveClientConfig } from "./client.ts";
+import {
+  AcroClient,
+  activeServer,
+  type ClientConfig,
+  loadClientConfig,
+  saveClientConfig,
+} from "./client.ts";
 
 const DETACH_KEY = 0x1d; // Ctrl-]
 
@@ -27,23 +36,74 @@ async function resolveProject(client: AcroClient, ref: string): Promise<Project>
   return found;
 }
 
-async function cmdPair(args: string[]): Promise<void> {
-  const host = args[0] ?? fail("usage: acro pair <host:port> [--code XXXX] [--name mac]");
-  let code = flagValue(args, "--code");
-  const name = flagValue(args, "--name") ?? `${process.env.USER ?? "user"}-cli`;
-  if (!code) {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    code = await new Promise<string>((resolve) => rl.question("pair code: ", resolve));
-    rl.close();
+function loadOrEmptyConfig(): ClientConfig {
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(
+        process.env.ACRO_CLIENT_CONFIG ?? path.join(os.homedir(), ".acro", "client.json"),
+        "utf8",
+      ),
+    ) as ClientConfig;
+    if (raw.v === 2 && Array.isArray(raw.servers)) return raw;
+  } catch {
+    // 首次配对
   }
-  const res = await fetch(`http://${host}/pair`, {
-    method: "POST",
-    body: JSON.stringify({ code: code.trim(), deviceName: name }),
-  });
-  if (!res.ok) fail(`pair failed: ${res.status}`);
-  const { deviceId, token } = (await res.json()) as { deviceId: string; token: string };
-  saveClientConfig({ host, token, deviceId });
-  console.log(`paired as ${name} (${deviceId})`);
+  return { v: 2, servers: [], active: null };
+}
+
+async function cmdPair(args: string[]): Promise<void> {
+  // zod 只在 pair 路径加载
+  const { decodePairingOffer } = await import("@acro/protocol");
+  let raw = args.find((a) => !a.startsWith("--"));
+  if (!raw) {
+    // 本机引导:runtime 首启把配对码写在 state 目录
+    const bootstrapFile = path.join(
+      process.env.ACRO_STATE_DIR ?? path.join(os.homedir(), ".acro"),
+      "bootstrap-offer.txt",
+    );
+    try {
+      raw = fs.readFileSync(bootstrapFile, "utf8").trim();
+    } catch {
+      fail("usage: acro pair <配对码>(或在 runtime 本机直接运行 acro pair)");
+    }
+  }
+  const offer = decodePairingOffer(raw);
+  const name = flagValue(args, "--name") ?? offer.endpoints[0]!;
+  const config = loadOrEmptyConfig();
+  // 同名服务器覆盖(重新配对场景)
+  const entry = {
+    name,
+    deviceId: "",
+    token: offer.token,
+    pub: offer.pub,
+    endpoints: offer.endpoints,
+  };
+  // 先连一次确认配对码有效,deviceId 由服务端 authed 消息带回
+  const client = await AcroClient.connect(entry);
+  entry.deviceId = client.deviceId;
+  client.close();
+  config.servers = config.servers.filter((s) => s.name !== name);
+  config.servers.push(entry);
+  config.active = entry.deviceId;
+  saveClientConfig(config);
+  console.log(`已配对 ${name},入口: ${offer.endpoints.join(", ")}`);
+}
+
+function cmdEndpoints(args: string[]): void {
+  const config = loadClientConfig();
+  const server = activeServer(config);
+  const [op, value] = args;
+  if (op === "add" && value) {
+    if (!server.endpoints.includes(value)) server.endpoints.push(value);
+    saveClientConfig(config);
+  } else if (op === "rm" && value) {
+    if (server.endpoints.length <= 1) fail("至少保留一个入口");
+    server.endpoints = server.endpoints.filter((e) => e !== value);
+    saveClientConfig(config);
+  } else if (op) {
+    fail("usage: acro endpoints [add|rm <host:port>]");
+  }
+  for (const e of server.endpoints) console.log(e);
 }
 
 async function cmdProjects(client: AcroClient): Promise<void> {
@@ -90,6 +150,10 @@ async function cmdAttach(client: AcroClient, args: string[]): Promise<void> {
 }
 
 async function attachLoop(client: AcroClient, session: Session): Promise<void> {
+  client.onDisconnect = () => {
+    console.error("\r\n[acro] 连接断开");
+    process.exit(1);
+  };
   const { channel, snapshot } = await client.rpc("session.attach", { sessionId: session.id });
   const isTTY = process.stdin.isTTY === true;
 
@@ -152,7 +216,8 @@ async function main(): Promise<void> {
   if (!cmd || cmd === "help" || cmd === "--help") {
     console.log(
       [
-        "acro pair <host:port> [--code XXXX] [--name mac]",
+        "acro pair [配对码] [--name <label>]",
+        "acro endpoints [add|rm <host:port>]",
         "acro projects",
         "acro sessions",
         "acro run [--project <p>] [command...]",
@@ -165,7 +230,11 @@ async function main(): Promise<void> {
     await cmdPair(args);
     return;
   }
-  const client = await AcroClient.connect(loadClientConfig());
+  if (cmd === "endpoints") {
+    cmdEndpoints(args);
+    return;
+  }
+  const client = await AcroClient.connect(activeServer(loadClientConfig()));
   switch (cmd) {
     case "projects":
       await cmdProjects(client);

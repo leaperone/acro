@@ -1,0 +1,85 @@
+// 服务端 E2EE 身份与配对码生成。
+// 静态 X25519 私钥持久化在 state 目录(0600),公钥随配对码分发。
+
+import fs from "node:fs";
+import os from "node:os";
+import {
+  b64ToBytes,
+  bytesToB64,
+  encodePairingOffer,
+  generateKeyPair,
+  ServerHandshake,
+} from "@acro/protocol";
+import { paths } from "./paths.ts";
+import type { DeviceRegistry } from "./devices.ts";
+
+export class ServerIdentity {
+  readonly priv: Uint8Array;
+  readonly pub: Uint8Array;
+
+  constructor() {
+    let priv: Uint8Array | null = null;
+    try {
+      const stored = JSON.parse(fs.readFileSync(paths.serverKey, "utf8")) as { priv: string };
+      const bytes = b64ToBytes(stored.priv);
+      if (bytes.length === 32) priv = bytes;
+    } catch {
+      // 首次启动或文件损坏:重新生成(旧配对码随之失效,须重新配对)
+    }
+    if (!priv) {
+      priv = generateKeyPair().priv;
+      fs.writeFileSync(paths.serverKey, JSON.stringify({ priv: bytesToB64(priv) }), {
+        mode: 0o600,
+      });
+    }
+    this.priv = priv;
+    this.pub = new ServerHandshake(priv).pub;
+  }
+}
+
+// 非 internal IPv4 地址(LAN / Tailscale 等),写进配对码供客户端直连
+export function lanEndpoints(port: number): string[] {
+  const endpoints: string[] = [];
+  for (const infos of Object.values(os.networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (info.family === "IPv4" && !info.internal) endpoints.push(`${info.address}:${port}`);
+    }
+  }
+  return endpoints;
+}
+
+export function createShareOffer(
+  registry: DeviceRegistry,
+  identity: ServerIdentity,
+  port: number,
+  name?: string,
+  extraEndpoints: string[] = [],
+): { offer: string; deviceId: string } {
+  const { device, token } = registry.createGrant(name);
+  const endpoints = [...new Set([...lanEndpoints(port), ...extraEndpoints])];
+  const offer = encodePairingOffer({
+    v: 1,
+    endpoints: endpoints.length > 0 ? endpoints : [`127.0.0.1:${port}`],
+    token,
+    pub: bytesToB64(identity.pub),
+  });
+  return { offer, deviceId: device.id };
+}
+
+// 首次启动无任何设备时的引导:mint 一个授权,配对码写入 0600 文件并打印。
+// 该设备首次认证成功后删除文件(见 index.ts)。
+export function writeBootstrapOffer(
+  registry: DeviceRegistry,
+  identity: ServerIdentity,
+  port: number,
+): { offer: string; deviceId: string } {
+  const result = createShareOffer(registry, identity, port, "bootstrap", [
+    `127.0.0.1:${port}`,
+  ]);
+  fs.writeFileSync(paths.bootstrapOffer, `${result.offer}\n`, { mode: 0o600 });
+  return result;
+}
+
+export function clearBootstrapOffer(): void {
+  fs.rmSync(paths.bootstrapOffer, { force: true });
+}

@@ -50,6 +50,20 @@ export const methods = {
     params: z.object({}),
     result: z.array(Device),
   },
+  // 生成新的访问授权:mint 一个设备 token,打包成配对码字符串。
+  // endpoints 自动带上 Runtime 的 LAN 地址,extraEndpoints 追加公网入口(如 FRP)。
+  "device.share": {
+    params: z.object({
+      name: z.string().trim().min(1).max(64).optional(),
+      extraEndpoints: z.array(z.string().trim().min(1)).max(8).optional(),
+    }),
+    result: z.object({ offer: z.string(), deviceId: z.string() }),
+  },
+  // 撤销授权并立即断开该设备的活动连接
+  "device.revoke": {
+    params: z.object({ deviceId: z.string() }),
+    result: z.object({ revoked: z.boolean() }),
+  },
   "project.list": {
     params: z.object({}),
     result: z.array(Project),
@@ -300,15 +314,15 @@ export const events = {
 export type EventName = keyof typeof events;
 export type EventPayload<E extends EventName> = z.infer<(typeof events)[E]>;
 
-// HTTP 配对(唯一的非 WS 接口,加上 /health)。
-export const PairRequest = z.object({
-  code: z.string().min(6),
-  deviceName: z.string().min(1).max(64),
+// E2EE 信道内认证(握手后的第一条加密消息;见 e2ee.ts 头部注释)
+export const E2eeAuth = z.object({
+  t: z.literal("auth"),
+  token: z.string().min(32),
 });
-export type PairRequest = z.infer<typeof PairRequest>;
+export type E2eeAuth = z.infer<typeof E2eeAuth>;
 
-export const PairResponse = z.object({
+export const E2eeAuthed = z.object({
+  t: z.literal("authed"),
   deviceId: z.string(),
-  token: z.string(),
 });
-export type PairResponse = z.infer<typeof PairResponse>;
+export type E2eeAuthed = z.infer<typeof E2eeAuthed>;

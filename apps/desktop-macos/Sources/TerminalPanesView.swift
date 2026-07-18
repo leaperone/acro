@@ -71,7 +71,7 @@ struct TerminalPanesView: View {
         } else {
             VStack(spacing: 8) {
                 Text("未连接 Runtime")
-                Text("先用 acro pair <host:port> 完成配对")
+                Text("在设置(⌘,)里粘贴配对码,或在 Runtime 本机运行 acro pair")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

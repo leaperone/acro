@@ -15,7 +15,7 @@ import * as SecureStore from "expo-secure-store";
 import { WebView } from "react-native-webview";
 import type { Project, Session } from "@acro/protocol";
 import { encodeInFrame, FRAME_BROWSER, FRAME_OUT, FRAME_SIM } from "@acro/protocol";
-import { MobileClient, pairWithHost } from "./src/client.ts";
+import { MobileClient, pairWithOffer, type ServerConfig } from "./src/client.ts";
 import { terminalHtml } from "./src/terminal-html.ts";
 
 // ---- 小工具 ----
@@ -41,15 +41,10 @@ type Route =
   | { name: "terminal"; session: Session }
   | { name: "surface"; kind: "browser" | "sim"; refId: string; title: string };
 
-interface StoredConfig {
-  host: string;
-  token: string;
-}
-
 // ---- 根组件 ----
 
 export default function App() {
-  const [config, setConfig] = useState<StoredConfig | null | undefined>(undefined);
+  const [config, setConfig] = useState<ServerConfig | null | undefined>(undefined);
   const [client, setClient] = useState<MobileClient | null>(null);
   const [connected, setConnected] = useState(false);
   const [route, setRoute] = useState<Route>({ name: "home" });
@@ -57,22 +52,23 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       const raw = await SecureStore.getItemAsync("acro.config");
-      setConfig(raw ? (JSON.parse(raw) as StoredConfig) : null);
+      const parsed = raw ? (JSON.parse(raw) as ServerConfig) : null;
+      // 旧版格式(host+token)没有 endpoints/pub,视为未配对
+      setConfig(parsed && Array.isArray(parsed.endpoints) && parsed.pub ? parsed : null);
     })();
   }, []);
 
   useEffect(() => {
     if (!config) return;
-    const c = new MobileClient(config.host, config.token);
+    const c = new MobileClient(config);
     c.onStateChange = setConnected;
     void c.connect().catch(() => {});
     setClient(c);
     return () => c.close();
   }, [config]);
 
-  const onPaired = useCallback(async (host: string, code: string) => {
-    const { token } = await pairWithHost(host, code, "iPhone");
-    const cfg = { host, token };
+  const onPaired = useCallback(async (offer: string) => {
+    const cfg = await pairWithOffer(offer, "iPhone");
     await SecureStore.setItemAsync("acro.config", JSON.stringify(cfg));
     setConfig(cfg);
   }, []);
@@ -91,7 +87,7 @@ export default function App() {
         <StatusBar style="light" />
         <View style={styles.center}>
           <ActivityIndicator />
-          <Text style={styles.dim}>连接 {config.host} …</Text>
+          <Text style={styles.dim}>连接 {config.name} …</Text>
           <Pressable
             style={styles.buttonGhost}
             onPress={() => {
@@ -136,9 +132,8 @@ export default function App() {
 
 // ---- 配对 ----
 
-function PairScreen({ onPaired }: { onPaired: (host: string, code: string) => Promise<void> }) {
-  const [host, setHost] = useState("");
-  const [code, setCode] = useState("");
+function PairScreen({ onPaired }: { onPaired: (offer: string) => Promise<void> }) {
+  const [offer, setOffer] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   return (
@@ -147,22 +142,14 @@ function PairScreen({ onPaired }: { onPaired: (host: string, code: string) => Pr
       <View style={styles.pairBox}>
         <Text style={styles.title}>Acro</Text>
         <TextInput
-          style={styles.input}
-          placeholder="Mac mini 地址 (host:port)"
+          style={[styles.input, styles.offerInput]}
+          placeholder="粘贴配对码 (acro://pair?c=…)"
           placeholderTextColor="#666"
           autoCapitalize="none"
           autoCorrect={false}
-          value={host}
-          onChangeText={setHost}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="配对码"
-          placeholderTextColor="#666"
-          autoCapitalize="characters"
-          autoCorrect={false}
-          value={code}
-          onChangeText={setCode}
+          multiline
+          value={offer}
+          onChangeText={setOffer}
         />
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <Pressable
@@ -171,7 +158,7 @@ function PairScreen({ onPaired }: { onPaired: (host: string, code: string) => Pr
           onPress={() => {
             setBusy(true);
             setError("");
-            onPaired(host.trim(), code.trim()).catch((e: Error) => {
+            onPaired(offer.trim()).catch((e: Error) => {
               setError(e.message);
               setBusy(false);
             });
@@ -550,6 +537,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     fontSize: 15,
   },
+  offerInput: { minHeight: 96, textAlignVertical: "top" },
   error: { color: "#f38ba8" },
   button: {
     backgroundColor: "#89b4fa",

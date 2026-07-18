@@ -106,9 +106,10 @@ Machine
 
 ## 通信与安全
 
-- 内部使用安全私网连接，不向公网暴露 Runtime 端口。
-- 首次连接使用一次性配对码，之后使用设备密钥。
-- 每个客户端与 Runtime 之间只有一条 WebSocket：控制消息使用 zod 定义的 JSON-RPC，终端数据使用二进制帧，事件带 `seq` 和 `boot_id` 支持断点续传。HTTP 只用于配对和健康检查。
+- 传输安全不依赖 TLS：所有连接走应用层 E2EE（X25519 + HKDF-SHA256 + ChaCha20-Poly1305），可以安全经过 LAN 或 FRP 等明文公网代理。Acro 不自研穿透，公网入口由用户的代理软件提供。
+- 配对采用访问授权模型（取自 orca）：服务端生成配对码 `acro://pair?c=…`，内含入口列表、设备 token 和服务端公钥，由用户带外传输；token 只在加密信道内认证，服务端只存哈希。授权可撤销，撤销立即断开该设备的活动连接。
+- 一个远程 Runtime 对客户端 = 一个 token + 多个入口（LAN、公网代理），按序尝试；从任何入口连上都是同一设备身份、同一批会话，服务端不区分连接来源。
+- 每个客户端与 Runtime 之间只有一条 WebSocket：控制消息使用 zod 定义的 JSON-RPC，终端数据使用二进制帧，事件带 `seq` 和 `boot_id` 支持断点续传。HTTP 只保留健康检查。
 - 协议唯一真源是 `packages/protocol` 的 zod schema；Swift 客户端类型用 codegen 生成，禁止手工镜像。
 - 客户端 attach 会话时先收快照再收增量；多客户端输入所有权由 Runtime 仲裁。
 - 服务端为每个控制 RPC 检查设备、Workspace、项目归属和操作类型。
