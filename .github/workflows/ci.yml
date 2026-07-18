@@ -25,6 +25,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: test appcast generation
+        run: python3 apps/desktop-macos/scripts/test_update_appcast.py
       - name: setup ghostty assets
         env:
           GH_TOKEN: ${{ github.token }}

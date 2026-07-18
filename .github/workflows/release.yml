@@ -59,7 +59,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#desktop-v}"
           # 未配置证书 secrets 时回退 ad-hoc
           export ACRO_SIGN_IDENTITY="${ACRO_SIGN_IDENTITY:--}"
-          bash apps/desktop-macos/scripts/package-app.sh "$VERSION"
+          bash apps/desktop-macos/scripts/package-app.sh "$VERSION" "$GITHUB_RUN_NUMBER"
       - name: publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -120,6 +120,8 @@ jobs:
             fi
             SOURCE_ZIP="$(find "$SOURCE/archive" -maxdepth 1 -name '*.zip' -print -quit)"
             ditto -x -k "$SOURCE_ZIP" "$SOURCE/app"
+            SOURCE_BUILD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+              "$SOURCE/app/Acro.app/Contents/Info.plist")"
 
             DELTA="apps/desktop-macos/dist/Acro-v${VERSION}-from-${FROM_VERSION}.delta"
             if ! "$RUNNER_TEMP/sparkle/bin/BinaryDelta" create \
@@ -144,7 +146,7 @@ jobs:
               || { echo "delta sign_update output unusable: $DELTA_SIG_OUT"; exit 1; }
             DELTA_NAME="$(basename "$DELTA")"
             DELTA_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${DELTA_NAME}"
-            jq --arg from "$FROM_VERSION" --arg url "$DELTA_URL" \
+            jq --arg from "$SOURCE_BUILD_VERSION" --arg url "$DELTA_URL" \
               --arg signature "$DELTA_SIGNATURE" --arg length "$DELTA_LENGTH" \
               '. + [{from: $from, url: $url, signature: $signature, length: $length}]' \
               "$DELTAS_JSON" > "$DELTAS_JSON.tmp"
@@ -156,8 +158,8 @@ jobs:
           git fetch origin main
           git checkout main
           python3 apps/desktop-macos/scripts/update-appcast.py \
-            apps/desktop-macos/appcast.xml "$VERSION" "$CHANNEL" "$URL" \
-            "$SIGNATURE" "$LENGTH" "$DELTAS_JSON"
+            apps/desktop-macos/appcast.xml "$VERSION" "$GITHUB_RUN_NUMBER" "$CHANNEL" \
+            "$URL" "$SIGNATURE" "$LENGTH" "$DELTAS_JSON"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add apps/desktop-macos/appcast.xml
