@@ -284,6 +284,33 @@ private struct PaneTabBar: View {
     var trafficLightClearance = false
 
     var body: some View {
+        // NonDraggableArea 阻断标题栏带的窗口拖动,标签 .onDrag 才能拿到手势;
+        // 标签条层级的 onDrop 必须在嵌套 hosting view 内,否则空白区落点被挡
+        NonDraggableArea {
+            tabBarContent
+                .onDrop(
+                    of: [UTType.text],
+                    delegate: TabBarDropDelegate(
+                        canAccept: { model.draggingTab != nil },
+                        perform: {
+                            guard let payload = model.draggingTab else { return false }
+                            model.draggingTab = nil
+                            model.moveTab(payload, toPane: pane.id, at: nil)
+                            return true
+                        }
+                    )
+                )
+        }
+        .frame(height: 28)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(focused ? Color.accentColor.opacity(0.8) : Color(nsColor: .separatorColor))
+                .frame(height: 1)
+        }
+    }
+
+    private var tabBarContent: some View {
         HStack(spacing: 4) {
             if trafficLightClearance {
                 WindowDragHandle()
@@ -318,25 +345,6 @@ private struct PaneTabBar: View {
             .accessibilityLabel("新建标签")
             .padding(.trailing, 4)
         }
-        .frame(height: 28)
-        .background(.bar)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(focused ? Color.accentColor.opacity(0.8) : Color(nsColor: .separatorColor))
-                .frame(height: 1)
-        }
-        .onDrop(
-            of: [UTType.text],
-            delegate: TabBarDropDelegate(
-                canAccept: { model.draggingTab != nil },
-                perform: {
-                    guard let payload = model.draggingTab else { return false }
-                    model.draggingTab = nil
-                    model.moveTab(payload, toPane: pane.id, at: nil)
-                    return true
-                }
-            )
-        )
     }
 
     private func tab(sessionId: String, index: Int) -> some View {
