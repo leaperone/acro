@@ -253,12 +253,16 @@ private struct ConnectServersSection: View {
             let name = pairName.trimmingCharacters(in: .whitespaces).isEmpty
                 ? (offer.endpoints.first ?? "Runtime")
                 : pairName.trimmingCharacters(in: .whitespaces)
-            next.servers.removeAll { $0.name == name }
+            // 名称重复直接拒绝,避免静默覆盖另一台服务器的凭据
+            guard !next.servers.contains(where: { $0.name == name }) else {
+                pairError = "名称「\(name)」已存在;换一个名称,或先删除旧服务器。"
+                return
+            }
             let entry = ServerEntry(
                 name: name, deviceId: "", token: offer.token,
                 pub: offer.pub, endpoints: offer.endpoints)
             next.servers.append(entry)
-            next.active = entry.deviceId
+            next.active = entry.id
             next.save()
             config = next
             pairInput = ""
@@ -272,7 +276,7 @@ private struct ConnectServersSection: View {
 
     private func switchTo(_ server: ServerEntry) {
         guard var next = config else { return }
-        next.active = server.deviceId
+        next.active = server.id
         next.save()
         config = next
         runtime.connect(server: server)
@@ -280,10 +284,13 @@ private struct ConnectServersSection: View {
 
     private func remove(_ server: ServerEntry) {
         guard var next = config else { return }
+        let wasActive = next.activeServer?.id == server.id
         next.servers.removeAll { $0.id == server.id }
-        if next.active == server.deviceId { next.active = next.servers.first?.deviceId }
+        if wasActive { next.active = next.servers.first?.id }
         next.save()
         config = next
+        // 只有删掉的是当前服务器才需要动连接,其余情况保持现有连接不中断
+        guard wasActive else { return }
         if let fallback = next.activeServer {
             runtime.connect(server: fallback)
         } else {

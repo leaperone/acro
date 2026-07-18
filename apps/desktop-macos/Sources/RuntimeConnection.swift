@@ -51,8 +51,10 @@ struct ClientConfig: Codable {
         }
     }
 
+    // active 存 ServerEntry.id(未认证时是 name,认证后是 deviceId),
+    // 统一走 id 匹配,避免多个未认证条目的空 deviceId 相互混淆
     var activeServer: ServerEntry? {
-        servers.first { $0.deviceId == active } ?? servers.first
+        servers.first { $0.id == active } ?? servers.first
     }
 }
 
