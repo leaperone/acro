@@ -27,6 +27,7 @@ import { encodeOutFrame, decodeFrame, FRAME_IN } from "@acro/protocol";
 import { paths, ensureStateDirs } from "../paths.ts";
 import { readJson, writeJsonAtomic } from "../store.ts";
 import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
+import { utf8SafeCut } from "./utf8.ts";
 
 const SCROLLBACK = 5000;
 const CHECKPOINT_INTERVAL_MS = 20_000;
@@ -83,6 +84,8 @@ class DaemonSession {
   private outFlushScheduled = false;
   private lastFlushAt = 0;
   private lastOutputAt = 0;
+  // 输入帧可能切在多字节 UTF-8 字符中间;残留的尾字节缓冲到下一帧再拼
+  private inputTail = Buffer.alloc(0);
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
   private onExit: (session: DaemonSession) => void;
@@ -250,7 +253,12 @@ class DaemonSession {
   }
 
   write(data: Buffer): void {
-    if (this.meta.alive) this.ptyProc.write(data.toString("utf8"));
+    if (!this.meta.alive) return;
+    const buf = this.inputTail.byteLength ? Buffer.concat([this.inputTail, data]) : data;
+    const cut = utf8SafeCut(buf);
+    // 末尾不完整序列留到下一帧;Buffer.from 拷出,不悬引 concat 的底层内存
+    this.inputTail = cut < buf.byteLength ? Buffer.from(buf.subarray(cut)) : Buffer.alloc(0);
+    if (cut > 0) this.ptyProc.write(buf.subarray(0, cut).toString("utf8"));
   }
 
   resize(cols: number, rows: number): void {
