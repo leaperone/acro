@@ -22,6 +22,10 @@ cp .build/release/AcroDesktop "$APP/Contents/MacOS/AcroDesktop"
 cp -RL Resources/ghostty "$APP/Contents/Resources/ghostty"
 cp -RL Resources/terminfo "$APP/Contents/Resources/terminfo"
 
+# 打包 acro CLI(attach 桥):单文件 bundle,客户端机器无需 checkout 仓库
+(cd ../cli && pnpm build)
+cp ../cli/dist/cli.cjs "$APP/Contents/Resources/cli.cjs"
+
 # Sparkle 自动更新框架(可执行文件 rpath 指向 ../Frameworks)
 SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/Sparkle.framework"

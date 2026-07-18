@@ -36,9 +36,17 @@ struct TabDragPayload: Equatable {
 
 @MainActor
 final class WorkbenchModel: ObservableObject {
-    let runtime: RuntimeConnection
+    // 多主机:hub 为每台已配对服务器维持一条常驻连接;
+    // runtime 始终指向"当前查看的服务器"的连接,旧的单连接代码路径保持不变。
+    let hub: RuntimeHub
+    private let fallbackRuntime = RuntimeConnection()
+
+    var runtime: RuntimeConnection {
+        hub.connection(for: selectedServerId) ?? hub.entries.first?.connection ?? fallbackRuntime
+    }
 
     // ---- 选择与布局 ----
+    @Published var selectedServerId: String? { didSet { persistLayout() } }
     @Published var selectedWorkspaceId: String? { didSet { persistLayout() } }
     @Published var selectedProjectId: String?
     @Published var selectedSessionId: String?
@@ -100,8 +108,9 @@ final class WorkbenchModel: ObservableObject {
     private static let layoutKey = "acro.desktop.workbench.layout.v2"
     private static let sidebarModeKey = "acro.desktop.sidebar.view-mode"
 
-    init(runtime: RuntimeConnection) {
-        self.runtime = runtime
+    init(hub: RuntimeHub) {
+        self.hub = hub
+        selectedServerId = ClientConfig.load()?.activeServer?.id
         sidebarViewMode = UserDefaults.standard.string(forKey: Self.sidebarModeKey)
             .flatMap(SidebarViewMode.init(rawValue:)) ?? .workspaces
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -177,6 +186,16 @@ final class WorkbenchModel: ObservableObject {
         if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
     }
 
+    // 切换当前查看的服务器:其他服务器的连接与会话保持在线,只换视角
+    func activate(serverId: String) {
+        guard selectedServerId != serverId else { return }
+        selectedServerId = serverId
+        selectedWorkspaceId = nil
+        selectedProjectId = nil
+        selectedSessionId = nil
+        reconcileLayoutState()
+    }
+
     // ---- 派生数据(全部走 codegen 类型) ----
 
     var activeSessions: [Session] {
@@ -185,7 +204,7 @@ final class WorkbenchModel: ObservableObject {
     }
 
     var currentWorkspaceSessions: [Session] {
-        selectedWorkspace.map(sessions(in:)) ?? []
+        selectedWorkspace.map { sessions(in: $0) } ?? []
     }
 
     var currentLayout: WorkspaceTerminalLayout? {
@@ -219,7 +238,7 @@ final class WorkbenchModel: ObservableObject {
 
     // 侧边栏显示序 = ⌘数字序:分组内工作区在前,未分组在后
     var orderedWorkspaces: [Workspace] {
-        runtime.workspaceGroups.flatMap(workspaces(in:)) + ungroupedWorkspaces
+        runtime.workspaceGroups.flatMap { workspaces(in: $0) } + ungroupedWorkspaces
     }
 
     func workspaceShortcutDigit(_ workspaceId: String) -> Int? {
@@ -229,21 +248,28 @@ final class WorkbenchModel: ObservableObject {
         return index + 1
     }
 
-    func workspaces(in group: WorkspaceGroup) -> [Workspace] {
-        group.workspaceIds.compactMap { id in runtime.workspaces.first { $0.id == id } }
+    func workspaces(in group: WorkspaceGroup, on connection: RuntimeConnection? = nil) -> [Workspace] {
+        let source = connection ?? runtime
+        return group.workspaceIds.compactMap { id in source.workspaces.first { $0.id == id } }
     }
 
-    func workspaceGroup(containing workspaceId: String) -> WorkspaceGroup? {
-        runtime.workspaceGroups.first { $0.workspaceIds.contains(workspaceId) }
+    func ungroupedWorkspaces(on connection: RuntimeConnection) -> [Workspace] {
+        let groupedIds = Set(connection.workspaceGroups.flatMap(\.workspaceIds))
+        return connection.workspaces.filter { !groupedIds.contains($0.id) }
     }
 
-    func projects(in workspace: Workspace) -> [Project] {
-        workspace.projectIds.compactMap { id in runtime.projects.first { $0.id == id } }
+    func workspaceGroup(containing workspaceId: String, on connection: RuntimeConnection? = nil) -> WorkspaceGroup? {
+        (connection ?? runtime).workspaceGroups.first { $0.workspaceIds.contains(workspaceId) }
     }
 
-    func sessions(in workspace: Workspace) -> [Session] {
+    func projects(in workspace: Workspace, on connection: RuntimeConnection? = nil) -> [Project] {
+        let source = connection ?? runtime
+        return workspace.projectIds.compactMap { id in source.projects.first { $0.id == id } }
+    }
+
+    func sessions(in workspace: Workspace, on connection: RuntimeConnection? = nil) -> [Session] {
         let sessionIds = Set(workspace.sessionIds)
-        return runtime.sessions
+        return (connection ?? runtime).sessions
             .filter { $0.alive && sessionIds.contains($0.id) }
             .sorted { $0.createdAt < $1.createdAt }
     }
@@ -253,8 +279,8 @@ final class WorkbenchModel: ObservableObject {
         return activeSessions.count { sessionIds.contains($0.id) }
     }
 
-    func project(for session: Session) -> Project? {
-        runtime.projects.first { $0.id == session.projectId }
+    func project(for session: Session, on connection: RuntimeConnection? = nil) -> Project? {
+        (connection ?? runtime).projects.first { $0.id == session.projectId }
     }
 
     func workspace(containing sessionId: String) -> Workspace? {
@@ -265,10 +291,12 @@ final class WorkbenchModel: ObservableObject {
         activeSessions.first { $0.id == sessionId }
     }
 
-    func sessionDisplayName(_ session: Session) -> String {
-        let projectName = project(for: session)?.name ?? "终端"
-        guard let workspace = workspace(containing: session.id) else { return projectName }
-        let related = sessions(in: workspace).filter { $0.projectId == session.projectId }
+    func sessionDisplayName(_ session: Session, on connection: RuntimeConnection? = nil) -> String {
+        let source = connection ?? runtime
+        let projectName = project(for: session, on: source)?.name ?? "终端"
+        guard let workspace = source.workspaces.first(where: { $0.sessionIds.contains(session.id) })
+        else { return projectName }
+        let related = sessions(in: workspace, on: source).filter { $0.projectId == session.projectId }
         guard related.count > 1, let index = related.firstIndex(where: { $0.id == session.id })
         else { return projectName }
         return "\(projectName) · \(index + 1)"
@@ -790,6 +818,7 @@ final class WorkbenchModel: ObservableObject {
               let data = raw.data(using: .utf8),
               let snapshot = try? JSONDecoder().decode(WorkbenchLayoutSnapshot.self, from: data)
         else { return }
+        if let serverId = snapshot.selectedServerId { selectedServerId = serverId }
         selectedWorkspaceId = snapshot.selectedWorkspaceId
         workspaceLayouts = snapshot.workspaceLayouts
         leftSidebarVisible = snapshot.leftSidebarVisible
@@ -800,47 +829,61 @@ final class WorkbenchModel: ObservableObject {
 
     func reconcileLayoutState() {
         guard runtime.snapshotLoaded else { return }
-        let validWorkspaceGroupIds = Set(runtime.workspaceGroups.map(\.id))
+        // 布局/缓存的清理跨所有服务器取并集;有服务器还没拉到快照时跳过清理,
+        // 避免把离线服务器的布局和 surface 误当失效数据删掉
+        let loadedConnections = hub.entries.map(\.connection).filter(\.snapshotLoaded)
+        let allLoaded = hub.entries.allSatisfy { $0.connection.snapshotLoaded }
+        let validWorkspaceGroupIds = Set(loadedConnections.flatMap { $0.workspaceGroups.map(\.id) })
         if workspaceGroupsInitialized {
-            expandedWorkspaceGroupIds.formIntersection(validWorkspaceGroupIds)
+            if allLoaded { expandedWorkspaceGroupIds.formIntersection(validWorkspaceGroupIds) }
         } else {
             workspaceGroupsInitialized = true
             expandedWorkspaceGroupIds = validWorkspaceGroupIds
         }
-        let validWorkspaceIds = Set(runtime.workspaces.map(\.id))
-        TerminalSurfaceCache.shared.retainOnly(Set(activeSessions.map(\.id)))
-        expandedWorkspaceIds.formIntersection(validWorkspaceIds)
+        let validWorkspaceIds = Set(loadedConnections.flatMap { $0.workspaces.map(\.id) })
+        let selectedValidWorkspaceIds = Set(runtime.workspaces.map(\.id))
+        if allLoaded {
+            let aliveSessionIds = Set(
+                loadedConnections.flatMap { connection in
+                    connection.sessions.filter(\.alive).map(\.id)
+                }
+            )
+            TerminalSurfaceCache.shared.retainOnly(aliveSessionIds)
+            expandedWorkspaceIds.formIntersection(validWorkspaceIds)
+            workspaceLayouts = workspaceLayouts.filter { validWorkspaceIds.contains($0.key) }
+        }
         let shouldInitializeWorkspaceExpansion = !workspaceExpansionInitialized
         workspaceExpansionInitialized = true
-        workspaceLayouts = workspaceLayouts.filter { validWorkspaceIds.contains($0.key) }
 
-        for workspace in runtime.workspaces {
-            let workspaceSessions = sessions(in: workspace)
-            let validSessionIds = Set(workspaceSessions.map(\.id))
-            if var layout = workspaceLayouts[workspace.id] {
-                layout.prune(validSessionIds: validSessionIds)
-                // 新出现的会话(其他客户端创建的)并入布局作后台标签,不抢当前选中
-                for session in workspaceSessions
-                where layout.root?.paneContaining(session.id) == nil {
-                    if let pane = layout.focusedPane {
-                        layout.root = layout.root?.updatingPane(pane.id) {
-                            $0.appendTab(session.id, select: false)
+        for connection in loadedConnections {
+            for workspace in connection.workspaces {
+                let workspaceSessions = sessions(in: workspace, on: connection)
+                let validSessionIds = Set(workspaceSessions.map(\.id))
+                if var layout = workspaceLayouts[workspace.id] {
+                    layout.prune(validSessionIds: validSessionIds)
+                    // 新出现的会话(其他客户端创建的)并入布局作后台标签,不抢当前选中
+                    for session in workspaceSessions
+                    where layout.root?.paneContaining(session.id) == nil {
+                        if let pane = layout.focusedPane {
+                            layout.root = layout.root?.updatingPane(pane.id) {
+                                $0.appendTab(session.id, select: false)
+                            }
+                        } else {
+                            layout.adopt(session.id)
                         }
-                    } else {
-                        layout.adopt(session.id)
                     }
+                    workspaceLayouts[workspace.id] = layout
+                } else if !workspaceSessions.isEmpty {
+                    // 首次见到该工作区:全部会话进同一窗格作标签
+                    let pane = PaneTabGroup(sessionIds: workspaceSessions.map(\.id))
+                    workspaceLayouts[workspace.id] = WorkspaceTerminalLayout(root: .pane(pane))
+                } else {
+                    workspaceLayouts[workspace.id] = WorkspaceTerminalLayout()
                 }
-                workspaceLayouts[workspace.id] = layout
-            } else if !workspaceSessions.isEmpty {
-                // 首次见到该工作区:全部会话进同一窗格作标签
-                let pane = PaneTabGroup(sessionIds: workspaceSessions.map(\.id))
-                workspaceLayouts[workspace.id] = WorkspaceTerminalLayout(root: .pane(pane))
-            } else {
-                workspaceLayouts[workspace.id] = WorkspaceTerminalLayout()
             }
         }
 
-        if let selectedWorkspaceId, !validWorkspaceIds.contains(selectedWorkspaceId) {
+        if let selectedWorkspaceId, !selectedValidWorkspaceIds.contains(selectedWorkspaceId) {
             self.selectedWorkspaceId = nil
         }
         if selectedWorkspaceId == nil {
@@ -861,6 +904,7 @@ final class WorkbenchModel: ObservableObject {
     private func persistLayout() {
         guard layoutRestored else { return }
         let snapshot = WorkbenchLayoutSnapshot(
+            selectedServerId: selectedServerId,
             selectedWorkspaceId: selectedWorkspaceId,
             workspaceLayouts: workspaceLayouts,
             leftSidebarVisible: leftSidebarVisible,

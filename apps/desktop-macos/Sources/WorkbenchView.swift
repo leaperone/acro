@@ -14,7 +14,7 @@ struct WorkbenchView: View {
         ZStack(alignment: .top) {
             HStack(spacing: 0) {
                 if model.leftSidebarVisible {
-                    SidebarView(model: model, runtime: runtime)
+                    SidebarView(model: model, runtime: runtime, hub: model.hub)
                         .frame(width: max(180, min(sidebarWidth, 420)))
                     sidebarResizeHandle
                 }

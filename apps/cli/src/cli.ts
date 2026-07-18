@@ -19,6 +19,7 @@ import {
   activeServer,
   type ClientConfig,
   loadClientConfig,
+  pickServer,
   saveClientConfig,
 } from "./client.ts";
 
@@ -212,11 +213,15 @@ function flagValue(args: string[], flag: string): string | undefined {
 }
 
 async function main(): Promise<void> {
-  const [cmd, ...args] = process.argv.slice(2);
+  const [cmd, ...rawArgs] = process.argv.slice(2);
+  // 全局 --server <deviceId|名称>:多主机下指定目标(缺省用配置里的默认服务器)
+  const serverRef = flagValue(rawArgs, "--server");
+  const args = rawArgs.filter((a, i) => a !== "--server" && rawArgs[i - 1] !== "--server");
   if (!cmd || cmd === "help" || cmd === "--help") {
     console.log(
       [
         "acro pair [配对码] [--name <label>]",
+        "acro --server <名称|deviceId> <命令>  指定目标服务器",
         "acro endpoints [add|rm <host:port>]",
         "acro projects",
         "acro sessions",
@@ -234,7 +239,7 @@ async function main(): Promise<void> {
     cmdEndpoints(args);
     return;
   }
-  const client = await AcroClient.connect(activeServer(loadClientConfig()));
+  const client = await AcroClient.connect(pickServer(loadClientConfig(), serverRef));
   switch (cmd) {
     case "projects":
       await cmdProjects(client);
