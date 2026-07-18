@@ -110,10 +110,6 @@ final class AcroTerminalNSView: NSView {
         onClose?()
     }
 
-    func closePaneFromShortcut() {
-        onClose?()
-    }
-
     func applyFocusRequest(_ request: Int) {
         requestedFocusRequest = request
         guard request > 0, request != appliedFocusRequest, window != nil else { return }

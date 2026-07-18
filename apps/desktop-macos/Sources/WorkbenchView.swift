@@ -5,6 +5,7 @@ import SwiftUI
 struct WorkbenchView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
+    @Environment(\.openWindow) private var openWindow
 
     private var columnVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
@@ -176,6 +177,7 @@ struct WorkbenchView: View {
 
     private var workbenchActions: WorkbenchActions {
         WorkbenchActions(
+            openSettings: { openWindow(id: "settings") },
             newWorkspaceGroup: {
                 model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
             },
@@ -190,18 +192,13 @@ struct WorkbenchView: View {
             splitDown: { model.splitTerminal(.vertical) },
             focusPreviousPane: { model.focusAdjacentPane(offset: -1) },
             focusNextPane: { model.focusAdjacentPane(offset: 1) },
-            closeTab: { model.closeFocusedTab() },
+            closeTab: { model.requestKillFocusedTab() },
             toggleLeftSidebar: { model.leftSidebarVisible.toggle() },
             toggleInspector: { model.inspectorVisible.toggle() },
             previousTab: { model.selectAdjacentTab(offset: -1) },
             nextTab: { model.selectAdjacentTab(offset: 1) },
             selectWorkspaceAtIndex: { model.selectWorkspace(at: $0) },
             focusTerminal: { model.requestTerminalFocus() },
-            killSession: {
-                if let session = model.selectedSession {
-                    model.pendingSessionTermination = session
-                }
-            },
             canCreateTerminal: model.selectedWorkspace.map { !model.projects(in: $0).isEmpty } ?? false,
             canSplitTerminal: model.selectedWorkspace != nil
                 && model.selectedProject != nil
@@ -210,7 +207,6 @@ struct WorkbenchView: View {
             canCloseTab: model.currentLayout?.focusedSessionId != nil,
             canNavigateTabs: model.currentLayout?.focusedPane?.sessionIds.count ?? 0 > 1,
             canFocusTerminal: model.selectedSession != nil,
-            canKillSession: model.selectedSession != nil,
             workspaceCount: model.orderedWorkspaces.count,
             leftSidebarVisible: model.leftSidebarVisible,
             inspectorVisible: model.inspectorVisible

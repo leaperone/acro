@@ -105,6 +105,13 @@ final class WorkbenchModel: ObservableObject {
             }
             return event
         }
+        NotificationCenter.default.addObserver(
+            forName: .acroCloseTabShortcut, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.requestKillFocusedTab()
+            }
+        }
     }
 
     deinit {
@@ -297,14 +304,24 @@ final class WorkbenchModel: ObservableObject {
         requestTerminalFocus()
     }
 
+    // 布局层移除(surface 自行退出、会话已死时用);活会话的"关闭标签"走 requestKillTab
     func closeTab(_ sessionId: String) {
         mutateCurrentLayout { $0.removeTab(sessionId) }
         requestTerminalFocus()
     }
 
-    func closeFocusedTab() {
+    // 关闭标签 = 确认后真正终止终端;terminateSession 成功后会把标签摘掉
+    func requestKillTab(_ sessionId: String) {
+        guard let session = session(sessionId) else {
+            closeTab(sessionId)
+            return
+        }
+        pendingSessionTermination = session
+    }
+
+    func requestKillFocusedTab() {
         guard let sessionId = currentLayout?.focusedSessionId else { return }
-        closeTab(sessionId)
+        requestKillTab(sessionId)
     }
 
     func selectAdjacentTab(offset: Int) {

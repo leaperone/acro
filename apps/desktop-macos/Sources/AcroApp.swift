@@ -6,22 +6,27 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let acroCloseTabShortcut = Notification.Name("acro.shortcut.closeTab")
+}
+
 final class AcroAppDelegate: NSObject, NSApplicationDelegate {
+    static let settingsWindowTitle = "Acro 设置"
     private var keyMonitor: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+        // File 菜单的系统 Close 也绑 ⌘W 且排在工作台菜单之前;
+        // 在菜单分发前拦截,路由到"关闭标签(终止终端)"。设置窗口放行给系统关窗。
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            Self.handleKeyDown(event, firstResponder: event.window?.firstResponder)
+            guard ShortcutSettings.stored(.closeTab).matches(event),
+                  !event.isARepeat,
+                  event.window?.title != Self.settingsWindowTitle
+            else { return event }
+            NotificationCenter.default.post(name: .acroCloseTabShortcut, object: nil)
+            return nil
         }
-    }
-
-    static func handleKeyDown(_ event: NSEvent, firstResponder: NSResponder?) -> NSEvent? {
-        guard ShortcutSettings.stored(.closeTab).matches(event) else { return event }
-        guard !event.isARepeat else { return nil }
-        (firstResponder as? AcroTerminalNSView)?.closePaneFromShortcut()
-        return nil
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -30,6 +35,7 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct WorkbenchActions {
+    let openSettings: () -> Void
     let newWorkspaceGroup: () -> Void
     let newWorkspace: () -> Void
     let newTerminalTab: () -> Void
@@ -45,14 +51,12 @@ struct WorkbenchActions {
     let nextTab: () -> Void
     let selectWorkspaceAtIndex: (Int) -> Void
     let focusTerminal: () -> Void
-    let killSession: () -> Void
     let canCreateTerminal: Bool
     let canSplitTerminal: Bool
     let canNavigatePanes: Bool
     let canCloseTab: Bool
     let canNavigateTabs: Bool
     let canFocusTerminal: Bool
-    let canKillSession: Bool
     let workspaceCount: Int
     let leftSidebarVisible: Bool
     let inspectorVisible: Bool
@@ -92,6 +96,11 @@ struct AcroWorkbenchCommands: Commands {
         }
 
         CommandMenu("工作台") {
+            Button("设置…", systemImage: "gearshape") {
+                actions?.openSettings()
+            }
+            .keyboardShortcut(",", modifiers: .command)
+
             Button("命令面板", systemImage: "command") {
                 actions?.showCommandPalette()
             }
@@ -154,6 +163,7 @@ struct AcroWorkbenchCommands: Commands {
             }
             .keyboardShortcut(ShortcutSettings.keyboardShortcut(.closeTab))
             .disabled(actions?.canCloseTab != true)
+            .help("终止终端并移除标签")
 
             Divider()
 
@@ -176,12 +186,6 @@ struct AcroWorkbenchCommands: Commands {
             }
             .keyboardShortcut(ShortcutSettings.keyboardShortcut(.focusTerminal))
             .disabled(actions?.canFocusTerminal != true)
-
-            Button("关闭终端", systemImage: "xmark") {
-                actions?.killSession()
-            }
-            .keyboardShortcut(ShortcutSettings.keyboardShortcut(.killSession))
-            .disabled(actions?.canKillSession != true)
         }
     }
 }
@@ -212,8 +216,18 @@ struct AcroApp: App {
         .commands {
             AcroWorkbenchCommands()
         }
+
+        // ⌘, 设置窗口(cmux Settings 窗口的 acro 版)。
+        // 裸可执行(无 bundle)下 SwiftUI Settings scene 不注册菜单项,用显式 Window。
+        Window("Acro 设置", id: "settings") {
+            SettingsView(runtime: runtime)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+        .commandsRemoved()
     }
 }
+
 
 // 解析 attach 命令:node + acro CLI 的绝对路径(GUI 进程没有用户 PATH)
 enum AttachCommand {

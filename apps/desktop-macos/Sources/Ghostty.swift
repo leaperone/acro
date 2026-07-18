@@ -22,6 +22,12 @@ final class Ghostty {
             NSLog("ghostty_config_new failed")
             return
         }
+        // 设置窗口写的外观配置(字体/主题);不存在则用 ghostty 默认
+        if FileManager.default.fileExists(atPath: TerminalAppearance.confPath) {
+            TerminalAppearance.confPath.withCString { ptr in
+                ghostty_config_load_file(cfg, ptr)
+            }
+        }
         ghostty_config_finalize(cfg)
 
         var rt = ghostty_runtime_config_s()

@@ -285,10 +285,7 @@ private struct PaneTabBar: View {
             selected: selected,
             focused: focused,
             select: { model.selectTab(sessionId, inPane: pane.id) },
-            close: { model.closeTab(sessionId) },
-            kill: {
-                if let session { model.pendingSessionTermination = session }
-            },
+            kill: { model.requestKillTab(sessionId) },
             beginDrag: {
                 model.draggingTab = TabDragPayload(sessionId: sessionId, sourcePaneId: pane.id)
                 return NSItemProvider(object: sessionId as NSString)
@@ -310,7 +307,6 @@ private struct PaneTabItem: View {
     let selected: Bool
     let focused: Bool
     let select: () -> Void
-    let close: () -> Void
     let kill: () -> Void
     let beginDrag: () -> NSItemProvider
     let acceptDrop: () -> Bool
@@ -336,7 +332,7 @@ private struct PaneTabItem: View {
             }
             .buttonStyle(.plain)
 
-            Button(action: close) {
+            Button(action: kill) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .frame(width: 14, height: 14)
@@ -345,7 +341,7 @@ private struct PaneTabItem: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .opacity(hovered ? 1 : 0)
-            .help("关闭标签")
+            .help("关闭标签(终止终端)")
             .accessibilityLabel("关闭标签 \(title)")
         }
         .padding(.leading, 8)
@@ -367,8 +363,7 @@ private struct PaneTabItem: View {
         }
         .onHover { hovered = $0 }
         .contextMenu {
-            Button("关闭标签", action: close)
-            Button("关闭终端", role: .destructive, action: kill)
+            Button("关闭标签(终止终端)", role: .destructive, action: kill)
         }
         .onDrag(beginDrag)
         .onDrop(
