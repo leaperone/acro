@@ -49,8 +49,14 @@ export class DaemonClient extends EventEmitter {
       const socket = net.connect(paths.daemonSocket);
       socket.on("connect", () => {
         this.socket = socket;
-        socket.on("data", (chunk) => this.onData(chunk));
-        socket.on("close", () => this.onClose());
+        socket.on("data", (chunk) => {
+          try {
+            this.onData(chunk);
+          } catch {
+            socket.destroy();
+          }
+        });
+        socket.on("close", () => this.onClose(socket));
         socket.on("error", () => {});
         this.emit("up");
         resolve();
@@ -59,8 +65,10 @@ export class DaemonClient extends EventEmitter {
     });
   }
 
-  private onClose(): void {
+  private onClose(socket: net.Socket): void {
+    if (this.socket !== socket) return;
     this.socket = null;
+    this.reader.reset();
     for (const p of this.pending.values()) p.reject(new Error("daemon connection lost"));
     this.pending.clear();
     this.emit("down");
