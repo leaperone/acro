@@ -18,6 +18,7 @@ import {
 } from "./share.ts";
 import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.ts";
 import { ensureStateDirs, paths } from "./paths.ts";
+import { acquireProcessLock } from "./process-lock.ts";
 
 interface SnapshotResult {
   handle: number;
@@ -29,6 +30,8 @@ interface SnapshotResult {
 
 async function main(): Promise<void> {
   ensureStateDirs();
+  const releaseLock = acquireProcessLock(paths.runtimeLock, "runtime");
+  process.once("exit", releaseLock);
   const config = loadConfig();
   const registry = new DeviceRegistry();
   const identity = new ServerIdentity();
@@ -352,6 +355,12 @@ async function main(): Promise<void> {
       });
     }
   };
+  daemon.on("down", () => {
+    focusOwners.clear();
+    sessionSizes.clear();
+    appliedSizes.clear();
+    gateway.terminateAll();
+  });
   browsers.on("frame", (handle: number, seq: number, data: Buffer) =>
     gateway.forwardBrowserFrame(handle, seq, data),
   );

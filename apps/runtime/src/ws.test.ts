@@ -79,6 +79,16 @@ test("healthy clients still receive encrypted frames", () => {
   }
 });
 
+test("terminal daemon loss terminates all authenticated connections", () => {
+  const { gateway, counts, close } = fixture(0);
+  try {
+    gateway.terminateAll();
+    assert.deepEqual(counts(), { sealed: 0, sent: 0, terminated: 1, closed: 1 });
+  } finally {
+    close();
+  }
+});
+
 test("surface detach removes only the requested surface", () => {
   const channels = new Map([
     [1, "browser-a"],

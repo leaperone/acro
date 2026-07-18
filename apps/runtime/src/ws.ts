@@ -180,6 +180,13 @@ export class Gateway {
     }
   }
 
+  terminateAll(): void {
+    for (const conn of [...this.conns]) {
+      conn.ws.terminate();
+      this.removeConn(conn);
+    }
+  }
+
   private sendText(conn: Conn, msg: unknown): void {
     if (!conn.session) return;
     const text = JSON.stringify(msg);

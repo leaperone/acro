@@ -25,6 +25,7 @@ type SerializeAddon = InstanceType<typeof SerializeAddon>;
 import { Session as SessionSchema, type Session } from "@acro/protocol";
 import { encodeOutFrame, decodeFrame, FRAME_IN } from "@acro/protocol";
 import { paths, ensureStateDirs } from "../paths.ts";
+import { acquireProcessLock } from "../process-lock.ts";
 import { readJson, writeJsonAtomic } from "../store.ts";
 import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 import { utf8SafeCut } from "./utf8.ts";
@@ -559,6 +560,8 @@ function startServer(): void {
 
 function main(): void {
   ensureStateDirs();
+  const releaseLock = acquireProcessLock(paths.daemonLock, "terminal daemon");
+  process.once("exit", releaseLock);
   ensureSpawnHelperExecutable();
   // currentCwd() 把"读数 == daemon 自身 cwd"当作 spawn 未就绪的噪音丢弃;
   // daemon 挪到 state 目录,避免与用户会话目录(常见是家目录)撞车导致误判

@@ -17,6 +17,8 @@ export const paths = {
   projects: path.join(stateDir, "projects.json"),
   workspaces: path.join(stateDir, "workspaces.json"),
   workspaceGroups: path.join(stateDir, "workspace-groups.json"),
+  runtimeLock: path.join(stateDir, "runtime.lock"),
+  daemonLock: path.join(stateDir, "daemon.lock"),
   daemonSocket: path.join(stateDir, "daemon.sock"),
   daemonMeta: path.join(stateDir, "daemon.meta.json"),
   daemonLog: path.join(stateDir, "daemon.log"),
