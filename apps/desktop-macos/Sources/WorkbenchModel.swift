@@ -32,6 +32,9 @@ enum SidebarViewMode: String, CaseIterable, Identifiable {
 struct TabDragPayload: Equatable {
     let sessionId: String
     let sourcePaneId: String
+    // 每次拖拽唯一:陈旧 provider 的延迟 deinit(外部 App 异步 loadItem 持有数秒)
+    // 不会误清后来同一标签的新一轮拖拽
+    let token = UUID()
 }
 
 @MainActor

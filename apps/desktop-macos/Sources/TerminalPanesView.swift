@@ -303,7 +303,8 @@ private struct PaneTabBar: View {
                         perform: {
                             guard let payload = model.draggingTab else { return false }
                             model.draggingTab = nil
-                            model.moveTab(payload, toPane: pane.id, at: nil)
+                            // 标签条空白 = 显式"排到末尾";nil(反悔语义)留给窗格 body 中心区
+                            model.moveTab(payload, toPane: pane.id, at: pane.sessionIds.count)
                             return true
                         }
                     )

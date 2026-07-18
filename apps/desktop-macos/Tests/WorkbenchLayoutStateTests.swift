@@ -96,11 +96,15 @@ final class WorkbenchLayoutStateTests: XCTestCase {
         layout.moveTab("c", toPane: paneId, at: 0)
         XCTAssertEqual(layout.root?.pane(withId: paneId)?.sessionIds, ["c", "b", "a"])
 
-        // 落回本窗格空白处(index nil):不改顺序,只选中
+        // 落回本窗格中心(index nil,反悔动作):不改顺序,只选中
         layout.selectTab("b", inPane: paneId)
         layout.moveTab("c", toPane: paneId, at: nil)
         XCTAssertEqual(layout.root?.pane(withId: paneId)?.sessionIds, ["c", "b", "a"])
         XCTAssertEqual(layout.focusedSessionId, "c")
+
+        // 标签条空白 = 显式末尾下标:同窗格排到最后
+        layout.moveTab("c", toPane: paneId, at: 3)
+        XCTAssertEqual(layout.root?.pane(withId: paneId)?.sessionIds, ["b", "a", "c"])
     }
 
     func testPruneAndRoundTrip() throws {
