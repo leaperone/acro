@@ -16,10 +16,41 @@ struct SidebarRowSurface: ViewModifier {
             .background(
                 selected
                     ? Color.accentColor.opacity(0.18)
-                    : hovered ? Color.primary.opacity(0.06) : Color.clear,
+                    : hovered ? Color.primary.opacity(0.08) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 6)
             )
             .onHover { hovered = $0 }
+    }
+}
+
+// footer ghost 图标按钮:复刻 cmux 的 house 约定——透明底,hover/pressed 才浮出
+// Color.primary 的柔和填充(0 / 0.08 / 0.16 三档),圆角 8。
+struct SidebarFooterIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Content(configuration: configuration)
+    }
+
+    private struct Content: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var hovered = false
+
+        private var fillOpacity: Double {
+            guard isEnabled else { return 0 }
+            if configuration.isPressed { return 0.16 }
+            return hovered ? 0.08 : 0
+        }
+
+        var body: some View {
+            configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(fillOpacity))
+                )
+                .onHover { hovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: hovered)
+                .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+        }
     }
 }
 
@@ -405,6 +436,9 @@ struct SidebarView: View {
                     }
                     return true
                 }
+
+            Divider()
+            sidebarFooter
         }
         .background(.bar)
         .sheet(isPresented: $connectSheetPresented) {
@@ -452,39 +486,38 @@ struct SidebarView: View {
             .pickerStyle(.segmented)
             .frame(width: 64)
             .help("切换工作区或会话视图")
-            connectionDot
+            // 新建拆分按钮:单击直接新建工作区(保留右上角肌肉记忆),按住/展开菜单可选新建分组。
+            // 取代原来的「三点圈菜单 + 独立加号」两块。
             Menu {
+                Button("新建工作区", systemImage: "square.stack.3d.up.badge.plus") {
+                    Task { await model.createWorkspace() }
+                }
                 Button("新建分组", systemImage: "folder.badge.plus") {
                     model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "plus")
                     .frame(width: 20, height: 20)
+            } primaryAction: {
+                Task { await model.createWorkspace() }
             }
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("工作区管理")
-            .accessibilityLabel("工作区管理")
-            Button {
-                Task { await model.createWorkspace() }
-            } label: {
-                Image(systemName: "plus")
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.plain)
-            .help("新建工作区")
-            .accessibilityLabel("新建工作区")
+            .help("新建工作区(按住可新建分组)")
+            .accessibilityLabel("新建")
         }
         .padding(.trailing, 12)
         .frame(height: 38)
     }
 
-    private var connectionDot: some View {
-        let (color, help): (Color, String) = switch runtime.state {
-        case .connected: (.green, "Runtime 已连接")
-        case .connecting: (.orange, "正在连接 Runtime…")
-        case .disconnected: (.secondary, "Runtime 未连接")
+    // 连接状态点:绿=已连接,橙=连接中,灰=未连接。顶栏不再放全局 dot,
+    // 状态下沉到每台服务器头部(远程 section 头与本地状态带各自复用)。
+    private func statusDot(_ state: RuntimeConnection.ConnectionState) -> some View {
+        let (color, help): (Color, String) = switch state {
+        case .connected: (.green, "已连接")
+        case .connecting: (.orange, "连接中…")
+        case .disconnected: (.secondary, "未连接")
         }
         return Circle()
             .fill(color)
@@ -502,7 +535,7 @@ struct SidebarView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("本机 Runtime 未就绪")
                     .foregroundStyle(.secondary)
-                Text("正在自动拉起本地服务;远程服务器用下方「连接服务器…」接入。")
+                Text("正在自动拉起本地服务;远程服务器用底栏的接入按钮连接。")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -510,6 +543,7 @@ struct SidebarView: View {
             .padding(.vertical, 8)
         }
         ForEach(locals) { entry in
+            localStatusBand(entry)
             serverContent(entry)
         }
         if !locals.isEmpty && !remotes.isEmpty {
@@ -519,22 +553,64 @@ struct SidebarView: View {
         ForEach(remotes) { entry in
             serverSection(entry)
         }
-        connectServerRow
     }
 
-    private var connectServerRow: some View {
-        Button {
-            connectSheetPresented = true
-        } label: {
-            Label("连接服务器…", systemImage: "plus.rectangle.on.rectangle")
+    // 本机状态带:本地 runtime 无手风琴头,单独补一条不可折叠的轻量状态行,
+    // 与远程 section 头同层级呈现连接状态(顶栏 dot 删除后由它 + 远程头承接)。
+    private func localStatusBand(_ entry: RuntimeHub.Entry) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "desktopcomputer")
                 .font(.caption)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10)
-                .frame(height: 30)
+                .foregroundStyle(.secondary)
+            Text("本机")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tertiary)
+            statusDot(entry.connection.state)
+            Text(localStateLabel(entry.connection.state))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+    }
+
+    private func localStateLabel(_ state: RuntimeConnection.ConnectionState) -> String {
+        switch state {
+        case .connected: "就绪"
+        case .connecting: "连接中…"
+        case .disconnected: "未就绪"
+        }
+    }
+
+    // 底部功能条:承接不隶属某台服务器的低频全局动作(接入服务器 / 设置),
+    // 对齐 cmux 的 footer 抽屉惯例,让内容列表底部更干净。固定钉底不随列表滚动。
+    private var sidebarFooter: some View {
+        HStack(spacing: 4) {
+            Button {
+                connectSheetPresented = true
+            } label: {
+                Image(systemName: "plus.rectangle.on.rectangle")
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(SidebarFooterIconButtonStyle())
+            .help("粘贴另一台服务器的配对码接入")
+            .accessibilityLabel("连接服务器")
+            Spacer(minLength: 0)
+            Button {
+                model.requestOpenSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(SidebarFooterIconButtonStyle())
+            .help("打开设置")
+            .accessibilityLabel("设置")
+        }
         .foregroundStyle(.secondary)
-        .help("粘贴另一台服务器的配对码接入")
+        .padding(.leading, 6)
+        .padding(.trailing, 10)
+        .padding(.vertical, 6)
     }
 
     // 每台服务器一个手风琴段,内容来自它自己的连接,同时在线互不影响
@@ -554,12 +630,13 @@ struct SidebarView: View {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.tertiary)
                     .frame(width: 12)
-                Image(systemName: "desktopcomputer")
+                Image(systemName: "network")
                     .font(.caption)
                     .foregroundStyle(isSelected ? .primary : .secondary)
                 Text(entry.server.name)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(isSelected ? .primary : .secondary)
+                statusDot(entry.connection.state)
                 Text(pathLabel(entry.connection))
                     .font(.caption2)
                     .foregroundStyle(entry.connection.connected ? Color.green : Color.orange)
