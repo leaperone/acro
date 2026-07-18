@@ -102,7 +102,7 @@ class DaemonSession {
 
   private onOutput: (handle: number, seq: number, data: Buffer) => void;
   private onExit: (session: DaemonSession, removed: boolean) => void;
-  private onTitle: (session: DaemonSession, title: string) => void;
+  private onTitle: (session: DaemonSession, title: string | null) => void;
 
   constructor(
     opts: {
@@ -113,7 +113,7 @@ class DaemonSession {
     },
     onOutput: (handle: number, seq: number, data: Buffer) => void,
     onExit: (session: DaemonSession, removed: boolean) => void,
-    onTitle: (session: DaemonSession, title: string) => void,
+    onTitle: (session: DaemonSession, title: string | null) => void,
   ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
@@ -184,6 +184,11 @@ class DaemonSession {
     this.ptyProc.onExit(({ exitCode }) => {
       // 尾批先于 exit 事件送出,客户端不会丢最后一段输出
       this.flushOutput();
+      // 退出即停掉挂起的标题尾发,别给已进死表的会话补发多余 session.title
+      if (this.titleTimer) {
+        clearTimeout(this.titleTimer);
+        this.titleTimer = null;
+      }
       this.meta.alive = false;
       this.meta.exitCode = exitCode;
       if (!this.removeOnExit) this.checkpoint();
@@ -333,7 +338,9 @@ class DaemonSession {
 
   // OSC 标题变化:内存即时更新(session.list 立刻反映),节流广播压高频刷标题。
   // 落盘交给已有的 checkpointIfDirty(静默 2s),不为标题单独触发重的 scrollback 序列化。
-  private updateTitle(title: string): void {
+  private updateTitle(raw: string): void {
+    // OSC 清空标题给的是空串;归一为 null,内存态与广播态一致,客户端统一回退 cwd
+    const title = raw === "" ? null : raw;
     if (title === this.meta.title) return;
     this.meta.title = title;
     this.dirty = true;
@@ -348,7 +355,7 @@ class DaemonSession {
 
   private emitTitleNow(): void {
     this.pendingTitle = false;
-    this.onTitle(this, this.meta.title ?? "");
+    this.onTitle(this, this.meta.title);
   }
 }
 
@@ -399,8 +406,8 @@ function handleExit(session: DaemonSession, removed: boolean): void {
   emitEvent("session.exit", { sessionId: session.meta.id, exitCode: session.meta.exitCode });
 }
 
-function handleTitle(session: DaemonSession, title: string): void {
-  emitEvent("session.title", { sessionId: session.meta.id, title: title === "" ? null : title });
+function handleTitle(session: DaemonSession, title: string | null): void {
+  emitEvent("session.title", { sessionId: session.meta.id, title });
 }
 
 type Handler = (params: any) => Promise<unknown> | unknown;
