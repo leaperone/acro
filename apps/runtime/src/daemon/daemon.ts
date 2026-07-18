@@ -411,15 +411,46 @@ function loadDeadSessions(): void {
 // ---- socket 服务 ----
 
 const clients = new Set<net.Socket>();
+interface AttachReplay {
+  handle: number;
+  frames: Buffer[];
+  bytes: number;
+  overflowed: boolean;
+}
+const attachReplays = new Map<net.Socket, AttachReplay>();
+const snapshotRequests = new Map<net.Socket, Promise<void>>();
+
+function writeClient(client: net.Socket, buf: Buffer): boolean {
+  if (client.destroyed || daemonClientBufferExceeded(client.writableLength, buf.byteLength)) {
+    clients.delete(client);
+    client.destroy();
+    return false;
+  }
+  client.write(buf);
+  return true;
+}
 
 function broadcast(buf: Buffer): void {
+  for (const client of clients) writeClient(client, buf);
+}
+
+function broadcastTerminal(handle: number, buf: Buffer): void {
   for (const client of clients) {
-    if (client.destroyed || daemonClientBufferExceeded(client.writableLength, buf.byteLength)) {
-      clients.delete(client);
-      client.destroy();
-      continue;
+    const replay = attachReplays.get(client);
+    if (replay?.handle === handle && !replay.overflowed) {
+      if (!daemonClientBufferExceeded(replay.bytes, buf.byteLength)) {
+        replay.frames.push(buf);
+        replay.bytes += buf.byteLength;
+        continue;
+      }
+      replay.overflowed = true;
+      for (const frame of replay.frames) {
+        if (!writeClient(client, frame)) break;
+      }
+      replay.frames = [];
+      replay.bytes = 0;
     }
-    client.write(buf);
+    writeClient(client, buf);
   }
 }
 
@@ -429,7 +460,7 @@ function emitEvent(event: string, payload: unknown): void {
 }
 
 function handleOutput(handle: number, seq: number, data: Buffer): void {
-  broadcast(packBin(encodeOutFrame(handle, seq, data)));
+  broadcastTerminal(handle, packBin(encodeOutFrame(handle, seq, data)));
 }
 
 function handleExit(session: DaemonSession, removed: boolean): void {
@@ -444,6 +475,12 @@ function handleTitle(session: DaemonSession, title: string | null): void {
 }
 
 type Handler = (params: any) => Promise<unknown> | unknown;
+interface DaemonRequest {
+  t: string;
+  id: number;
+  method: string;
+  params?: unknown;
+}
 
 const handlers: Record<string, Handler> = {
   "daemon.info": () => ({ boot, pid: process.pid }),
@@ -503,6 +540,60 @@ const handlers: Record<string, Handler> = {
   },
 };
 
+async function respond(socket: net.Socket, req: DaemonRequest, withReplay: boolean): Promise<void> {
+  let replay: AttachReplay | null = null;
+  if (withReplay) {
+    const sessionId = (req.params as { sessionId?: unknown } | undefined)?.sessionId;
+    const session = typeof sessionId === "string" ? live.get(sessionId) : undefined;
+    if (session) {
+      replay = { handle: session.handle, frames: [], bytes: 0, overflowed: false };
+      attachReplays.set(socket, replay);
+    }
+  }
+
+  let response: Buffer;
+  try {
+    const handler = handlers[req.method];
+    if (!handler) throw new Error(`unknown method ${req.method}`);
+    const result = await handler(req.params ?? {});
+    if (replay?.overflowed) throw new Error("attach replay buffer exceeded; retry attach");
+    response = packJson({ t: "res", id: req.id, ok: true, result });
+  } catch (err) {
+    response = packJson({
+      t: "res",
+      id: req.id,
+      ok: false,
+      error: { code: "daemon_error", message: (err as Error).message },
+    });
+  } finally {
+    if (replay) attachReplays.delete(socket);
+  }
+
+  if (socket.destroyed) return;
+  try {
+    socket.write(response);
+    for (const frame of replay?.frames ?? []) {
+      if (socket.destroyed) break;
+      socket.write(frame);
+    }
+  } catch {
+    socket.destroy();
+  }
+}
+
+function dispatchRequest(socket: net.Socket, req: DaemonRequest): void {
+  if (req.method !== "session.snapshot") {
+    void respond(socket, req, false);
+    return;
+  }
+  const previous = snapshotRequests.get(socket) ?? Promise.resolve();
+  const current = previous.then(() => respond(socket, req, true));
+  snapshotRequests.set(socket, current);
+  void current.finally(() => {
+    if (snapshotRequests.get(socket) === current) snapshotRequests.delete(socket);
+  });
+}
+
 function startServer(): void {
   if (fs.existsSync(paths.daemonSocket)) fs.unlinkSync(paths.daemonSocket);
   const server = net.createServer((socket) => {
@@ -519,37 +610,21 @@ function startServer(): void {
             continue;
           }
           if (msg.kind !== KIND_JSON) continue;
-          const req = JSON.parse(msg.body.toString("utf8")) as {
-            t: string;
-            id: number;
-            method: string;
-            params?: unknown;
-          };
+          const req = JSON.parse(msg.body.toString("utf8")) as DaemonRequest;
           if (req.t !== "req") continue;
-          void (async () => {
-            try {
-              const handler = handlers[req.method];
-              if (!handler) throw new Error(`unknown method ${req.method}`);
-              const result = await handler(req.params ?? {});
-              socket.write(packJson({ t: "res", id: req.id, ok: true, result }));
-            } catch (err) {
-              socket.write(
-                packJson({
-                  t: "res",
-                  id: req.id,
-                  ok: false,
-                  error: { code: "daemon_error", message: (err as Error).message },
-                }),
-              );
-            }
-          })();
+          dispatchRequest(socket, req);
         }
       } catch {
         socket.destroy();
       }
     });
-    socket.on("close", () => clients.delete(socket));
-    socket.on("error", () => clients.delete(socket));
+    const cleanup = () => {
+      clients.delete(socket);
+      attachReplays.delete(socket);
+      snapshotRequests.delete(socket);
+    };
+    socket.on("close", cleanup);
+    socket.on("error", cleanup);
   });
   server.listen(paths.daemonSocket, () => {
     fs.chmodSync(paths.daemonSocket, 0o600);
