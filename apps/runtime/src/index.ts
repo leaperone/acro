@@ -37,6 +37,25 @@ async function main(): Promise<void> {
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
   const workspaces = new WorkspaceRegistry();
+  const storedWorkspaces = workspaces.list();
+  const liveSessionIds = new Set(
+    (await daemon.request<Session[]>("session.list"))
+      .filter((session) => session.alive)
+      .map((session) => session.id),
+  );
+  if (!storedWorkspaces.some((workspace) => workspace.sessionIds.some((id) => liveSessionIds.has(id)))) {
+    const workspace = storedWorkspaces[0] ?? workspaces.create();
+    try {
+      const { session } = await daemon.request<{ session: Session; handle: number }>(
+        "session.create",
+        { cwd: os.homedir(), cols: 140, rows: 40 },
+      );
+      workspaces.addSession(workspace.id, session.id);
+    } catch (error) {
+      if (storedWorkspaces.length === 0) workspaces.remove(workspace.id);
+      throw error;
+    }
+  }
   // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
   // 终端尺寸仲裁(tmux 模型):PTY 尺寸 = 各在挂客户端报告尺寸的最小值,

@@ -46,13 +46,18 @@ const PARSE_MERGE_MAX_CHARS = 256 * 1024;
 // esbuild cjs 打包形态下用自带的 require;ESM 源码运行时走 createRequire
 declare const require: NodeRequire | undefined;
 
-// pnpm 解包会丢 spawn-helper 的可执行位,node-pty 自己不修,这里自愈
+// 开发环境的 pnpm 解包可能丢执行位;发布包在签名前已修好,不要触碰已签名文件
 function ensureSpawnHelperExecutable(): void {
   const requireFn = typeof require === "function" ? require : createRequire(import.meta.url);
   const ptyDir = path.dirname(requireFn.resolve("node-pty/package.json"));
   for (const arch of ["darwin-arm64", "darwin-x64"]) {
     const helper = path.join(ptyDir, "prebuilds", arch, "spawn-helper");
-    if (fs.existsSync(helper)) fs.chmodSync(helper, 0o755);
+    if (!fs.existsSync(helper)) continue;
+    try {
+      fs.accessSync(helper, fs.constants.X_OK);
+    } catch {
+      fs.chmodSync(helper, 0o755);
+    }
   }
 }
 
