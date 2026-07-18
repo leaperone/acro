@@ -346,53 +346,134 @@ private struct ConnectServersSection: View {
 private struct EndpointsSection: View {
     @ObservedObject var runtime: RuntimeConnection
     @Binding var config: ClientConfig?
-    @State private var newEndpoint = ""
+    @State private var newLanEndpoint = ""
+    @State private var newPublicEndpoint = ""
 
     var body: some View {
-        Section {
-            if let server = config?.activeServer {
-                ForEach(server.endpoints, id: \.self) { endpoint in
-                    LabeledContent {
-                        HStack(spacing: 6) {
-                            if runtime.connectedEndpoint == endpoint {
-                                Text("当前使用").font(.caption).foregroundStyle(.green)
-                            }
-                            Button {
-                                remove(endpoint)
-                            } label: {
-                                Image(systemName: "minus.circle")
-                            }
-                            .buttonStyle(.borderless)
-                            .disabled(server.endpoints.count <= 1)
-                            .help(server.endpoints.count <= 1 ? "至少保留一个入口" : "删除入口")
-                        }
-                    } label: {
-                        Text(endpoint).font(.callout.monospaced())
+        Group {
+            Section {
+                LabeledContent("当前路径") {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(pathColor)
+                            .frame(width: 8, height: 8)
+                        Text(pathText)
                     }
                 }
-                HStack {
-                    TextField("添加入口,如 frp.example.com:7100", text: $newEndpoint)
-                        .textFieldStyle(.roundedBorder)
-                    Button("添加") { add() }
-                        .disabled(newEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
+            } header: {
+                Text("连接方式(\(config?.activeServer?.name ?? ""))")
+            } footer: {
+                Text("连接永远先试局域网直连,几秒内不可达就自动切到公网入口;断线后重连,回到家又会自动切回局域网。两条路是同一凭据、同一批会话。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-        } header: {
-            Text("入口地址(\(config?.activeServer?.name ?? ""))")
-        } footer: {
-            Text("按从上到下顺序尝试,失败自动切换下一个;所有入口共用同一凭据。在家走局域网直连,出门前把 FRP 等公网映射地址加进来即可,无需再改配置。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+            Section {
+                endpointRows(config?.activeServer?.lanEndpoints ?? [])
+                HStack {
+                    TextField("局域网地址,如 192.168.1.10:8790", text: $newLanEndpoint)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加") { add($newLanEndpoint, expected: .lan, hint: "这不是局域网地址;公网地址请加在下面的「公网入口」。") }
+                        .disabled(newLanEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if let addError, addErrorKind == .lan {
+                    Text(addError).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text("局域网直连")
+            } footer: {
+                Text("与 Runtime 在同一网络时使用的私网地址,配对码会自动带上;网卡地址变了可在这里更新。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                if config?.activeServer?.publicEndpoints.isEmpty ?? true {
+                    Label("尚未配置公网入口——离开这个局域网后将无法连接。把 FRP 等映射地址加进来即可在外网使用。", systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                }
+                endpointRows(config?.activeServer?.publicEndpoints ?? [])
+                HStack {
+                    TextField("公网地址,如 frp.example.com:7100", text: $newPublicEndpoint)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加") { add($newPublicEndpoint, expected: .publicNet, hint: "这是局域网地址;请加在上面的「局域网直连」。") }
+                        .disabled(newPublicEndpoint.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if let addError, addErrorKind == .publicNet {
+                    Text(addError).font(.caption).foregroundStyle(.red)
+                }
+            } header: {
+                Text("公网入口(FRP 等)")
+            } footer: {
+                Text("Runtime 通过 FRP 或其他代理映射到公网的地址。流量端到端加密,代理不需要配 TLS。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
-    private func add() {
-        let endpoint = newEndpoint.trimmingCharacters(in: .whitespaces)
+    @State private var addError: String?
+    @State private var addErrorKind: EndpointKind?
+
+    private var pathText: String {
+        switch runtime.state {
+        case .connected:
+            guard let endpoint = runtime.connectedEndpoint else { return "已连接" }
+            let kind = EndpointKind.classify(endpoint) == .lan ? "局域网直连" : "公网入口"
+            return "\(kind) · \(endpoint)"
+        case .connecting:
+            return "尝试中…(局域网优先,失败自动切公网)"
+        case .disconnected:
+            return "未连接"
+        }
+    }
+
+    private var pathColor: Color {
+        switch runtime.state {
+        case .connected: .green
+        case .connecting: .orange
+        case .disconnected: .secondary.opacity(0.4)
+        }
+    }
+
+    private func endpointRows(_ endpoints: [String]) -> some View {
+        ForEach(endpoints, id: \.self) { endpoint in
+            LabeledContent {
+                HStack(spacing: 6) {
+                    if runtime.connectedEndpoint == endpoint {
+                        Text("当前使用").font(.caption).foregroundStyle(.green)
+                    }
+                    Button {
+                        remove(endpoint)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled((config?.activeServer?.endpoints.count ?? 0) <= 1)
+                    .help((config?.activeServer?.endpoints.count ?? 0) <= 1 ? "至少保留一个地址" : "删除地址")
+                }
+            } label: {
+                Text(endpoint).font(.callout.monospaced())
+            }
+        }
+    }
+
+    // 校验地址类型放对了栏位:LAN 栏只收私网地址,公网栏只收域名/公网 IP
+    private func add(_ field: Binding<String>, expected: EndpointKind, hint: String) {
+        let endpoint = field.wrappedValue.trimmingCharacters(in: .whitespaces)
         guard !endpoint.isEmpty else { return }
+        guard EndpointKind.classify(endpoint) == expected else {
+            addError = hint
+            addErrorKind = expected
+            return
+        }
+        addError = nil
+        addErrorKind = nil
         mutate { server in
             if !server.endpoints.contains(endpoint) { server.endpoints.append(endpoint) }
         }
-        newEndpoint = ""
+        field.wrappedValue = ""
     }
 
     private func remove(_ endpoint: String) {

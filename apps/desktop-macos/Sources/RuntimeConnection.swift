@@ -11,6 +11,26 @@ struct RpcError: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
+// 入口按可达路径分两类:局域网直连(私网地址)与公网入口(FRP 等映射的域名/公网 IP)。
+// 分类由地址推断,不改协议;连接时局域网永远优先,公网只做回退。
+enum EndpointKind {
+    case lan
+    case publicNet
+
+    static func classify(_ endpoint: String) -> EndpointKind {
+        let host = endpoint.split(separator: ":").first.map(String.init) ?? endpoint
+        if host == "localhost" || host.hasPrefix("127.") || host.hasSuffix(".local") { return .lan }
+        if host.hasPrefix("192.168.") || host.hasPrefix("10.") { return .lan }
+        // 172.16.0.0/12
+        let parts = host.split(separator: ".")
+        if parts.count == 4, parts.allSatisfy({ Int($0) != nil }),
+           parts[0] == "172", let second = Int(parts[1]), (16...31).contains(second) {
+            return .lan
+        }
+        return .publicNet
+    }
+}
+
 // 一个远程 Runtime = 一个 token + 多个入口。与 acro CLI 共用 ~/.acro/client.json。
 struct ServerEntry: Codable, Identifiable, Equatable {
     var name: String
@@ -19,6 +39,11 @@ struct ServerEntry: Codable, Identifiable, Equatable {
     var pub: String
     var endpoints: [String]
     var id: String { deviceId.isEmpty ? name : deviceId }
+
+    var lanEndpoints: [String] { endpoints.filter { EndpointKind.classify($0) == .lan } }
+    var publicEndpoints: [String] { endpoints.filter { EndpointKind.classify($0) == .publicNet } }
+    // 连接尝试顺序:局域网直连优先,全部失败再落到公网入口
+    var orderedEndpoints: [String] { lanEndpoints + publicEndpoints }
 }
 
 struct ClientConfig: Codable {
@@ -118,7 +143,8 @@ final class RuntimeConnection: ObservableObject {
 
     private func openSocket() {
         guard let server, !server.endpoints.isEmpty else { return }
-        let endpoint = server.endpoints[endpointIndex % server.endpoints.count]
+        let ordered = server.orderedEndpoints
+        let endpoint = ordered[endpointIndex % ordered.count]
         guard let url = URL(string: "ws://\(endpoint)/ws"),
               let handshake = try? E2eeClientHandshake(expectedServerPubB64: server.pub)
         else { return }
@@ -283,7 +309,7 @@ final class RuntimeConnection: ObservableObject {
                 server.deviceId = deviceId
                 self.server = server
             }
-            connectedEndpoint = server.map { $0.endpoints[endpointIndex % $0.endpoints.count] }
+            connectedEndpoint = server.map { $0.orderedEndpoints[endpointIndex % $0.orderedEndpoints.count] }
             let generation = generation
             Task {
                 let ok = await refresh()

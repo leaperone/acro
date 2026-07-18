@@ -378,6 +378,10 @@ private struct SidebarRowDropDelegate: DropDelegate {
 struct SidebarView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
+    // 目标服务器列表(手风琴分组):内容属于哪台机器一目了然,点别的服务器即切换目标。
+    // 不持有快照:配置文件由设置页、CLI 和连接层多方写入,每次渲染实时读盘,
+    // 避免用过期副本 save() 把别处的删除/修改静默覆盖掉。
+    private var config: ClientConfig? { ClientConfig.load() }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -470,6 +474,85 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var content: some View {
+        let servers = config?.servers ?? []
+        if servers.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("未配对任何服务器")
+                    .foregroundStyle(.secondary)
+                Text("在设置(⌘,)→ 远程 里粘贴配对码。")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        } else {
+            ForEach(servers) { server in
+                serverSection(server)
+            }
+        }
+    }
+
+    // 每台目标服务器一个手风琴段:当前目标展开显示其工作区,点其他服务器切换过去
+    @ViewBuilder
+    private func serverSection(_ server: ServerEntry) -> some View {
+        let isActive = config?.activeServer?.id == server.id
+        Button {
+            guard !isActive else { return }
+            switchTo(server)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isActive ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 12)
+                Image(systemName: "desktopcomputer")
+                    .font(.caption)
+                    .foregroundStyle(isActive ? .primary : .secondary)
+                Text(server.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isActive ? .primary : .secondary)
+                if isActive {
+                    Text(activePathLabel)
+                        .font(.caption2)
+                        .foregroundStyle(runtime.connected ? Color.green : Color.orange)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isActive ? "当前目标" : "切换到 \(server.name)")
+
+        if isActive {
+            activeServerContent
+                .padding(.leading, 4)
+        }
+    }
+
+    private var activePathLabel: String {
+        switch runtime.state {
+        case .connected:
+            guard let endpoint = runtime.connectedEndpoint else { return "已连接" }
+            return EndpointKind.classify(endpoint) == .lan ? "局域网" : "公网"
+        case .connecting: return "连接中…"
+        case .disconnected: return "未连接"
+        }
+    }
+
+    private func switchTo(_ server: ServerEntry) {
+        // 写入前重新读盘,并确认目标还存在(可能已在设置页被删除)
+        guard var next = ClientConfig.load(),
+              let fresh = next.servers.first(where: { $0.id == server.id })
+        else { return }
+        next.active = fresh.id
+        next.save()
+        runtime.connect(server: fresh)
+    }
+
+    @ViewBuilder
+    private var activeServerContent: some View {
         if runtime.workspaceGroups.isEmpty && runtime.workspaces.isEmpty {
             Button {
                 Task { await model.createWorkspace() }
