@@ -67,6 +67,16 @@ async function main(): Promise<void> {
     assert.equal(fs.statSync(clientConfig).mode & 0o777, 0o600);
     console.log("[e2e] pair ok");
 
+    const config = JSON.parse(fs.readFileSync(clientConfig, "utf8"));
+    const primary = config.servers[0];
+    config.servers.push({ ...primary, localId: "server-b", name: "server-b" });
+    fs.writeFileSync(clientConfig, JSON.stringify(config, null, 2));
+    cli("--server", "server-b", "endpoints", "add", "b.example:9999");
+    const updatedConfig = JSON.parse(fs.readFileSync(clientConfig, "utf8"));
+    assert.equal(updatedConfig.servers[0].endpoints.includes("b.example:9999"), false);
+    assert.equal(updatedConfig.servers[1].endpoints.includes("b.example:9999"), true);
+    console.log("[e2e] server-scoped endpoints ok");
+
     // run:管道模式,命令自然退出,CLI 跟随退出并带回输出
     const runOut = execFileSync(
       process.execPath,
@@ -76,6 +86,31 @@ async function main(): Promise<void> {
     assert.match(runOut, /CLI_RUN_OK/);
     assert.match(runOut, /demo/);
     console.log("[e2e] run ok");
+
+    const passthroughOut = execFileSync(
+      process.execPath,
+      [
+        cliEntry,
+        "run",
+        "--cwd",
+        repo,
+        "--",
+        "printf",
+        "CLI_ARGS:<%s>:<%s>:<%s>:<%s>:<%s>:<%s>\\n",
+        "--server",
+        "server-b",
+        "--cwd",
+        "/inside path",
+        "$HOME",
+        "",
+      ],
+      { env: cliEnv, encoding: "utf8" },
+    );
+    assert.match(
+      passthroughOut,
+      /CLI_ARGS:<--server>:<server-b>:<--cwd>:<\/inside path>:<\$HOME>:<>/,
+    );
+    console.log("[e2e] double-dash passthrough ok");
 
     const sessions = cli("sessions");
     assert.match(sessions, /exit=0/);
