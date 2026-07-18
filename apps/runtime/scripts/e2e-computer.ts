@@ -17,12 +17,18 @@ const runtimeEntry = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const helperBin = fileURLToPath(
   new URL("../../helper-macos/.build/debug/acro-helper", import.meta.url),
 );
+const permissionsStartedMarker = path.join(stateDir, "permissions-started");
+const permissionsFinishedMarker = path.join(stateDir, "permissions-finished");
 
 const env = {
   ...process.env,
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
   ACRO_HELPER_SOCKET: path.join(stateDir, "helper.sock"),
+  ACRO_HELPER_TESTING: "1",
+  ACRO_HELPER_TEST_PERMISSIONS_DELAY_MS: "300",
+  ACRO_HELPER_TEST_PERMISSIONS_STARTED_MARKER: permissionsStartedMarker,
+  ACRO_HELPER_TEST_PERMISSIONS_FINISHED_MARKER: permissionsFinishedMarker,
 };
 
 function sleep(ms: number): Promise<void> {
@@ -61,16 +67,54 @@ function rawHelperRequest(request: unknown): Promise<{ ok: boolean; error?: stri
   });
 }
 
-function disconnectBeforeHelperResponse(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const socket = net.connect(env.ACRO_HELPER_SOCKET);
-    socket.on("connect", () => {
-      socket.write(`${JSON.stringify({ id: 2, method: "permissions.check", params: {} })}\n`);
-      socket.destroy();
-      resolve();
-    });
-    socket.on("error", reject);
+async function verifyCrossConnectionSerialization(): Promise<void> {
+  const first = net.connect(env.ACRO_HELPER_SOCKET);
+  await new Promise<void>((resolve, reject) => {
+    first.once("connect", resolve);
+    first.once("error", reject);
   });
+  first.write(
+    `${JSON.stringify({ id: 3, method: "ping", params: { delayMs: 300 } })}\n`,
+  );
+  await sleep(50);
+  first.destroy();
+
+  const startedAt = Date.now();
+  const second = await rawHelperRequest({ id: 4, method: "ping", params: {} });
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(second.ok, true);
+  assert.ok(elapsedMs >= 150, `new helper connection overlapped old handler (${elapsedMs}ms)`);
+}
+
+async function verifyBlockedResponseDoesNotHoldGate(): Promise<void> {
+  const marker = path.join(stateDir, "large-response-started");
+  const first = net.connect(env.ACRO_HELPER_SOCKET);
+  first.on("error", () => {});
+  await new Promise<void>((resolve, reject) => {
+    first.once("connect", resolve);
+    first.once("error", reject);
+  });
+  try {
+    first.write(
+      `${JSON.stringify({
+        id: 5,
+        method: "ping",
+        params: { markerPath: marker, responseBytes: 8 * 1024 * 1024 },
+      })}\n`,
+    );
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline && !fs.existsSync(marker)) await sleep(5);
+    assert.equal(fs.existsSync(marker), true, "large helper response did not start");
+    const second = await Promise.race([
+      rawHelperRequest({ id: 6, method: "ping", params: {} }),
+      sleep(750).then(() => {
+        throw new Error("blocked helper response held the global request gate");
+      }),
+    ]);
+    assert.equal(second.ok, true);
+  } finally {
+    first.destroy();
+  }
 }
 
 async function main(): Promise<void> {
@@ -84,19 +128,31 @@ async function main(): Promise<void> {
 
   try {
     const deadline = Date.now() + 15000;
+    let healthy = false;
     while (Date.now() < deadline) {
       try {
-        if ((await fetch(`http://127.0.0.1:${PORT}/health`)).ok) break;
+        if ((await fetch(`http://127.0.0.1:${PORT}/health`)).ok) {
+          healthy = true;
+          break;
+        }
       } catch {
         await sleep(150);
       }
     }
+    assert.equal(healthy, true, "runtime health endpoint did not become ready");
+    const bootstrapPath = path.join(stateDir, "bootstrap-offer.txt");
+    while (Date.now() < deadline && !fs.existsSync(bootstrapPath)) await sleep(10);
+    assert.equal(fs.existsSync(bootstrapPath), true, "runtime did not create bootstrap offer");
+    while (Date.now() < deadline && !fs.existsSync(env.ACRO_HELPER_SOCKET)) await sleep(10);
+    assert.equal(fs.existsSync(env.ACRO_HELPER_SOCKET), true, "helper socket did not become ready");
     const offer = decodePairingOffer(
-      fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim(),
+      fs.readFileSync(bootstrapPath, "utf8").trim(),
     );
     assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
     assert.equal(fs.statSync(path.join(stateDir, "helper.sock")).mode & 0o777, 0o600);
     await sendOversizedRequest();
+    await verifyCrossConnectionSerialization();
+    await verifyBlockedResponseDoesNotHoldGate();
     const invalidKey = await rawHelperRequest({
       id: 1,
       method: "input.key",
@@ -104,25 +160,53 @@ async function main(): Promise<void> {
     });
     assert.equal(invalidKey.ok, false);
     assert.match(invalidKey.error ?? "", /keyCode out of range/);
-    await disconnectBeforeHelperResponse();
-    await sleep(200);
-    const client = new E2eClient();
-    await client.connect(offer);
-    const rpc = <T = any>(method: string, params: unknown = {}) =>
-      client.rpc<T>(method, params, 15000);
+    const revokedClient = new E2eClient();
+    await revokedClient.connect(offer);
+    const shared = await revokedClient.rpc<{ offer: string; deviceId: string }>("device.share", {
+      name: "revoker",
+      extraEndpoints: [`127.0.0.1:${PORT}`],
+    });
+    const activeClient = new E2eClient();
+    await activeClient.connect(decodePairingOffer(shared.offer));
 
-    const perms = await rpc<{ accessibility: boolean; screenRecording: boolean }>(
-      "computer.permissions",
+    const revokedRequest = revokedClient
+      .rpc<{ accessibility: boolean; screenRecording: boolean }>("computer.permissions", {}, 2000)
+      .then(
+        () => ({ ok: true as const, error: null }),
+        (error: Error) => ({ ok: false as const, error }),
+      );
+    const permissionsDeadline = Date.now() + 2000;
+    while (Date.now() < permissionsDeadline && !fs.existsSync(permissionsStartedMarker)) {
+      await sleep(5);
+    }
+    assert.equal(
+      fs.existsSync(permissionsStartedMarker),
+      true,
+      "revoked device request never entered helper",
+    );
+    await activeClient.rpc("device.revoke", { deviceId: revokedClient.deviceId });
+    const perms = await activeClient.rpc<{
+      accessibility: boolean;
+      screenRecording: boolean;
+    }>("computer.permissions", {}, 2000);
+    const revokedResult = await revokedRequest;
+    assert.equal(revokedResult.ok, false);
+    assert.match(revokedResult.error?.message ?? "", /connection closed/);
+    assert.equal(
+      fs.existsSync(permissionsFinishedMarker),
+      true,
+      "revoker completed before revoked helper handler released the gate",
     );
     assert.equal(typeof perms.accessibility, "boolean");
     assert.equal(typeof perms.screenRecording, "boolean");
     console.log(`[e2e] permissions: ax=${perms.accessibility} screen=${perms.screenRecording}`);
 
-    const { windows } = await rpc<{ windows: unknown[] }>("computer.windows");
+    const { windows } = await activeClient.rpc<{ windows: unknown[] }>("computer.windows");
     assert.ok(Array.isArray(windows) && windows.length > 0, "window list must be non-empty");
     console.log(`[e2e] windows: ${windows.length}`);
 
-    client.close();
+    await revokedClient.waitClosed();
+    activeClient.close();
     console.log("\nE2E-COMPUTER PASS ✅  helper 链路(permissions/window.list)通过");
   } finally {
     runtime.kill("SIGTERM");

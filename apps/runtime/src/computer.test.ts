@@ -22,7 +22,12 @@ test("helper responses preserve unicode split across socket chunks", async () =>
     onData(text: string): void;
     pending: Map<
       number,
-      { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
+      {
+        resolve: (value: unknown) => void;
+        reject: (error: Error) => void;
+        timer: NodeJS.Timeout;
+        cleanup: () => void;
+      }
     >;
   };
   const response = Buffer.from(
@@ -34,7 +39,7 @@ test("helper responses preserve unicode split across socket chunks", async () =>
 
   const result = new Promise<unknown>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("test timeout")), 1000);
-    internals.pending.set(1, { resolve, reject, timer });
+    internals.pending.set(1, { resolve, reject, timer, cleanup: () => clearTimeout(timer) });
   });
   internals.onData(internals.decoder.write(response.subarray(0, split)));
   internals.onData(internals.decoder.write(response.subarray(split)));
@@ -96,14 +101,12 @@ test("helper requests execute one at a time on one socket", async () => {
   }
 });
 
-test("helper timeout drops the connection and queued work resumes on a new deadline", async () => {
+test("helper deadlines include time spent waiting in the queue", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-helper-timeout-"));
   const socketPath = path.join(directory, "helper.sock");
   const sockets = new Set<net.Socket>();
   const requests: Array<{ id: number; method: string; deadlineMs: number }> = [];
-  let connections = 0;
   const server = net.createServer((socket) => {
-    connections += 1;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     let buffer = "";
@@ -117,9 +120,6 @@ test("helper timeout drops the connection and queued work resumes on a new deadl
         deadlineMs: number;
       };
       requests.push(request);
-      if (request.method === "second") {
-        socket.write(`${JSON.stringify({ id: request.id, ok: true, result: "second" })}\n`);
-      }
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -131,12 +131,70 @@ test("helper timeout drops the connection and queued work resumes on a new deadl
   try {
     const first = client.request("first");
     const second = client.request("second");
-    await assert.rejects(client.request("third"), /queue full/);
-    await assert.rejects(first, /helper timeout: first/);
-    assert.equal(await second, "second");
+    await Promise.all([
+      assert.rejects(client.request("third"), /queue full/),
+      assert.rejects(first, /helper timeout: first/),
+      assert.rejects(second, /helper timeout: second/),
+    ]);
+    assert.equal(requests.some((request) => request.method === "second"), false);
+  } finally {
+    client.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("aborting one connection removes its queue and interrupts its active helper request", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-helper-abort-"));
+  const socketPath = path.join(directory, "helper.sock");
+  const sockets = new Set<net.Socket>();
+  const requests: Array<{ id: number; method: string }> = [];
+  let connections = 0;
+  const server = net.createServer((socket) => {
+    connections += 1;
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const request = JSON.parse(buffer.slice(0, newline)) as { id: number; method: string };
+        buffer = buffer.slice(newline + 1);
+        requests.push(request);
+        if (request.method === "other-device") {
+          socket.write(`${JSON.stringify({ id: request.id, ok: true, result: "continued" })}\n`);
+        }
+        newline = buffer.indexOf("\n");
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  const client = new HelperClient(socketPath, 1000, 3);
+  const revoked = new AbortController();
+
+  try {
+    const active = client.request("revoked-active", {}, revoked.signal);
+    const queued = client.request("revoked-queued", {}, revoked.signal);
+    const otherDevice = client.request("other-device");
+    await waitFor(() => requests.length === 1);
+
+    revoked.abort(new Error("connection closed"));
+
+    await Promise.all([
+      assert.rejects(active, /connection closed/),
+      assert.rejects(queued, /connection closed/),
+    ]);
+    assert.equal(await otherDevice, "continued");
     assert.equal(connections, 2);
-    assert.equal(requests.length, 2);
-    assert.ok(requests[1]!.deadlineMs > requests[0]!.deadlineMs);
+    assert.deepEqual(requests.map((request) => request.method), [
+      "revoked-active",
+      "other-device",
+    ]);
   } finally {
     client.close();
     for (const socket of sockets) socket.destroy();

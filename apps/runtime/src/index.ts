@@ -292,16 +292,32 @@ async function main(): Promise<void> {
       return { detached: true };
     },
     // ponytail: computer.* 目前全量转发,项目级安全策略(哪些 app/区域可操作)接入时再收紧
-    "computer.permissions": () =>
-      helper.request<{ accessibility: boolean; screenRecording: boolean }>("permissions.check"),
-    "computer.capture": () =>
-      helper.request<{ png: string; width: number; height: number }>("screen.capture"),
-    "computer.windows": () => helper.request<{ windows: unknown[] }>("window.list"),
-    "computer.click": async (_conn, params) => helper.request("input.click", params),
-    "computer.type": async (_conn, params) => helper.request("input.type", params),
-    "computer.key": async (_conn, params) => helper.request("input.key", params),
-    "computer.activate": (_conn, params) =>
-      helper.request<{ activated: boolean }>("app.activate", params),
+    "computer.permissions": (conn) =>
+      helper.request<{ accessibility: boolean; screenRecording: boolean }>(
+        "permissions.check",
+        {},
+        conn.abortController.signal,
+      ),
+    "computer.capture": (conn) =>
+      helper.request<{ png: string; width: number; height: number }>(
+        "screen.capture",
+        {},
+        conn.abortController.signal,
+      ),
+    "computer.windows": (conn) =>
+      helper.request<{ windows: unknown[] }>("window.list", {}, conn.abortController.signal),
+    "computer.click": async (conn, params) =>
+      helper.request("input.click", params, conn.abortController.signal),
+    "computer.type": async (conn, params) =>
+      helper.request("input.type", params, conn.abortController.signal),
+    "computer.key": async (conn, params) =>
+      helper.request("input.key", params, conn.abortController.signal),
+    "computer.activate": (conn, params) =>
+      helper.request<{ activated: boolean }>(
+        "app.activate",
+        params,
+        conn.abortController.signal,
+      ),
   };
 
   const gateway = new Gateway(registry, identity.priv, handlers, (handle, data) =>
