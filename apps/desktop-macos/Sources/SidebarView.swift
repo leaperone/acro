@@ -263,6 +263,10 @@ struct WorkspaceRow: View, Equatable {
         }
         .onHover { hovered = $0 }
         .contextMenu {
+            if snapshot.hasProjects {
+                Button("新建终端", action: actions.newTerminal)
+                Divider()
+            }
             if !snapshot.removableProjects.isEmpty {
                 Menu("移除项目") {
                     ForEach(snapshot.removableProjects, id: \.id) { project in
@@ -529,6 +533,21 @@ struct SidebarView: View {
         }
         .buttonStyle(.plain)
         .help(entry.connection.connected ? "展开/收起 \(entry.server.name)" : "\(entry.server.name) 未连接,自动重试中")
+        .contextMenu {
+            // 服务器级创建入口:动作先 activate,保证 RPC 落到这台服务器
+            Button("新建工作区") {
+                model.activate(serverId: entry.id)
+                Task { await model.createWorkspace() }
+            }
+            .disabled(!entry.connection.connected)
+            Button("新建分组") {
+                model.activate(serverId: entry.id)
+                model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
+            }
+            .disabled(!entry.connection.connected)
+            Divider()
+            Button("远程设置…") { model.requestOpenSettings() }
+        }
 
         if expanded {
             serverContent(entry)

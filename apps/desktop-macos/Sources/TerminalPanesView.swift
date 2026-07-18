@@ -365,6 +365,15 @@ private struct PaneTabBar: View {
             focused: focused,
             select: { model.selectTab(sessionId, inPane: pane.id) },
             kill: { model.requestKillTab(sessionId) },
+            // 分屏基于焦点窗格:先把该标签选中再分,语义与 orca 的"非激活标签先激活"一致
+            splitRight: {
+                model.selectTab(sessionId, inPane: pane.id)
+                model.splitTerminal(.horizontal)
+            },
+            splitDown: {
+                model.selectTab(sessionId, inPane: pane.id)
+                model.splitTerminal(.vertical)
+            },
             beginDrag: {
                 let payload = TabDragPayload(sessionId: sessionId, sourcePaneId: pane.id)
                 model.draggingTab = payload
@@ -392,6 +401,8 @@ private struct PaneTabItem: View {
     let focused: Bool
     let select: () -> Void
     let kill: () -> Void
+    let splitRight: () -> Void
+    let splitDown: () -> Void
     let beginDrag: () -> NSItemProvider
     let acceptDrop: () -> Bool
     let performDrop: () -> Bool
@@ -447,6 +458,9 @@ private struct PaneTabItem: View {
         }
         .onHover { hovered = $0 }
         .contextMenu {
+            Button("向右分屏(\(ShortcutSettings.stored(.splitRight).displayString))", action: splitRight)
+            Button("向下分屏(\(ShortcutSettings.stored(.splitDown).displayString))", action: splitDown)
+            Divider()
             Button("关闭标签(终止终端)", role: .destructive, action: kill)
         }
         .onDrag(beginDrag)
