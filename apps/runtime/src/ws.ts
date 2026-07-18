@@ -16,6 +16,16 @@ import {
 } from "@acro/protocol";
 import type { DeviceRegistry } from "./devices.ts";
 
+export function removeSurfaceChannels(channels: Map<number, string>, surfaceId: string): number[] {
+  const removed: number[] = [];
+  for (const [channel, id] of channels) {
+    if (id !== surfaceId) continue;
+    channels.delete(channel);
+    removed.push(channel);
+  }
+  return removed;
+}
+
 export interface Conn {
   ws: WebSocket;
   // E2EE 握手完成后建立;认证前只允许 auth 消息
@@ -23,10 +33,9 @@ export interface Conn {
   device: Device | null;
   // channel(=daemon handle) -> 附着状态。attachSeq 之前的输出已包含在快照里。
   attached: Map<number, { sessionId: string; attachSeq: number }>;
-  // 已附着的浏览器 screencast channel
-  browserChannels: Set<number>;
-  // 已附着的模拟器画面 channel
-  simChannels: Set<number>;
+  // 已附着的画面 channel -> surface id，用于按连接释放最后一个订阅者。
+  browserChannels: Map<number, string>;
+  simChannels: Map<number, string>;
   // 心跳:上一轮 ping 后是否收到 pong(取自 orca ws-transport 的半开连接回收)
   alive: boolean;
 }
@@ -102,8 +111,8 @@ export class Gateway {
         session: null,
         device: null,
         attached: new Map(),
-        browserChannels: new Set(),
-        simChannels: new Set(),
+        browserChannels: new Map(),
+        simChannels: new Map(),
         alive: true,
       };
       this.conns.add(conn);
@@ -133,6 +142,32 @@ export class Gateway {
       if (conn.device?.id === deviceId) return true;
     }
     return false;
+  }
+
+  hasConnection(conn: Conn): boolean {
+    return this.conns.has(conn);
+  }
+
+  hasBrowserChannel(channel: number): boolean {
+    for (const conn of this.conns) {
+      if (conn.browserChannels.has(channel)) return true;
+    }
+    return false;
+  }
+
+  hasSimChannel(channel: number): boolean {
+    for (const conn of this.conns) {
+      if (conn.simChannels.has(channel)) return true;
+    }
+    return false;
+  }
+
+  dropBrowserChannel(channel: number): void {
+    for (const conn of this.conns) conn.browserChannels.delete(channel);
+  }
+
+  dropSimChannel(channel: number): void {
+    for (const conn of this.conns) conn.simChannels.delete(channel);
   }
 
   // 撤销授权时立即断开该设备的所有活动连接(orca terminateClientConnections)

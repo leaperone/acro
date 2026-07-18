@@ -16,7 +16,7 @@ import {
   ServerIdentity,
   writeBootstrapOffer,
 } from "./share.ts";
-import { Gateway, type Conn, type Handlers } from "./ws.ts";
+import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.ts";
 import { ensureStateDirs, paths } from "./paths.ts";
 
 interface SnapshotResult {
@@ -234,13 +234,27 @@ async function main(): Promise<void> {
       url: await browsers.navigate(browserId, url),
     }),
     "browser.attach": async (conn, { browserId }) => {
-      const result = await browsers.attach(browserId);
-      conn.browserChannels.add(result.channel);
-      return result;
+      const result = browsers.attachment(browserId);
+      conn.browserChannels.set(result.channel, browserId);
+      try {
+        await browsers.attach(browserId);
+        if (!gateway.hasConnection(conn)) throw new Error("connection closed");
+        return result;
+      } catch (error) {
+        conn.browserChannels.delete(result.channel);
+        await browsers
+          .detach(browserId, () => !gateway.hasBrowserChannel(result.channel))
+          .catch(() => {});
+        throw error;
+      }
     },
     "browser.detach": async (conn, { browserId }) => {
-      await browsers.detach(browserId);
-      for (const ch of conn.browserChannels) conn.browserChannels.delete(ch);
+      const channels = removeSurfaceChannels(conn.browserChannels, browserId);
+      if (channels.length > 0) {
+        await browsers.detach(browserId, () =>
+          channels.every((channel) => !gateway.hasBrowserChannel(channel)),
+        );
+      }
       return { detached: true };
     },
     "browser.input": async (_conn, { browserId, event }) => {
@@ -258,12 +272,14 @@ async function main(): Promise<void> {
     }),
     "simulator.attach": (conn, { udid }) => {
       const result = simulators.attach(udid);
-      conn.simChannels.add(result.channel);
+      conn.simChannels.set(result.channel, udid);
       return result;
     },
     "simulator.detach": (conn, { udid }) => {
-      simulators.detach(udid);
-      conn.simChannels.clear();
+      const channels = removeSurfaceChannels(conn.simChannels, udid);
+      if (channels.length > 0 && channels.every((channel) => !gateway.hasSimChannel(channel))) {
+        simulators.detach(udid);
+      }
       return { detached: true };
     },
     // ponytail: computer.* 目前全量转发,项目级安全策略(哪些 app/区域可操作)接入时再收紧
@@ -310,6 +326,14 @@ async function main(): Promise<void> {
   // 占用设备的连接全部断开后自动释放,其他设备无需手动接管
   gateway.onConnClosed = (conn) => {
     for (const sessionId of [...sessionSizes.keys()]) dropSizeVote(conn, sessionId);
+    for (const [channel, browserId] of conn.browserChannels) {
+      void browsers
+        .detach(browserId, () => !gateway.hasBrowserChannel(channel))
+        .catch(() => {});
+    }
+    for (const [channel, udid] of conn.simChannels) {
+      if (!gateway.hasSimChannel(channel)) simulators.detach(udid);
+    }
     const deviceId = conn.device?.id;
     if (!deviceId || gateway.hasDeviceConnection(deviceId)) return;
     for (const [sessionId, owner] of focusOwners) {
@@ -325,9 +349,13 @@ async function main(): Promise<void> {
   browsers.on("frame", (handle: number, seq: number, data: Buffer) =>
     gateway.forwardBrowserFrame(handle, seq, data),
   );
+  browsers.on("closed", (_browserId: string, handle: number) =>
+    gateway.dropBrowserChannel(handle),
+  );
   simulators.on("frame", (handle: number, seq: number, data: Buffer) =>
     gateway.forwardSimFrame(handle, seq, data),
   );
+  simulators.on("detached", (_udid: string, handle: number) => gateway.dropSimChannel(handle));
 
   // 本机再配对 offer 显式带回环入口:客户端以"含回环"识别本机条目
   const server = http.createServer(

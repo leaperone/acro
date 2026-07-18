@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { WebSocket } from "ws";
 import type { DeviceRegistry } from "./devices.ts";
-import { Gateway, type Conn, type Handlers } from "./ws.ts";
+import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.ts";
 
 function fixture(bufferedAmount: number) {
   let sealed = 0;
@@ -29,8 +29,8 @@ function fixture(bufferedAmount: number) {
     },
     device: { id: "device", name: "Device", createdAt: "", lastSeenAt: null },
     attached: new Map(),
-    browserChannels: new Set(),
-    simChannels: new Set(),
+    browserChannels: new Map(),
+    simChannels: new Map(),
     alive: true,
   } as unknown as Conn;
   const gateway = new Gateway({} as DeviceRegistry, new Uint8Array(32), {} as Handlers, () => {});
@@ -74,6 +74,38 @@ test("healthy clients still receive encrypted frames", () => {
     (gateway as unknown as { sendBinary(c: Conn, d: Uint8Array, lossy: boolean): void })
       .sendBinary(conn, new Uint8Array([1]), false);
     assert.deepEqual(counts(), { sealed: 1, sent: 1, terminated: 0, closed: 0 });
+  } finally {
+    close();
+  }
+});
+
+test("surface detach removes only the requested surface", () => {
+  const channels = new Map([
+    [1, "browser-a"],
+    [2, "browser-b"],
+    [3, "browser-a"],
+  ]);
+  assert.deepEqual(removeSurfaceChannels(channels, "browser-a"), [1, 3]);
+  assert.deepEqual([...channels], [[2, "browser-b"]]);
+});
+
+test("surface capture remains active until the last connection leaves", () => {
+  const { gateway, conn, close } = fixture(0);
+  const second = {
+    ...conn,
+    browserChannels: new Map<number, string>(),
+    simChannels: new Map<number, string>(),
+  };
+  try {
+    conn.browserChannels.set(7, "browser");
+    second.browserChannels.set(7, "browser");
+    (gateway as unknown as { conns: Set<Conn> }).conns.add(second);
+
+    conn.browserChannels.delete(7);
+    assert.equal(gateway.hasBrowserChannel(7), true);
+    gateway.dropBrowserChannel(7);
+    assert.equal(gateway.hasBrowserChannel(7), false);
+    assert.equal(second.browserChannels.size, 0);
   } finally {
     close();
   }

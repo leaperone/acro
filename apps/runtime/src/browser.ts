@@ -49,6 +49,7 @@ interface BrowserSurface {
   height: number;
   seq: number;
   casting: boolean;
+  castStarting: Promise<void> | null;
 }
 
 export class BrowserManager extends EventEmitter {
@@ -66,6 +67,9 @@ export class BrowserManager extends EventEmitter {
     });
     this.context.on("close", () => {
       this.context = null;
+      for (const surface of this.surfaces.values()) {
+        this.emit("closed", surface.id, surface.handle);
+      }
       this.surfaces.clear();
     });
     return this.context;
@@ -91,11 +95,12 @@ export class BrowserManager extends EventEmitter {
       height,
       seq: 0,
       casting: false,
+      castStarting: null,
     };
     this.surfaces.set(surface.id, surface);
     page.on("close", () => {
       this.surfaces.delete(surface.id);
-      this.emit("closed", surface.id);
+      this.emit("closed", surface.id, surface.handle);
     });
     cdp.on("Page.screencastFrame", (frame: { data: string; sessionId: number }) => {
       surface.seq += 1;
@@ -126,23 +131,36 @@ export class BrowserManager extends EventEmitter {
     return surface.page.url();
   }
 
-  async attach(browserId: string): Promise<{ channel: number; width: number; height: number }> {
+  attachment(browserId: string): { channel: number; width: number; height: number } {
     const surface = this.get(browserId);
-    if (!surface.casting) {
-      surface.casting = true;
-      await surface.cdp.send("Page.startScreencast", {
-        format: "jpeg",
-        quality: 65,
-        maxWidth: surface.width,
-        maxHeight: surface.height,
-        everyNthFrame: 1,
-      });
-    }
     return { channel: surface.handle, width: surface.width, height: surface.height };
   }
 
-  async detach(browserId: string): Promise<void> {
+  async attach(browserId: string): Promise<void> {
     const surface = this.get(browserId);
+    if (!surface.casting) {
+      surface.castStarting ??= surface.cdp
+        .send("Page.startScreencast", {
+          format: "jpeg",
+          quality: 65,
+          maxWidth: surface.width,
+          maxHeight: surface.height,
+          everyNthFrame: 1,
+        })
+        .then(() => {
+          surface.casting = true;
+        })
+        .finally(() => {
+          surface.castStarting = null;
+        });
+      await surface.castStarting;
+    }
+  }
+
+  async detach(browserId: string, shouldStop: () => boolean = () => true): Promise<void> {
+    const surface = this.get(browserId);
+    await surface.castStarting?.catch(() => {});
+    if (!shouldStop()) return;
     if (surface.casting) {
       surface.casting = false;
       await surface.cdp.send("Page.stopScreencast").catch(() => {});
