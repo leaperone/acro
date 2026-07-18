@@ -421,6 +421,20 @@ async function main(): Promise<void> {
     assert.ok(snapshot3.includes("AFTER_RECONNECT_XYZ"));
     client3.sendInput(attach3.channel, "echo AFTER_RUNTIME_RESTART_XYZ\n");
     await client3.waitOutput("AFTER_RUNTIME_RESTART_XYZ");
+    client3.sendInput(attach3.channel, `cd ${stateDir} && echo CWD_UNAVAILABLE_XYZ\n`);
+    await client3.waitOutput("CWD_UNAVAILABLE_XYZ");
+    await assert.rejects(
+      client3.rpc("session.create", {
+        workspaceId: updatedWorkspace.id,
+        inheritCwdFrom: session.id,
+        command: "/bin/sh",
+        cols: 80,
+        rows: 24,
+      }),
+      /source terminal working directory is unavailable/,
+    );
+    client3.sendInput(attach3.channel, "cd /private/tmp && echo CWD_RESTORED_XYZ\n");
+    await client3.waitOutput("CWD_RESTORED_XYZ");
     const inheritedAfterRestart = await client3.rpc<Session>("session.create", {
       workspaceId: updatedWorkspace.id,
       inheritCwdFrom: session.id,

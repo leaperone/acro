@@ -144,14 +144,18 @@ async function main(): Promise<void> {
       // 路径遵循既定事实:显式 cwd > 继承源会话的实时目录 > 家目录
       let cwd = params.cwd;
       if (!cwd && params.inheritCwdFrom) {
-        if (!daemon.supportsCwdInheritance) {
-          throw new Error(
-            "terminal daemon is outdated; close active terminals and restart the Acro server",
-          );
+        try {
+          cwd = await daemon
+            .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
+            .then((result) => result.cwd ?? undefined);
+        } catch (error) {
+          if ((error as Error).message === "unknown method session.cwd") {
+            throw new Error(
+              "terminal daemon is outdated; restart the Acro server to inherit the working directory",
+            );
+          }
+          throw error;
         }
-        cwd = await daemon
-          .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
-          .then((result) => result.cwd ?? undefined);
         if (!cwd) throw new Error("source terminal working directory is unavailable");
       }
       const { workspaceId, inheritCwdFrom, ...daemonParams } = params;

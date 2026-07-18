@@ -4,7 +4,6 @@
 
 export const KIND_JSON = 0;
 export const KIND_BIN = 1;
-export const DAEMON_PROTOCOL_VERSION = 1;
 
 export function packJson(obj: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(obj), "utf8");

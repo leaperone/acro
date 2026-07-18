@@ -8,14 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { OutFrame } from "@acro/protocol";
 import { decodeFrame, encodeInFrame, FRAME_OUT } from "@acro/protocol";
 import { paths } from "../paths.ts";
-import {
-  DAEMON_PROTOCOL_VERSION,
-  FrameReader,
-  KIND_BIN,
-  KIND_JSON,
-  packBin,
-  packJson,
-} from "./wire.ts";
+import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -35,12 +28,6 @@ export class DaemonClient extends EventEmitter {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private closed = false;
-  private daemonPid = 0;
-  private protocolVersion = 0;
-
-  get supportsCwdInheritance(): boolean {
-    return this.protocolVersion >= DAEMON_PROTOCOL_VERSION;
-  }
 
   static async connect(): Promise<DaemonClient> {
     const client = new DaemonClient();
@@ -55,22 +42,6 @@ export class DaemonClient extends EventEmitter {
       spawnDaemon();
       await retry(() => this.tryConnect(), 50, 100);
     }
-    await this.loadDaemonInfo();
-    if (!this.supportsCwdInheritance) {
-      const sessions = await this.request<Array<{ id: string; alive: boolean }>>("session.list");
-      const liveSession = sessions.find((session) => session.alive);
-      if (liveSession) {
-        try {
-          await this.request("session.cwd", { sessionId: liveSession.id });
-          this.protocolVersion = DAEMON_PROTOCOL_VERSION;
-        } catch {
-          // 真正的旧 daemon:保留活会话,新建继承终端时返回明确错误
-        }
-      } else {
-        await this.replaceOutdatedDaemon();
-      }
-    }
-    this.emit("up");
   }
 
   private tryConnect(): Promise<void> {
@@ -79,45 +50,22 @@ export class DaemonClient extends EventEmitter {
       socket.on("connect", () => {
         this.socket = socket;
         socket.on("data", (chunk) => this.onData(chunk));
-        socket.on("close", () => this.onClose(socket));
+        socket.on("close", () => this.onClose());
         socket.on("error", () => {});
+        this.emit("up");
         resolve();
       });
       socket.on("error", (err) => reject(err));
     });
   }
 
-  private onClose(socket: net.Socket): void {
-    if (this.socket !== socket) return;
+  private onClose(): void {
     this.socket = null;
-    this.daemonPid = 0;
-    this.protocolVersion = 0;
     for (const p of this.pending.values()) p.reject(new Error("daemon connection lost"));
     this.pending.clear();
     this.emit("down");
     if (this.closed) return;
     void retry(() => this.ensureConnected(), 100, 200).catch(() => {});
-  }
-
-  private async loadDaemonInfo(): Promise<void> {
-    const info = await this.request<{ pid: number; protocolVersion?: number }>("daemon.info");
-    this.daemonPid = info.pid;
-    this.protocolVersion = info.protocolVersion ?? 0;
-  }
-
-  private async replaceOutdatedDaemon(): Promise<void> {
-    const pid = this.daemonPid;
-    const socket = this.socket;
-    this.socket = null;
-    socket?.destroy();
-    if (processExists(pid)) process.kill(pid, "SIGTERM");
-    await retry(async () => {
-      if (processExists(pid)) throw new Error("outdated daemon still running");
-    }, 50, 100);
-    spawnDaemon();
-    await retry(() => this.tryConnect(), 50, 100);
-    await this.loadDaemonInfo();
-    if (!this.supportsCwdInheritance) throw new Error("failed to upgrade terminal daemon");
   }
 
   private onData(chunk: Buffer): void {
@@ -182,17 +130,6 @@ function spawnDaemon(): void {
   });
   child.unref();
   fs.closeSync(logFd);
-}
-
-function processExists(pid: number): boolean {
-  if (pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    throw error;
-  }
 }
 
 async function retry<T>(fn: () => Promise<T>, attempts: number, delayMs: number): Promise<T> {
