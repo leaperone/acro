@@ -151,7 +151,7 @@ async function main(): Promise<void> {
         } catch (error) {
           if ((error as Error).message === "unknown method session.cwd") {
             throw new Error(
-              "terminal daemon is outdated; restart the Acro server to inherit the working directory",
+              "terminal daemon is outdated; close existing terminals, then restart the server Mac",
             );
           }
           throw error;
