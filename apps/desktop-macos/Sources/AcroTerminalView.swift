@@ -19,6 +19,7 @@ final class AcroTerminalNSView: NSView {
     private var keyTextAccumulator: [String] = []
     private var currentKeyEvent: NSEvent?
     private var commandSelectorCalled = false
+    private var leftMousePressed = false
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?
 
@@ -47,6 +48,11 @@ final class AcroTerminalNSView: NSView {
         super.viewDidMoveToWindow()
         createSurfaceIfNeeded()
         applyFocusRequest(requestedFocusRequest)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { releaseLeftMouseButton() }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     override func layout() {
@@ -108,6 +114,7 @@ final class AcroTerminalNSView: NSView {
     }
 
     func surfaceDidRequestClose() {
+        leftMousePressed = false
         if let surface {
             ghostty_surface_free(surface)
             self.surface = nil
@@ -118,6 +125,7 @@ final class AcroTerminalNSView: NSView {
 
     // 缓存逐出时显式释放;deinit 兜底
     func teardown() {
+        leftMousePressed = false
         if let surface {
             ghostty_surface_free(surface)
             self.surface = nil
@@ -308,20 +316,40 @@ final class AcroTerminalNSView: NSView {
         ghostty_surface_mouse_pos(surface, pos.x, bounds.height - pos.y, Self.mods(from: event.modifierFlags))
     }
 
-    private func forwardMouseButton(_ event: NSEvent, state: ghostty_input_mouse_state_e, button: ghostty_input_mouse_button_e) {
-        guard let surface else { return }
+    @discardableResult
+    private func forwardMouseButton(
+        _ event: NSEvent,
+        state: ghostty_input_mouse_state_e,
+        button: ghostty_input_mouse_button_e
+    ) -> Bool {
+        guard let surface else { return false }
         forwardMousePos(event)
         _ = ghostty_surface_mouse_button(surface, state, button, Self.mods(from: event.modifierFlags))
+        return true
+    }
+
+    private func releaseLeftMouseButton(_ event: NSEvent? = nil) {
+        guard leftMousePressed else { return }
+        leftMousePressed = false
+        guard let surface else { return }
+        if let event { forwardMousePos(event) }
+        _ = ghostty_surface_mouse_button(
+            surface,
+            GHOSTTY_MOUSE_RELEASE,
+            GHOSTTY_MOUSE_LEFT,
+            event.map { Self.mods(from: $0.modifierFlags) } ?? GHOSTTY_MODS_NONE
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
-        onFocus?()
         focusTerminal()
-        forwardMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
+        leftMousePressed = forwardMouseButton(
+            event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
+        onFocus?()
     }
 
     override func mouseUp(with event: NSEvent) {
-        forwardMouseButton(event, state: GHOSTTY_MOUSE_RELEASE, button: GHOSTTY_MOUSE_LEFT)
+        releaseLeftMouseButton(event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -486,7 +514,7 @@ extension AcroTerminalNSView: NSTextInputClient {
 }
 
 // 会话级 surface 缓存(cmux TerminalWindowPortal 的精简版):
-// SwiftUI 布局树重建(分屏/移动标签)时 NSView 只是被重新收养,
+// SwiftUI 布局树重建(分屏/移动标签)时直接复用同一个 NSView,
 // ghostty surface 与 attach 进程全程存活,旧窗格不再闪空白重载。
 @MainActor
 final class TerminalSurfaceCache {
@@ -521,20 +549,17 @@ struct AcroTerminalView: NSViewRepresentable {
     var onClose: (() -> Void)? = nil
     var onFocus: (() -> Void)? = nil
 
-    func makeNSView(context: Context) -> NSView {
-        NSView()
-    }
-
-    func updateNSView(_ container: NSView, context: Context) {
+    func makeNSView(context: Context) -> AcroTerminalNSView {
         let view = TerminalSurfaceCache.shared.view(for: sessionId, command: command)
-        if view.superview !== container {
-            view.removeFromSuperview()
-            view.frame = container.bounds
-            view.autoresizingMask = [.width, .height]
-            container.addSubview(view)
-        }
         view.onClose = onClose
         view.onFocus = onFocus
         view.applyFocusRequest(focusRequest)
+        return view
+    }
+
+    func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {
+        nsView.onClose = onClose
+        nsView.onFocus = onFocus
+        nsView.applyFocusRequest(focusRequest)
     }
 }
