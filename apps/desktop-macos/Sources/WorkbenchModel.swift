@@ -81,6 +81,9 @@ final class WorkbenchModel: ObservableObject {
     private var appliedLayoutRevs: [String: Int] = [:]
     // 上次与服务端达成一致的规范化编码;编码相同 = 无需推送
     private var lastSyncedLayouts: [String: String] = [:]
+    // 服务端布局本机解不开(schema 比本机新):冻结该工作区的推送,
+    // 否则旧客户端每次启动都会把旧 schema 布局推回去,把新客户端打回原形
+    private var layoutPushFrozen: Set<String> = []
     private var layoutSyncTask: Task<Void, Never>?
 
     // ---- 拖拽与快捷键提示 ----
@@ -898,17 +901,24 @@ final class WorkbenchModel: ObservableObject {
             for workspace in connection.workspaces {
                 // 布局多端同步:服务端 rev 比本地已应用的新 → 整棵替换(last-writer-wins)。
                 // 自己刚推送的修改 rev 已记录在 appliedLayoutRevs,不会被自己的回声覆盖。
-                if workspace.layoutRev > appliedLayoutRevs[workspace.id] ?? 0 {
-                    if let layoutJson = workspace.layout,
-                       let decoded = try? JSONDecoder().decode(
-                           WorkspaceTerminalLayout.self, from: Data(layoutJson.utf8)
-                       ) {
-                        workspaceLayouts[workspace.id] = decoded
-                        if let canonical = Self.encodeLayout(decoded) {
-                            lastSyncedLayouts[workspace.id] = canonical
+                if let serverRev = workspace.layoutRev,
+                   serverRev > appliedLayoutRevs[workspace.id] ?? 0 {
+                    if let layoutJson = workspace.layout {
+                        if let decoded = try? JSONDecoder().decode(
+                            WorkspaceTerminalLayout.self, from: Data(layoutJson.utf8)
+                        ) {
+                            if workspaceLayouts[workspace.id] != decoded {
+                                workspaceLayouts[workspace.id] = decoded
+                            }
+                            if let canonical = Self.encodeLayout(decoded) {
+                                lastSyncedLayouts[workspace.id] = canonical
+                            }
+                            layoutPushFrozen.remove(workspace.id)
+                        } else {
+                            layoutPushFrozen.insert(workspace.id)
                         }
                     }
-                    appliedLayoutRevs[workspace.id] = workspace.layoutRev
+                    appliedLayoutRevs[workspace.id] = serverRev
                 }
                 let workspaceSessions = sessions(in: workspace, on: connection)
                 let validSessionIds = Set(workspaceSessions.map(\.id))
@@ -925,7 +935,10 @@ final class WorkbenchModel: ObservableObject {
                             layout.adopt(session.id)
                         }
                     }
-                    workspaceLayouts[workspace.id] = layout
+                    // 无变化不写回:避免每次 refresh 都触发持久化与推送扫描
+                    if workspaceLayouts[workspace.id] != layout {
+                        workspaceLayouts[workspace.id] = layout
+                    }
                 } else if !workspaceSessions.isEmpty {
                     // 首次见到该工作区:全部会话进同一窗格作标签
                     let pane = PaneTabGroup(sessionIds: workspaceSessions.map(\.id))
@@ -977,19 +990,25 @@ final class WorkbenchModel: ObservableObject {
             let connection = entry.connection
             guard connection.snapshotLoaded else { continue }
             for workspace in connection.workspaces {
-                guard let layout = workspaceLayouts[workspace.id],
+                guard !layoutPushFrozen.contains(workspace.id),
+                      let layout = workspaceLayouts[workspace.id],
                       let encoded = Self.encodeLayout(layout),
                       encoded != lastSyncedLayouts[workspace.id]
                 else { continue }
+                // 空工作区且服务端也从没有过布局:不为 "{}" 白白 bump rev
+                if layout.root == nil, workspace.layout == nil { continue }
                 do {
                     let result = try await connection.rpc(
                         "workspace.setLayout",
                         ["workspaceId": workspace.id, "layout": encoded]
                     )
-                    if let rev = (result as? [String: Any])?["rev"] as? Int {
+                    // rpc await 期间可能已应用了别人更新的 rev:簿记只允许单调前进,
+                    // 过期的响应直接丢弃,否则会重开 rev 门、覆盖期间的本地编辑
+                    if let rev = (result as? [String: Any])?["rev"] as? Int,
+                       rev >= appliedLayoutRevs[workspace.id] ?? 0 {
                         appliedLayoutRevs[workspace.id] = rev
+                        lastSyncedLayouts[workspace.id] = encoded
                     }
-                    lastSyncedLayouts[workspace.id] = encoded
                 } catch {
                     // 断线或工作区刚被删:保留 lastSynced 不变,
                     // 重连后的 refresh → reconcile 会再次调度推送

@@ -158,7 +158,7 @@ export class WorkspaceRegistry {
   setLayout(workspaceId: string, layout: string): number {
     const workspace = this.getMutable(workspaceId);
     workspace.layout = layout;
-    workspace.layoutRev += 1;
+    workspace.layoutRev = (workspace.layoutRev ?? 0) + 1;
     this.saveWorkspaces();
     return workspace.layoutRev;
   }

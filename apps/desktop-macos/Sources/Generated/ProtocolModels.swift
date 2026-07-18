@@ -35,7 +35,7 @@ struct Workspace: Codable, Identifiable, Equatable, Hashable, Sendable {
     let sessionIds: [String]
     let createdAt: String
     let layout: String?
-    let layoutRev: Int
+    let layoutRev: Int?
 }
 
 struct WorkspaceGroup: Codable, Identifiable, Equatable, Hashable, Sendable {
