@@ -7,13 +7,14 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var runtime: RuntimeConnection
+    @ObservedObject var hub: RuntimeHub
+    @ObservedObject var model: WorkbenchModel
 
     var body: some View {
         TabView {
-            GeneralSettingsPane(runtime: runtime)
+            GeneralSettingsPane(hub: hub, model: model)
                 .tabItem { Label("通用", systemImage: "gearshape") }
-            RemoteSettingsPane(runtime: runtime)
+            RemoteSettingsPane(hub: hub)
                 .tabItem { Label("远程", systemImage: "antenna.radiowaves.left.and.right") }
             ShortcutSettingsPane()
                 .tabItem { Label("快捷键", systemImage: "keyboard") }
@@ -27,7 +28,8 @@ struct SettingsView: View {
 // ---- 通用 ----
 
 private struct GeneralSettingsPane: View {
-    @ObservedObject var runtime: RuntimeConnection
+    @ObservedObject var hub: RuntimeHub
+    @ObservedObject var model: WorkbenchModel
     @AppStorage(WorkbenchModel.confirmCloseTabKey) private var confirmCloseTab = true
 
     var body: some View {
@@ -36,17 +38,18 @@ private struct GeneralSettingsPane: View {
                 LabeledContent("状态") {
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(runtime.connected ? Color.green : Color.orange)
+                            .fill(connectedCount == hub.entries.count && !hub.entries.isEmpty
+                                ? Color.green : (connectedCount > 0 ? Color.orange : Color.secondary))
                             .frame(width: 8, height: 8)
-                        Text(stateText)
+                        Text("\(connectedCount)/\(hub.entries.count) 台服务器已连接")
                     }
                 }
-                LabeledContent("服务器", value: ClientConfig.load()?.activeServer?.name ?? "未配对")
-                LabeledContent("工作区 / 终端", value: "\(runtime.workspaces.count) / \(runtime.sessions.count { $0.alive })")
+                LabeledContent("当前查看", value: hub.server(for: model.selectedServerId)?.name ?? "-")
+                LabeledContent("工作区 / 终端", value: "\(model.runtime.workspaces.count) / \(model.runtime.sessions.count { $0.alive })")
             } header: {
                 Text("Runtime 连接")
             } footer: {
-                Text("配对、切换服务器和共享访问在「远程」标签页管理。")
+                Text("配对、入口和共享访问在「远程」标签页管理;所有已配对服务器会同时保持连接。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -78,12 +81,8 @@ private struct GeneralSettingsPane: View {
         .frame(height: 560)
     }
 
-    private var stateText: String {
-        switch runtime.state {
-        case .connected: "已连接(\(runtime.connectedEndpoint ?? "-"))"
-        case .connecting: "正在连接…"
-        case .disconnected: "未连接"
-        }
+    private var connectedCount: Int {
+        hub.entries.count { $0.connection.connected }
     }
 
     private func pathRow(_ label: String, path: String) -> some View {
@@ -154,24 +153,29 @@ private struct UpdateSection: View {
 // 三块职责:连接到远程服务器(配对/切换/删除)→ 入口地址(LAN + 公网)→ 共享此服务器(生成/撤销授权)。
 
 private struct RemoteSettingsPane: View {
-    @ObservedObject var runtime: RuntimeConnection
+    @ObservedObject var hub: RuntimeHub
     @State private var config = ClientConfig.load()
+    // 入口/共享区块管理的目标服务器(列表里点选)
+    @State private var manageServerId: String?
+
+    private var manageServer: ServerEntry? {
+        config?.servers.first { $0.id == manageServerId } ?? config?.servers.first
+    }
 
     var body: some View {
         Form {
             Section {
-                Text("Runtime(如 Mac mini)持有仓库、终端会话和浏览器;这台设备只是它的一块屏幕。从任何入口连上都是同一批工作区和会话,断线重连不丢进度。")
+                Text("Runtime(如 Mac mini)持有仓库、终端会话和浏览器;这台设备只是它的一块屏幕。所有已配对服务器同时保持连接,侧边栏各自显示各自的工作区。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
-            ConnectServersSection(runtime: runtime, config: $config)
+            ConnectServersSection(hub: hub, config: $config, manageServerId: $manageServerId)
 
-            if config?.activeServer != nil {
-                EndpointsSection(runtime: runtime, config: $config)
+            if let manageServer {
+                EndpointsSection(hub: hub, config: $config, serverId: manageServer.id)
+                ShareServerSection(hub: hub, serverId: manageServer.id)
             }
-
-            ShareServerSection(runtime: runtime)
 
             Section("使用说明") {
                 VStack(alignment: .leading, spacing: 6) {
@@ -185,8 +189,11 @@ private struct RemoteSettingsPane: View {
         }
         .formStyle(.grouped)
         .frame(height: 620)
-        .onChange(of: runtime.state) { _, _ in
-            // 认证成功后连接层会补写 deviceId,重新读盘保持一致
+        .task {
+            config = ClientConfig.load()
+        }
+        .onReceive(hub.objectWillChange) { _ in
+            // 认证补写 deviceId、配对/删除等都会经 hub 冒泡,保持显示与磁盘一致
             config = ClientConfig.load()
         }
     }
@@ -205,10 +212,11 @@ private struct RemoteSettingsPane: View {
     }
 }
 
-// 已配对服务器列表 + 粘贴配对码添加
+// 已配对服务器列表 + 粘贴配对码添加。所有服务器常驻连接,点行选择下方区块的管理目标
 private struct ConnectServersSection: View {
-    @ObservedObject var runtime: RuntimeConnection
+    @ObservedObject var hub: RuntimeHub
     @Binding var config: ClientConfig?
+    @Binding var manageServerId: String?
     @State private var pairInput = ""
     @State private var pairName = ""
     @State private var pairError: String?
@@ -239,60 +247,67 @@ private struct ConnectServersSection: View {
                 }
             }
         } header: {
-            Text("连接到远程服务器")
+            Text("远程服务器")
         } footer: {
-            Text("配对码在远程 Mac 的 Acro「设置 → 远程 → 共享此服务器」里生成,包含地址、凭据和加密公钥,配对一次即可。带绿点的是当前服务器。")
+            Text("配对码在远程 Mac 的 Acro「设置 → 远程 → 共享此服务器」里生成,包含地址、凭据和加密公钥,配对一次即可。所有服务器同时保持连接;点某一行可在下方管理它的入口与共享。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
     private func serverRow(_ server: ServerEntry) -> some View {
-        let isActive = config?.activeServer?.id == server.id
-        return LabeledContent {
-            HStack(spacing: 8) {
-                if isActive {
-                    Text(stateText)
-                        .font(.caption)
-                        .foregroundStyle(runtime.connected ? .green : .orange)
-                } else {
-                    Button("连接") { switchTo(server) }
-                }
-                Button {
-                    remove(server)
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.red)
-                .help("删除此服务器的本机配对(不影响服务端授权,可在服务端撤销)")
-            }
+        let connection = hub.connection(for: server.id)
+        let isManaged = (manageServerId ?? config?.servers.first?.id) == server.id
+        return Button {
+            manageServerId = server.id
         } label: {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(isActive ? (runtime.connected ? Color.green : Color.orange) : Color.secondary.opacity(0.3))
-                    .frame(width: 8, height: 8)
-                Text(server.name)
-                Text("\(server.endpoints.count) 个入口")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            LabeledContent {
+                HStack(spacing: 8) {
+                    Text(stateText(connection))
+                        .font(.caption)
+                        .foregroundStyle(connection?.connected == true ? .green : .orange)
+                    Button {
+                        remove(server)
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.red)
+                    .help("删除此服务器的本机配对(不影响服务端授权,可在服务端撤销)")
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isManaged ? "checkmark.circle.fill" : "circle")
+                        .font(.caption)
+                        .foregroundStyle(isManaged ? Color.accentColor : .secondary)
+                    Circle()
+                        .fill(connection?.connected == true ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(server.name)
+                    Text("\(server.endpoints.count) 个入口")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
-    private var stateText: String {
-        switch runtime.state {
+    private func stateText(_ connection: RuntimeConnection?) -> String {
+        switch connection?.state {
         case .connected: "已连接"
         case .connecting: "连接中…"
-        case .disconnected: "未连接"
+        default: "未连接"
         }
     }
 
-    // 粘贴配对码:落盘 → 立即连接;deviceId 在认证成功后由连接层补写
+    // 粘贴配对码:写入前重读磁盘(配置由设置页、CLI、连接层多方写入,
+    // 用 @State 快照 save 会静默覆盖别处的修改);deviceId 认证后由连接层补写
     private func pair() {
         do {
             let offer = try PairingOffer.decode(pairInput)
-            var next = config ?? ClientConfig(v: 2, servers: [], active: nil)
+            var next = ClientConfig.load() ?? ClientConfig(v: 2, servers: [], active: nil)
             let name = pairName.trimmingCharacters(in: .whitespaces).isEmpty
                 ? (offer.endpoints.first ?? "Runtime")
                 : pairName.trimmingCharacters(in: .whitespaces)
@@ -308,46 +323,37 @@ private struct ConnectServersSection: View {
             next.active = entry.id
             next.save()
             config = next
+            manageServerId = entry.id
             pairInput = ""
             pairName = ""
             pairError = nil
-            runtime.connect(server: entry)
+            hub.reload()
         } catch {
             pairError = "配对码无法解析:\(error.localizedDescription)"
         }
     }
 
-    private func switchTo(_ server: ServerEntry) {
-        guard var next = config else { return }
-        next.active = server.id
-        next.save()
-        config = next
-        runtime.connect(server: server)
-    }
-
     private func remove(_ server: ServerEntry) {
-        guard var next = config else { return }
-        let wasActive = next.activeServer?.id == server.id
+        guard var next = ClientConfig.load() else { return }
         next.servers.removeAll { $0.id == server.id }
-        if wasActive { next.active = next.servers.first?.id }
+        if next.active == server.id { next.active = next.servers.first?.id }
         next.save()
         config = next
-        // 只有删掉的是当前服务器才需要动连接,其余情况保持现有连接不中断
-        guard wasActive else { return }
-        if let fallback = next.activeServer {
-            runtime.connect(server: fallback)
-        } else {
-            runtime.disconnect()
-        }
+        if manageServerId == server.id { manageServerId = next.servers.first?.id }
+        hub.reload()
     }
 }
 
-// 当前服务器的入口地址管理
+// 选中服务器的入口地址管理
 private struct EndpointsSection: View {
-    @ObservedObject var runtime: RuntimeConnection
+    @ObservedObject var hub: RuntimeHub
     @Binding var config: ClientConfig?
+    let serverId: String
     @State private var newLanEndpoint = ""
     @State private var newPublicEndpoint = ""
+
+    private var server: ServerEntry? { config?.servers.first { $0.id == serverId } }
+    private var connection: RuntimeConnection? { hub.connection(for: serverId) }
 
     var body: some View {
         Group {
@@ -361,7 +367,7 @@ private struct EndpointsSection: View {
                     }
                 }
             } header: {
-                Text("连接方式(\(config?.activeServer?.name ?? ""))")
+                Text("连接方式(\(server?.name ?? ""))")
             } footer: {
                 Text("连接永远先试局域网直连,几秒内不可达就自动切到公网入口;断线后重连,回到家又会自动切回局域网。两条路是同一凭据、同一批会话。")
                     .font(.caption)
@@ -369,7 +375,7 @@ private struct EndpointsSection: View {
             }
 
             Section {
-                endpointRows(config?.activeServer?.lanEndpoints ?? [])
+                endpointRows(server?.lanEndpoints ?? [])
                 HStack {
                     TextField("局域网地址,如 192.168.1.10:8790", text: $newLanEndpoint)
                         .textFieldStyle(.roundedBorder)
@@ -388,12 +394,12 @@ private struct EndpointsSection: View {
             }
 
             Section {
-                if config?.activeServer?.publicEndpoints.isEmpty ?? true {
+                if server?.publicEndpoints.isEmpty ?? true {
                     Label("尚未配置公网入口——离开这个局域网后将无法连接。把 FRP 等映射地址加进来即可在外网使用。", systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(.orange)
                 }
-                endpointRows(config?.activeServer?.publicEndpoints ?? [])
+                endpointRows(server?.publicEndpoints ?? [])
                 HStack {
                     TextField("公网地址,如 frp.example.com:7100", text: $newPublicEndpoint)
                         .textFieldStyle(.roundedBorder)
@@ -417,23 +423,23 @@ private struct EndpointsSection: View {
     @State private var addErrorKind: EndpointKind?
 
     private var pathText: String {
-        switch runtime.state {
+        switch connection?.state {
         case .connected:
-            guard let endpoint = runtime.connectedEndpoint else { return "已连接" }
+            guard let endpoint = connection?.connectedEndpoint else { return "已连接" }
             let kind = EndpointKind.classify(endpoint) == .lan ? "局域网直连" : "公网入口"
             return "\(kind) · \(endpoint)"
         case .connecting:
             return "尝试中…(局域网优先,失败自动切公网)"
-        case .disconnected:
+        default:
             return "未连接"
         }
     }
 
     private var pathColor: Color {
-        switch runtime.state {
+        switch connection?.state {
         case .connected: .green
         case .connecting: .orange
-        case .disconnected: .secondary.opacity(0.4)
+        default: .secondary.opacity(0.4)
         }
     }
 
@@ -441,7 +447,7 @@ private struct EndpointsSection: View {
         ForEach(endpoints, id: \.self) { endpoint in
             LabeledContent {
                 HStack(spacing: 6) {
-                    if runtime.connectedEndpoint == endpoint {
+                    if connection?.connectedEndpoint == endpoint {
                         Text("当前使用").font(.caption).foregroundStyle(.green)
                     }
                     Button {
@@ -450,8 +456,8 @@ private struct EndpointsSection: View {
                         Image(systemName: "minus.circle")
                     }
                     .buttonStyle(.borderless)
-                    .disabled((config?.activeServer?.endpoints.count ?? 0) <= 1)
-                    .help((config?.activeServer?.endpoints.count ?? 0) <= 1 ? "至少保留一个地址" : "删除地址")
+                    .disabled((server?.endpoints.count ?? 0) <= 1)
+                    .help((server?.endpoints.count ?? 0) <= 1 ? "至少保留一个地址" : "删除地址")
                 }
             } label: {
                 Text(endpoint).font(.callout.monospaced())
@@ -484,20 +490,25 @@ private struct EndpointsSection: View {
     }
 
     private func mutate(_ change: (inout ServerEntry) -> Void) {
-        guard var next = config, let active = next.activeServer,
-              let idx = next.servers.firstIndex(where: { $0.id == active.id })
+        // 写入前重读磁盘,避免用过期快照覆盖连接层刚补写的 deviceId
+        guard var next = ClientConfig.load(),
+              let idx = next.servers.firstIndex(where: { $0.id == serverId })
         else { return }
         change(&next.servers[idx])
         next.save()
         config = next
-        runtime.connect(server: next.servers[idx])
+        hub.reload() // 入口变了,该服务器按新列表重连
     }
 }
 
-// 把当前连接的 Runtime 共享给其他设备(生成配对码 + 授权列表 + 撤销)
+// 把选中的 Runtime 共享给其他设备(生成配对码 + 授权列表 + 撤销)
 private struct ShareServerSection: View {
-    @ObservedObject var runtime: RuntimeConnection
+    @ObservedObject var hub: RuntimeHub
+    let serverId: String
     @State private var devices: [Device] = []
+
+    private var connection: RuntimeConnection? { hub.connection(for: serverId) }
+    private var connected: Bool { connection?.connected == true }
     @State private var shareName = ""
     @State private var shareExtraEndpoint = ""
     @State private var generatedOffer: String?
@@ -506,8 +517,8 @@ private struct ShareServerSection: View {
 
     var body: some View {
         Section {
-            if !runtime.connected {
-                Text("未连接 Runtime,暂时无法生成配对码或管理授权。")
+            if !connected {
+                Text("该服务器未连接,暂时无法生成配对码或管理授权。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
@@ -568,7 +579,7 @@ private struct ShareServerSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .task(id: runtime.connected) { await reload() }
+        .task(id: "\(serverId)-\(connected)") { await reload() }
     }
 
     private func deviceStatus(_ device: Device) -> String {
@@ -577,8 +588,11 @@ private struct ShareServerSection: View {
     }
 
     private func reload() async {
-        guard runtime.connected else { return }
-        devices = (try? await runtime.rpc("device.list", as: [Device].self)) ?? []
+        guard let connection, connection.connected else {
+            devices = []
+            return
+        }
+        devices = (try? await connection.rpc("device.list", as: [Device].self)) ?? []
     }
 
     private func createShare() async {
@@ -590,8 +604,9 @@ private struct ShareServerSection: View {
         let extra = shareExtraEndpoint.trimmingCharacters(in: .whitespaces)
         if !extra.isEmpty { params["extraEndpoints"] = [extra] }
         do {
+            guard let connection else { return }
             struct ShareResult: Decodable { let offer: String; let deviceId: String }
-            let result = try await runtime.rpc("device.share", params, as: ShareResult.self)
+            let result = try await connection.rpc("device.share", params, as: ShareResult.self)
             generatedOffer = result.offer
             await reload()
         } catch {
@@ -602,7 +617,8 @@ private struct ShareServerSection: View {
     private func revoke(_ device: Device) async {
         shareError = nil
         do {
-            _ = try await runtime.rpc("device.revoke", ["deviceId": device.id])
+            guard let connection else { return }
+            _ = try await connection.rpc("device.revoke", ["deviceId": device.id])
             await reload()
         } catch {
             shareError = error.localizedDescription

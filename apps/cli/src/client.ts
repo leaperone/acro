@@ -13,6 +13,7 @@ const configFile =
 // 一个远程 Runtime = 一个 token + 多个入口(LAN 直连、FRP 公网等)。
 // 从哪个入口连上都是同一身份、同一批会话——服务端不区分连接来源。
 export interface ServerEntry {
+  localId?: string; // 配对时生成,永不变;desktop 端 attach --server 传它
   name: string;
   deviceId: string;
   token: string;
@@ -42,16 +43,26 @@ export function saveClientConfig(config: ClientConfig): void {
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
-export function activeServer(config: ClientConfig): ServerEntry {
-  // active 存 deviceId;desktop 端在服务器未完成认证时会暂存 name,两者都认
-  const server =
-    config.servers.find((s) => s.deviceId === config.active || s.name === config.active) ??
-    config.servers[0];
-  if (!server) {
-    console.error("没有已配对的服务器;先运行: acro pair <配对码>");
+// ref 缺省用配置里的默认服务器;显式 ref 匹配 localId/deviceId/名称(桌面端多主机 attach 用)
+export function pickServer(config: ClientConfig, ref?: string): ServerEntry {
+  const target = ref ?? config.active ?? undefined;
+  const server = target
+    ? config.servers.find(
+        (s) => s.localId === target || s.deviceId === target || s.name === target,
+      )
+    : config.servers[0];
+  const resolved = server ?? (ref ? undefined : config.servers[0]);
+  if (!resolved) {
+    console.error(
+      ref ? `找不到服务器: ${ref}` : "没有已配对的服务器;先运行: acro pair <配对码>",
+    );
     process.exit(1);
   }
-  return server;
+  return resolved;
+}
+
+export function activeServer(config: ClientConfig): ServerEntry {
+  return pickServer(config);
 }
 
 const CONNECT_TIMEOUT_MS = 4000;

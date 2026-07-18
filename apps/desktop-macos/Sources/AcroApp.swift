@@ -126,23 +126,21 @@ struct AcroWorkbenchCommands: Commands {
 @main
 struct AcroApp: App {
     @NSApplicationDelegateAdaptor(AcroAppDelegate.self) private var appDelegate
-    @StateObject private var runtime: RuntimeConnection
+    @StateObject private var hub: RuntimeHub
     @StateObject private var model: WorkbenchModel
 
     init() {
-        let runtime = RuntimeConnection()
-        _runtime = StateObject(wrappedValue: runtime)
-        _model = StateObject(wrappedValue: WorkbenchModel(runtime: runtime))
+        let hub = RuntimeHub()
+        _hub = StateObject(wrappedValue: hub)
+        _model = StateObject(wrappedValue: WorkbenchModel(hub: hub))
     }
 
     var body: some Scene {
         WindowGroup("Acro") {
-            WorkbenchView(model: model, runtime: runtime)
+            WorkbenchView(model: model, runtime: model.runtime)
                 .onAppear {
                     _ = Ghostty.shared // 初始化 libghostty
-                    if let server = ClientConfig.load()?.activeServer {
-                        runtime.connect(server: server)
-                    }
+                    hub.reload() // 为每台已配对服务器建立常驻连接
                 }
         }
         // 紧凑模式(cmux compact):无标题栏,内容顶到窗口顶部,tab 条即顶行
@@ -155,7 +153,7 @@ struct AcroApp: App {
         // ⌘, 设置窗口(cmux Settings 窗口的 acro 版)。
         // 裸可执行(无 bundle)下 SwiftUI Settings scene 不注册菜单项,用显式 Window。
         Window("Acro 设置", id: "settings") {
-            SettingsView(runtime: runtime)
+            SettingsView(hub: hub, model: model)
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
@@ -166,7 +164,7 @@ struct AcroApp: App {
 
 // 解析 attach 命令:node + acro CLI 的绝对路径(GUI 进程没有用户 PATH)
 enum AttachCommand {
-    static func resolve(sessionId: String) -> String {
+    static func resolve(sessionId: String, serverId: String?) -> String {
         let env = ProcessInfo.processInfo.environment
         let runtimeArguments = runtimeProgramArguments()
         let node = [
@@ -180,10 +178,18 @@ enum AttachCommand {
         .compactMap { $0 }
         .first { FileManager.default.isExecutableFile(atPath: $0) }
             ?? "node"
+        // 优先级:显式 env → app bundle 内置(打包分发) → runtime 同仓(开发机) → 开发默认
+        let bundledCli = Bundle.main.resourcePath.map { "\($0)/cli.cjs" }
         let cli = env["ACRO_CLI_PATH"]
+            ?? bundledCli.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
             ?? runtimeCliPath(from: runtimeArguments)
             ?? "\(NSHomeDirectory())/project/acro/apps/cli/src/cli.ts"
-        return [node, cli, "attach", sessionId].map(shellQuote).joined(separator: " ")
+        var arguments = [node, cli, "attach", sessionId]
+        // 多主机:attach 指定目标服务器,不依赖 client.json 的默认项
+        if let serverId, !serverId.isEmpty {
+            arguments += ["--server", serverId]
+        }
+        return arguments.map(shellQuote).joined(separator: " ")
     }
 
     private static func runtimeProgramArguments() -> [String]? {

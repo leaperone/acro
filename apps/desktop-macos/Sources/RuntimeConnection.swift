@@ -32,13 +32,44 @@ enum EndpointKind {
 }
 
 // 一个远程 Runtime = 一个 token + 多个入口。与 acro CLI 共用 ~/.acro/client.json。
+// id 用配对时生成的 localId,永不变化——deviceId 在首次认证后才由服务端补写,
+// 若用它当 id 会在认证瞬间迁移,拖垮 hub 缓存、选中态和 attach 路由的一致性。
 struct ServerEntry: Codable, Identifiable, Equatable {
+    var localId: String
     var name: String
     var deviceId: String
     var token: String
     var pub: String
     var endpoints: [String]
-    var id: String { deviceId.isEmpty ? name : deviceId }
+    var id: String { localId }
+
+    init(
+        localId: String = UUID().uuidString,
+        name: String,
+        deviceId: String,
+        token: String,
+        pub: String,
+        endpoints: [String]
+    ) {
+        self.localId = localId
+        self.name = name
+        self.deviceId = deviceId
+        self.token = token
+        self.pub = pub
+        self.endpoints = endpoints
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        token = try container.decode(String.self, forKey: .token)
+        pub = try container.decode(String.self, forKey: .pub)
+        endpoints = try container.decode([String].self, forKey: .endpoints)
+        // 旧配置无 localId:按当时的 id 语义兜底,下次保存后固定
+        localId = try container.decodeIfPresent(String.self, forKey: .localId)
+            ?? (deviceId.isEmpty ? name : deviceId)
+    }
 
     var lanEndpoints: [String] { endpoints.filter { EndpointKind.classify($0) == .lan } }
     var publicEndpoints: [String] { endpoints.filter { EndpointKind.classify($0) == .publicNet } }
@@ -298,12 +329,13 @@ final class RuntimeConnection: ObservableObject {
         else { return }
         switch obj["t"] as? String {
         case "authed":
-            // 认证完成:补写 deviceId(首次配对),拉全量快照
+            // 认证完成:补写 deviceId(首次配对)。按 token 定位条目(token 每授权唯一,
+            // 名称可改);active 只在缺省时设置,不抢已有默认
             if var server, let deviceId = obj["deviceId"] as? String, server.deviceId != deviceId {
                 if var config = ClientConfig.load(),
-                   let idx = config.servers.firstIndex(where: { $0.name == server.name }) {
+                   let idx = config.servers.firstIndex(where: { $0.token == server.token }) {
                     config.servers[idx].deviceId = deviceId
-                    config.active = deviceId
+                    if config.active == nil { config.active = config.servers[idx].id }
                     config.save()
                 }
                 server.deviceId = deviceId

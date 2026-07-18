@@ -378,10 +378,11 @@ private struct SidebarRowDropDelegate: DropDelegate {
 struct SidebarView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
-    // 目标服务器列表(手风琴分组):内容属于哪台机器一目了然,点别的服务器即切换目标。
-    // 不持有快照:配置文件由设置页、CLI 和连接层多方写入,每次渲染实时读盘,
-    // 避免用过期副本 save() 把别处的删除/修改静默覆盖掉。
-    private var config: ClientConfig? { ClientConfig.load() }
+    // hub 转发各子连接的变化;不观察它,其他服务器的数据更新不会触发重绘
+    @ObservedObject var hub: RuntimeHub
+    // 多主机:所有已配对服务器同时在线,每台一个手风琴段,各自实时显示各自的工作区。
+    // 折叠状态仅本地;选择/操作某台服务器的内容前先 activate 把动作路由过去。
+    @State private var collapsedServerIds: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -474,8 +475,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var content: some View {
-        let servers = config?.servers ?? []
-        if servers.isEmpty {
+        if hub.entries.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text("未配对任何服务器")
                     .foregroundStyle(.secondary)
@@ -486,36 +486,38 @@ struct SidebarView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
         } else {
-            ForEach(servers) { server in
-                serverSection(server)
+            ForEach(hub.entries) { entry in
+                serverSection(entry)
             }
         }
     }
 
-    // 每台目标服务器一个手风琴段:当前目标展开显示其工作区,点其他服务器切换过去
+    // 每台服务器一个手风琴段,内容来自它自己的连接,同时在线互不影响
     @ViewBuilder
-    private func serverSection(_ server: ServerEntry) -> some View {
-        let isActive = config?.activeServer?.id == server.id
+    private func serverSection(_ entry: RuntimeHub.Entry) -> some View {
+        let expanded = !collapsedServerIds.contains(entry.id)
+        let isSelected = model.selectedServerId == entry.id
         Button {
-            guard !isActive else { return }
-            switchTo(server)
+            if expanded {
+                collapsedServerIds.insert(entry.id)
+            } else {
+                collapsedServerIds.remove(entry.id)
+            }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: isActive ? "chevron.down" : "chevron.right")
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.tertiary)
                     .frame(width: 12)
                 Image(systemName: "desktopcomputer")
                     .font(.caption)
-                    .foregroundStyle(isActive ? .primary : .secondary)
-                Text(server.name)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                Text(entry.server.name)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(isActive ? .primary : .secondary)
-                if isActive {
-                    Text(activePathLabel)
-                        .font(.caption2)
-                        .foregroundStyle(runtime.connected ? Color.green : Color.orange)
-                }
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                Text(pathLabel(entry.connection))
+                    .font(.caption2)
+                    .foregroundStyle(entry.connection.connected ? Color.green : Color.orange)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
@@ -523,54 +525,51 @@ struct SidebarView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(isActive ? "当前目标" : "切换到 \(server.name)")
+        .help(entry.connection.connected ? "展开/收起 \(entry.server.name)" : "\(entry.server.name) 未连接,自动重试中")
 
-        if isActive {
-            activeServerContent
+        if expanded {
+            serverContent(entry)
                 .padding(.leading, 4)
         }
     }
 
-    private var activePathLabel: String {
-        switch runtime.state {
+    private func pathLabel(_ connection: RuntimeConnection) -> String {
+        switch connection.state {
         case .connected:
-            guard let endpoint = runtime.connectedEndpoint else { return "已连接" }
+            guard let endpoint = connection.connectedEndpoint else { return "已连接" }
             return EndpointKind.classify(endpoint) == .lan ? "局域网" : "公网"
         case .connecting: return "连接中…"
         case .disconnected: return "未连接"
         }
     }
 
-    private func switchTo(_ server: ServerEntry) {
-        // 写入前重新读盘,并确认目标还存在(可能已在设置页被删除)
-        guard var next = ClientConfig.load(),
-              let fresh = next.servers.first(where: { $0.id == server.id })
-        else { return }
-        next.active = fresh.id
-        next.save()
-        runtime.connect(server: fresh)
-    }
-
     @ViewBuilder
-    private var activeServerContent: some View {
-        if runtime.workspaceGroups.isEmpty && runtime.workspaces.isEmpty {
+    private func serverContent(_ entry: RuntimeHub.Entry) -> some View {
+        let connection = entry.connection
+        if connection.workspaceGroups.isEmpty && connection.workspaces.isEmpty {
             Button {
+                model.activate(serverId: entry.id)
                 Task { await model.createWorkspace() }
             } label: {
-                Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .frame(height: 34)
+                Label(
+                    connection.connected ? "新建工作区" : "等待连接…",
+                    systemImage: connection.connected
+                        ? "square.stack.3d.up.badge.plus" : "wifi.exclamationmark"
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .frame(height: 34)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            .disabled(!connection.connected)
         } else {
-            ForEach(runtime.workspaceGroups) { group in
-                groupSection(group)
+            ForEach(connection.workspaceGroups) { group in
+                groupSection(group, entry: entry)
             }
-            let ungrouped = model.ungroupedWorkspaces
+            let ungrouped = model.ungroupedWorkspaces(on: connection)
             if !ungrouped.isEmpty {
-                if !runtime.workspaceGroups.isEmpty {
+                if !connection.workspaceGroups.isEmpty {
                     Text("未分组")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.tertiary)
@@ -578,16 +577,16 @@ struct SidebarView: View {
                         .padding(.top, 8)
                 }
                 ForEach(ungrouped) { workspace in
-                    workspaceSection(workspace, group: nil, indent: 0)
+                    workspaceSection(workspace, group: nil, indent: 0, entry: entry)
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func groupSection(_ group: WorkspaceGroup) -> some View {
+    private func groupSection(_ group: WorkspaceGroup, entry: RuntimeHub.Entry) -> some View {
         let expanded = model.expandedWorkspaceGroupIds.contains(group.id)
-        let groupWorkspaces = model.workspaces(in: group)
+        let groupWorkspaces = model.workspaces(in: group, on: entry.connection)
         WorkspaceGroupRow(
             snapshot: WorkspaceGroupRowSnapshot(
                 id: group.id,
@@ -597,13 +596,25 @@ struct SidebarView: View {
             ),
             actions: WorkspaceGroupRowActions(
                 toggle: { model.toggleWorkspaceGroup(group.id) },
-                createWorkspace: { Task { await model.createWorkspace(in: group.id) } },
-                rename: { model.presentWorkspaceGroupEditor(workspaceGroupId: group.id, name: group.name) },
-                dissolve: { model.pendingWorkspaceGroupRemoval = group },
-                acceptWorkspaceDrop: { model.draggingWorkspaceId != nil },
+                createWorkspace: {
+                    model.activate(serverId: entry.id)
+                    Task { await model.createWorkspace(in: group.id) }
+                },
+                rename: {
+                    model.activate(serverId: entry.id)
+                    model.presentWorkspaceGroupEditor(workspaceGroupId: group.id, name: group.name)
+                },
+                dissolve: {
+                    model.activate(serverId: entry.id)
+                    model.pendingWorkspaceGroupRemoval = group
+                },
+                acceptWorkspaceDrop: {
+                    model.draggingWorkspaceId != nil && model.draggingWorkspaceServerId == entry.id
+                },
                 performWorkspaceDrop: {
                     guard let dragId = model.draggingWorkspaceId else { return false }
                     model.draggingWorkspaceId = nil
+                    model.activate(serverId: entry.id)
                     Task {
                         await model.reorderWorkspace(
                             dragId, toGroup: group.id, index: group.workspaceIds.count
@@ -618,6 +629,7 @@ struct SidebarView: View {
         if expanded {
             if groupWorkspaces.isEmpty {
                 Button {
+                    model.activate(serverId: entry.id)
                     Task { await model.createWorkspace(in: group.id) }
                 } label: {
                     Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
@@ -630,7 +642,7 @@ struct SidebarView: View {
                 .padding(.leading, 22)
             } else {
                 ForEach(groupWorkspaces) { workspace in
-                    workspaceSection(workspace, group: group, indent: 14)
+                    workspaceSection(workspace, group: group, indent: 14, entry: entry)
                 }
             }
         }
@@ -640,27 +652,30 @@ struct SidebarView: View {
     private func workspaceSection(
         _ workspace: Workspace,
         group: WorkspaceGroup?,
-        indent: CGFloat
+        indent: CGFloat,
+        entry: RuntimeHub.Entry
     ) -> some View {
+        let connection = entry.connection
         let expanded = model.expandedWorkspaceIds.contains(workspace.id)
-        let workspaceProjects = model.projects(in: workspace)
-        let workspaceSessions = model.sessions(in: workspace)
-        let currentGroup = model.workspaceGroup(containing: workspace.id)
+        let workspaceProjects = model.projects(in: workspace, on: connection)
+        let workspaceSessions = model.sessions(in: workspace, on: connection)
+        let currentGroup = model.workspaceGroup(containing: workspace.id, on: connection)
+        let isSelectedServer = model.selectedServerId == entry.id
         WorkspaceRow(
             snapshot: WorkspaceRowSnapshot(
                 id: workspace.id,
                 name: workspace.name,
-                isSelected: model.selectedWorkspaceId == workspace.id
+                isSelected: isSelectedServer && model.selectedWorkspaceId == workspace.id
                     && (model.sidebarViewMode == .workspaces || model.selectedSessionId == nil),
                 sessionCount: workspaceSessions.count,
                 showsChevron: model.sidebarViewMode == .sessions,
                 isExpanded: expanded,
                 hasProjects: !workspaceProjects.isEmpty,
                 isInGroup: currentGroup != nil,
-                shortcutHint: model.cmdHeld
+                shortcutHint: model.cmdHeld && isSelectedServer
                     ? model.workspaceShortcutDigit(workspace.id).map { "⌘\($0)" }
                     : nil,
-                moveTargets: runtime.workspaceGroups.map {
+                moveTargets: connection.workspaceGroups.map {
                     SidebarMoveTarget(id: $0.id, name: $0.name, disabled: $0.id == currentGroup?.id)
                 },
                 removableProjects: workspaceProjects.map { project in
@@ -672,31 +687,49 @@ struct SidebarView: View {
                 }
             ),
             actions: WorkspaceRowActions(
-                select: { model.selectWorkspace(workspace) },
+                select: {
+                    model.activate(serverId: entry.id)
+                    model.selectWorkspace(workspace)
+                },
                 toggleExpand: { model.toggleWorkspace(workspace.id) },
-                newTerminal: { model.requestNewTerminal(in: workspace) },
-                rename: { model.presentWorkspaceRename(workspaceId: workspace.id, name: workspace.name) },
-                delete: { model.pendingWorkspaceDeletion = workspace },
+                newTerminal: {
+                    model.activate(serverId: entry.id)
+                    model.requestNewTerminal(in: workspace)
+                },
+                rename: {
+                    model.activate(serverId: entry.id)
+                    model.presentWorkspaceRename(workspaceId: workspace.id, name: workspace.name)
+                },
+                delete: {
+                    model.activate(serverId: entry.id)
+                    model.pendingWorkspaceDeletion = workspace
+                },
                 moveToGroup: { groupId in
-                    let target = runtime.workspaceGroups.first { $0.id == groupId }
+                    model.activate(serverId: entry.id)
+                    let target = connection.workspaceGroups.first { $0.id == groupId }
                     Task { await model.moveWorkspace(workspace, to: target) }
                 },
                 removeProject: { projectId in
                     guard let project = workspaceProjects.first(where: { $0.id == projectId }) else { return }
+                    model.activate(serverId: entry.id)
                     Task { await model.removeProject(project, from: workspace) }
                 },
                 beginDrag: {
                     model.draggingWorkspaceId = workspace.id
+                    model.draggingWorkspaceServerId = entry.id
                     return NSItemProvider(object: workspace.id as NSString)
                 },
                 acceptDrop: {
                     model.draggingWorkspaceId != nil && model.draggingWorkspaceId != workspace.id
+                        && model.draggingWorkspaceServerId == entry.id
                 },
                 performDrop: {
                     guard let dragId = model.draggingWorkspaceId else { return false }
                     model.draggingWorkspaceId = nil
+                    model.activate(serverId: entry.id)
                     // 落点 = 目标行之前;index 按"移除自己之后"的容器序列计算
-                    let container = group.map(model.workspaces(in:)) ?? model.ungroupedWorkspaces
+                    let container = group.map { model.workspaces(in: $0, on: connection) }
+                        ?? model.ungroupedWorkspaces(on: connection)
                     let index = container
                         .filter { $0.id != dragId }
                         .firstIndex { $0.id == workspace.id } ?? container.count
@@ -711,6 +744,7 @@ struct SidebarView: View {
         if model.sidebarViewMode == .sessions && expanded {
             if workspaceProjects.isEmpty {
                 Button {
+                    model.activate(serverId: entry.id)
                     model.selectedWorkspaceId = workspace.id
                     model.presentProjectPicker(for: workspace)
                 } label: {
@@ -727,19 +761,26 @@ struct SidebarView: View {
                     SessionRow(
                         snapshot: SessionRowSnapshot(
                             id: session.id,
-                            title: model.sessionDisplayName(session),
+                            title: model.sessionDisplayName(session, on: connection),
                             cwd: session.cwd,
                             alive: session.alive,
-                            isSelected: model.selectedSessionId == session.id,
-                            hasProject: model.project(for: session) != nil
+                            isSelected: isSelectedServer && model.selectedSessionId == session.id,
+                            hasProject: model.project(for: session, on: connection) != nil
                         ),
                         actions: SessionRowActions(
-                            show: { model.showSession(session) },
+                            show: {
+                                model.activate(serverId: entry.id)
+                                model.showSession(session)
+                            },
                             newSibling: {
-                                guard let project = model.project(for: session) else { return }
+                                guard let project = model.project(for: session, on: connection) else { return }
+                                model.activate(serverId: entry.id)
                                 Task { _ = await model.openTerminal(project: project, workspace: workspace) }
                             },
-                            terminate: { model.pendingSessionTermination = session }
+                            terminate: {
+                                model.activate(serverId: entry.id)
+                                model.pendingSessionTermination = session
+                            }
                         )
                     )
                     .equatable()
@@ -747,6 +788,7 @@ struct SidebarView: View {
                 }
                 if workspaceSessions.isEmpty {
                     Button {
+                        model.activate(serverId: entry.id)
                         model.requestNewTerminal(in: workspace)
                     } label: {
                         Label("新建终端", systemImage: "terminal.badge.plus")

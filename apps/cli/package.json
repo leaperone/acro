@@ -7,7 +7,8 @@
     "acro": "./src/cli.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "build": "esbuild src/cli.ts --bundle --platform=node --format=cjs --outfile=dist/cli.cjs --log-level=warning"
   },
   "dependencies": {
     "@acro/protocol": "workspace:*",
@@ -16,6 +17,7 @@
   "devDependencies": {
     "@types/node": "^24.3.1",
     "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
     "typescript": "^5.9.3"
   }
 }

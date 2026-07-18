@@ -495,6 +495,8 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
 }
 
 struct WorkbenchLayoutSnapshot: Codable, Equatable {
+    // 多主机:记住上次查看的服务器(旧快照无此字段,解码为 nil)
+    var selectedServerId: String?
     var selectedWorkspaceId: String?
     var workspaceLayouts: [String: WorkspaceTerminalLayout]
     var leftSidebarVisible: Bool

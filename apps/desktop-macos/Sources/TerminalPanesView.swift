@@ -261,7 +261,7 @@ private struct PaneView: View {
         if model.session(sessionId) != nil {
             AcroTerminalView(
                 sessionId: sessionId,
-                command: AttachCommand.resolve(sessionId: sessionId),
+                command: AttachCommand.resolve(sessionId: sessionId, serverId: model.selectedServerId),
                 focusRequest: focused && pane.selectedSessionId == sessionId
                     ? model.terminalFocusRequest
                     : 0,
@@ -343,7 +343,7 @@ private struct PaneTabBar: View {
         let selected = pane.selectedSessionId == sessionId
         let session = model.session(sessionId)
         return PaneTabItem(
-            title: session.map(model.sessionDisplayName) ?? "终端",
+            title: session.map { model.sessionDisplayName($0) } ?? "终端",
             selected: selected,
             focused: focused,
             select: { model.selectTab(sessionId, inPane: pane.id) },

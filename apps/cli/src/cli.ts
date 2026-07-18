@@ -19,6 +19,7 @@ import {
   activeServer,
   type ClientConfig,
   loadClientConfig,
+  pickServer,
   saveClientConfig,
 } from "./client.ts";
 
@@ -72,6 +73,7 @@ async function cmdPair(args: string[]): Promise<void> {
   const config = loadOrEmptyConfig();
   // 同名服务器覆盖(重新配对场景)
   const entry = {
+    localId: crypto.randomUUID(),
     name,
     deviceId: "",
     token: offer.token,
@@ -84,7 +86,7 @@ async function cmdPair(args: string[]): Promise<void> {
   client.close();
   config.servers = config.servers.filter((s) => s.name !== name);
   config.servers.push(entry);
-  config.active = entry.deviceId;
+  config.active = entry.localId; // active 存稳定 id
   saveClientConfig(config);
   console.log(`已配对 ${name},入口: ${offer.endpoints.join(", ")}`);
 }
@@ -212,11 +214,15 @@ function flagValue(args: string[], flag: string): string | undefined {
 }
 
 async function main(): Promise<void> {
-  const [cmd, ...args] = process.argv.slice(2);
+  // 全局 --server <localId|deviceId|名称>:先于命令解析,前置后置都支持
+  const argv = process.argv.slice(2);
+  const serverRef = flagValue(argv, "--server");
+  const [cmd, ...args] = argv.filter((a, i) => a !== "--server" && argv[i - 1] !== "--server");
   if (!cmd || cmd === "help" || cmd === "--help") {
     console.log(
       [
         "acro pair [配对码] [--name <label>]",
+        "acro --server <名称|deviceId> <命令>  指定目标服务器",
         "acro endpoints [add|rm <host:port>]",
         "acro projects",
         "acro sessions",
@@ -234,7 +240,7 @@ async function main(): Promise<void> {
     cmdEndpoints(args);
     return;
   }
-  const client = await AcroClient.connect(activeServer(loadClientConfig()));
+  const client = await AcroClient.connect(pickServer(loadClientConfig(), serverRef));
   switch (cmd) {
     case "projects":
       await cmdProjects(client);

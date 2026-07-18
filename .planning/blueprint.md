@@ -108,7 +108,8 @@ Machine
 
 - 传输安全不依赖 TLS：所有连接走应用层 E2EE（X25519 + HKDF-SHA256 + ChaCha20-Poly1305），可以安全经过 LAN 或 FRP 等明文公网代理。Acro 不自研穿透，公网入口由用户的代理软件提供。
 - 配对采用访问授权模型（取自 orca）：服务端生成配对码 `acro://pair?c=…`，内含入口列表、设备 token 和服务端公钥，由用户带外传输；token 只在加密信道内认证，服务端只存哈希。授权可撤销，撤销立即断开该设备的活动连接。
-- 一个远程 Runtime 对客户端 = 一个 token + 多个入口（LAN、公网代理），按序尝试；从任何入口连上都是同一设备身份、同一批会话，服务端不区分连接来源。
+- 一个远程 Runtime 对客户端 = 一个 token + 多个入口（LAN、公网代理），局域网优先、失败自动回退公网；从任何入口连上都是同一设备身份、同一批会话，服务端不区分连接来源。
+- 桌面客户端是多主机的：为每台已配对 Runtime 维持一条常驻连接（RuntimeHub），侧边栏按服务器分组同时显示各自的工作区；终端 attach 通过 CLI `--server` 路由到对应 Runtime。CLI 随桌面 App 打包成单文件，客户端机器不需要仓库 checkout。
 - 每个客户端与 Runtime 之间只有一条 WebSocket：控制消息使用 zod 定义的 JSON-RPC，终端数据使用二进制帧，事件带 `seq` 和 `boot_id` 支持断点续传。HTTP 只保留健康检查。
 - 协议唯一真源是 `packages/protocol` 的 zod schema；Swift 客户端类型用 codegen 生成，禁止手工镜像。
 - 客户端 attach 会话时先收快照再收增量；多客户端输入所有权由 Runtime 仲裁。
