@@ -59,6 +59,8 @@ export class WorkspaceRegistry {
       projectIds: [],
       sessionIds: [],
       createdAt: new Date().toISOString(),
+      layout: null,
+      layoutRev: 0,
     };
     this.workspaces.push(workspace);
     group?.workspaceIds.push(workspace.id);
@@ -150,6 +152,15 @@ export class WorkspaceRegistry {
     if (index === -1) throw new Error("workspace group not found");
     this.workspaceGroups.splice(index, 1);
     this.saveGroups();
+  }
+
+  // 布局是客户端自定义的 opaque JSON:只存储并递增修订号,不解释内容
+  setLayout(workspaceId: string, layout: string): number {
+    const workspace = this.getMutable(workspaceId);
+    workspace.layout = layout;
+    workspace.layoutRev = (workspace.layoutRev ?? 0) + 1;
+    this.saveWorkspaces();
+    return workspace.layoutRev;
   }
 
   addSession(workspaceId: string, sessionId: string): void {

@@ -138,6 +138,15 @@ export const methods = {
     params: z.object({ workspaceId: z.string() }),
     result: z.object({ removed: z.boolean() }),
   },
+  // 布局同步:整棵布局作为 opaque JSON 上传,服务端存储并广播 layoutChanged。
+  // last-writer-wins;返回的 rev 让写入方把自己的修改标记为已同步,避免回环。
+  "workspace.setLayout": {
+    params: z.object({
+      workspaceId: z.string(),
+      layout: z.string().max(262144),
+    }),
+    result: z.object({ rev: z.number().int() }),
+  },
   "session.create": {
     params: z.object({
       workspaceId: z.string().optional(),
@@ -309,6 +318,7 @@ export const events = {
   "session.exit": z.object({ sessionId: z.string(), exitCode: z.number().int().nullable() }),
   "session.created": Session,
   "session.removed": z.object({ sessionId: z.string() }),
+  "workspace.layoutChanged": z.object({ workspaceId: z.string(), rev: z.number().int() }),
 } as const;
 
 export type EventName = keyof typeof events;
