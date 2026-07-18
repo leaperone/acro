@@ -206,6 +206,9 @@ export class HelperClient {
     this.activeRequest = queued;
     try {
       if (queued.signal?.aborted) throw abortError(queued.signal);
+      if (Date.now() >= queued.deadlineMs) {
+        throw new Error(`helper timeout: ${queued.method}`);
+      }
       await this.ensureConnected();
       if (queued.settled) return;
       if (queued.signal?.aborted) {

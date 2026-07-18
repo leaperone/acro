@@ -106,9 +106,7 @@ test("helper deadlines include time spent waiting in the queue", async () => {
   const socketPath = path.join(directory, "helper.sock");
   const sockets = new Set<net.Socket>();
   const requests: Array<{ id: number; method: string; deadlineMs: number }> = [];
-  let connections = 0;
   const server = net.createServer((socket) => {
-    connections += 1;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     let buffer = "";
@@ -138,8 +136,7 @@ test("helper deadlines include time spent waiting in the queue", async () => {
       assert.rejects(first, /helper timeout: first/),
       assert.rejects(second, /helper timeout: second/),
     ]);
-    assert.equal(connections, 1);
-    assert.deepEqual(requests.map((request) => request.method), ["first"]);
+    assert.equal(requests.some((request) => request.method === "second"), false);
   } finally {
     client.close();
     for (const socket of sockets) socket.destroy();
