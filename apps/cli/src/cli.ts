@@ -15,7 +15,6 @@ import { encodeInFrame, FRAME_OUT } from "@acro/protocol/frames";
 import type { Session } from "@acro/protocol";
 import {
   AcroClient,
-  activeServer,
   type ClientConfig,
   loadClientConfig,
   pickServer,
@@ -23,6 +22,12 @@ import {
   saveClientConfig,
   type ServerEntry,
 } from "./client.ts";
+import {
+  parseCommandLine,
+  parsePairArgs,
+  parseRunArgs,
+  type ParsedRunArgs,
+} from "./args.ts";
 
 const DETACH_KEY = 0x1d; // Ctrl-]
 const INPUT_HIGH_WATER_BYTES = 1024 * 1024;
@@ -51,7 +56,8 @@ function loadOrEmptyConfig(): ClientConfig {
 async function cmdPair(args: string[]): Promise<void> {
   // zod 只在 pair 路径加载
   const { decodePairingOffer } = await import("@acro/protocol");
-  let raw = args.find((a) => !a.startsWith("--"));
+  const parsed = parsePairArgs(args);
+  let raw = parsed.offer;
   if (!raw) {
     // 本机引导:runtime 首启把配对码写在 state 目录
     const bootstrapFile = path.join(
@@ -65,7 +71,7 @@ async function cmdPair(args: string[]): Promise<void> {
     }
   }
   const offer = decodePairingOffer(raw);
-  const name = flagValue(args, "--name") ?? offer.endpoints[0]!;
+  const name = parsed.name ?? offer.endpoints[0]!;
   const config = loadOrEmptyConfig();
   // 同名服务器覆盖(重新配对场景)
   const entry = {
@@ -87,9 +93,7 @@ async function cmdPair(args: string[]): Promise<void> {
   console.log(`已配对 ${name},入口: ${offer.endpoints.join(", ")}`);
 }
 
-function cmdEndpoints(args: string[]): void {
-  const config = loadClientConfig();
-  const server = activeServer(config);
+function cmdEndpoints(config: ClientConfig, server: ServerEntry, args: string[]): void {
   const [op, value] = args;
   if (op === "add" && value) {
     if (!server.endpoints.includes(value)) server.endpoints.push(value);
@@ -115,14 +119,8 @@ function termSize(): { cols: number; rows: number } {
   return { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 };
 }
 
-async function cmdRun(client: AcroClient, server: ServerEntry, args: string[]): Promise<void> {
-  const cwd = flagValue(args, "--cwd");
-  const rest = args.filter((a, i) => {
-    if (a.startsWith("--")) return false;
-    const prev = args[i - 1];
-    return prev !== "--cwd";
-  });
-  const command = rest.length > 0 ? rest.join(" ") : undefined;
+async function cmdRun(client: AcroClient, server: ServerEntry, parsed: ParsedRunArgs): Promise<void> {
+  const { cwd, command } = parsed;
   const session = await client.rpc("session.create", {
     ...(cwd ? { cwd } : {}),
     ...(command ? { command } : {}),
@@ -336,16 +334,11 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
   process.exit(code === -1 ? 0 : code);
 }
 
-function flagValue(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
-
 async function main(): Promise<void> {
-  // 全局 --server <localId|deviceId|名称>:先于命令解析,前置后置都支持
-  const argv = process.argv.slice(2);
-  const serverRef = flagValue(argv, "--server");
-  const [cmd, ...args] = argv.filter((a, i) => a !== "--server" && argv[i - 1] !== "--server");
+  // 全局 --server 在首个 -- 前解析；-- 后全部属于目标命令。
+  const { command: cmd, args, passthrough, serverRef } = parseCommandLine(
+    process.argv.slice(2),
+  );
   if (!cmd || cmd === "help" || cmd === "--help") {
     console.log(
       [
@@ -359,14 +352,17 @@ async function main(): Promise<void> {
     );
     return;
   }
+  if (passthrough && cmd !== "run") fail(`${cmd} does not accept -- passthrough arguments`);
   if (cmd === "pair") {
     await cmdPair(args);
     return;
   }
   if (cmd === "endpoints") {
-    cmdEndpoints(args);
+    const config = loadClientConfig();
+    cmdEndpoints(config, pickServer(config, serverRef), args);
     return;
   }
+  const runArgs = cmd === "run" ? parseRunArgs(args, passthrough) : null;
   const server = pickServer(loadClientConfig(), serverRef);
   // attach/run 走终端 surface:初连也做退避重试,别把瞬时抖动直接怼到用户脸上
   const client = await connectWithRetry(server, cmd === "attach" || cmd === "run" ? 5 : 1);
@@ -375,7 +371,7 @@ async function main(): Promise<void> {
       await cmdSessions(client);
       break;
     case "run":
-      await cmdRun(client, server, args);
+      await cmdRun(client, server, runArgs!);
       return; // attachLoop 自己 exit
     case "attach":
       await cmdAttach(client, server, args);
