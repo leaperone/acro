@@ -218,28 +218,34 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
       if (finished) return;
       try {
         const next = await AcroClient.connect(server);
-        const sessions = await next.rpc("session.list", {});
-        const live = sessions.find((s) => s.id === session.id);
-        if (!live) {
-          next.close();
-          console.error("\r\n[acro] 会话已不存在");
-          done(1);
+        try {
+          const sessions = await next.rpc("session.list", {});
+          const live = sessions.find((s) => s.id === session.id);
+          if (!live) {
+            next.close();
+            console.error("\r\n[acro] 会话已不存在");
+            done(1);
+            return;
+          }
+          if (!live.alive) {
+            next.close();
+            done(live.exitCode ?? 0);
+            return;
+          }
+          const attached = await next.rpc("session.attach", { sessionId: session.id });
+          current = next;
+          channel = attached.channel;
+          wire(next);
+          process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+          process.stdout.write(Buffer.from(attached.snapshot, "base64"));
+          await syncSize(next);
+          reconnecting = false;
           return;
-        }
-        if (!live.alive) {
+        } catch (err) {
+          // 连上了但 list/attach 失败:关掉这条连接再退避,不留半开 socket
           next.close();
-          done(live.exitCode ?? 0);
-          return;
+          throw err;
         }
-        const attached = await next.rpc("session.attach", { sessionId: session.id });
-        current = next;
-        channel = attached.channel;
-        wire(next);
-        process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-        process.stdout.write(Buffer.from(attached.snapshot, "base64"));
-        await syncSize(next);
-        reconnecting = false;
-        return;
       } catch {
         // 下一轮退避重试
       }
@@ -251,9 +257,15 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
   };
 
   wire(current);
-  const attached = await current.rpc("session.attach", { sessionId: session.id });
-  channel = attached.channel;
-  process.stdout.write(Buffer.from(attached.snapshot, "base64"));
+  try {
+    const attached = await current.rpc("session.attach", { sessionId: session.id });
+    channel = attached.channel;
+    process.stdout.write(Buffer.from(attached.snapshot, "base64"));
+  } catch (err) {
+    // 初次 attach 窗口内断线:onDisconnect 已在跑重挂载,交给它;
+    // 连接还活着说明是真错误(如会话刚死),直接失败
+    if (!reconnecting) fail(String((err as Error).message ?? err));
+  }
 
   if (isTTY) {
     process.stdin.setRawMode(true);

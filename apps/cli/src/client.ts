@@ -188,6 +188,11 @@ export class AcroClient {
   }
 
   rpc<M extends MethodName>(method: M, params: MethodParams<M>): Promise<MethodResult<M>> {
+    // ws 对非 OPEN socket 的 send 是静默丢弃:不立即拒绝的话,
+    // 断线后的 RPC(比如收尾的 detach)只能干等 30s 超时
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("连接已断开"));
+    }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
