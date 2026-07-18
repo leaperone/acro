@@ -19,11 +19,14 @@ import {
   type ClientConfig,
   loadClientConfig,
   pickServer,
+  resolveSessionRef,
   saveClientConfig,
   type ServerEntry,
 } from "./client.ts";
 
 const DETACH_KEY = 0x1d; // Ctrl-]
+const INPUT_HIGH_WATER_BYTES = 1024 * 1024;
+const INPUT_LOW_WATER_BYTES = 256 * 1024;
 
 function fail(msg: string): never {
   console.error(msg);
@@ -131,8 +134,12 @@ async function cmdRun(client: AcroClient, server: ServerEntry, args: string[]): 
 async function cmdAttach(client: AcroClient, server: ServerEntry, args: string[]): Promise<void> {
   const sessionId = args[0] ?? fail("usage: acro attach <sessionId>");
   const sessions = await client.rpc("session.list", {});
-  const session = sessions.find((s) => s.id === sessionId || s.id.startsWith(sessionId));
-  if (!session) fail(`session not found: ${sessionId}`);
+  let session: Session;
+  try {
+    session = resolveSessionRef(sessions, sessionId);
+  } catch (err) {
+    fail((err as Error).message);
+  }
   if (!session.alive) fail("session is dead");
   await attachLoop(client, session, server);
 }
@@ -162,6 +169,9 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
   let channel = -1;
   let finished = false;
   let reconnecting = false;
+  let inputBackpressured = false;
+  let pausedOutputClient: AcroClient | null = null;
+  let waitingForStdoutDrain = false;
   let done!: (code: number) => void;
   const exitCode = new Promise<number>((resolve) => {
     done = (code) => {
@@ -175,10 +185,29 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
     await c.rpc("session.resize", { sessionId: session.id, ...termSize() }).catch(() => {});
   };
 
+  const onStdoutDrain = () => {
+    waitingForStdoutDrain = false;
+    pausedOutputClient?.resumeIncoming();
+    pausedOutputClient = null;
+  };
+
+  const writeOutput = (c: AcroClient, data: string | Uint8Array) => {
+    if (process.stdout.write(data)) return;
+    if (pausedOutputClient !== c) {
+      pausedOutputClient?.resumeIncoming();
+      pausedOutputClient = c;
+      c.pauseIncoming();
+    }
+    if (!waitingForStdoutDrain) {
+      waitingForStdoutDrain = true;
+      process.stdout.once("drain", onStdoutDrain);
+    }
+  };
+
   const wire = (c: AcroClient) => {
     c.onFrame = (frame) => {
       if (frame.type === FRAME_OUT && frame.channel === channel) {
-        process.stdout.write(frame.data);
+        writeOutput(c, frame.data);
       }
     };
     c.onEvent = (event, payload) => {
@@ -221,10 +250,16 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
           current = next;
           channel = attached.channel;
           wire(next);
-          process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-          process.stdout.write(Buffer.from(attached.snapshot, "base64"));
+          writeOutput(
+            next,
+            Buffer.concat([
+              Buffer.from("\x1b[2J\x1b[3J\x1b[H"),
+              Buffer.from(attached.snapshot, "base64"),
+            ]),
+          );
           await syncSize(next);
           reconnecting = false;
+          if (!inputBackpressured) process.stdin.resume();
           return;
         } catch (err) {
           // 连上了但 list/attach 失败:关掉这条连接再退避,不留半开 socket
@@ -245,7 +280,7 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
   try {
     const attached = await current.rpc("session.attach", { sessionId: session.id });
     channel = attached.channel;
-    process.stdout.write(Buffer.from(attached.snapshot, "base64"));
+    writeOutput(current, Buffer.from(attached.snapshot, "base64"));
   } catch (err) {
     // 初次 attach 窗口内断线:onDisconnect 已在跑重挂载,交给它;
     // 连接还活着说明是真错误(如会话刚死),直接失败
@@ -266,7 +301,24 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
       return;
     }
     // 重连窗口内的输入丢弃:channel 已失效,重挂载后快照会呈现服务端真实状态
-    if (!reconnecting) current.sendBinary(encodeInFrame(channel, data));
+    if (reconnecting) return;
+    try {
+      const bufferedAmount = current.sendBinary(encodeInFrame(channel, data));
+      if (bufferedAmount >= INPUT_HIGH_WATER_BYTES && !inputBackpressured) {
+        inputBackpressured = true;
+        process.stdin.pause();
+        const draining = current;
+        void draining
+          .waitForWritable(INPUT_LOW_WATER_BYTES)
+          .catch(() => {})
+          .finally(() => {
+            inputBackpressured = false;
+            if (!finished && !reconnecting) process.stdin.resume();
+          });
+      }
+    } catch {
+      // onDisconnect 负责重连
+    }
   });
   process.stdin.on("end", () => {
     // 管道输入结束不代表会话结束;保持附着直到会话退出
@@ -275,6 +327,9 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
   const code = await exitCode;
   if (isTTY) process.stdin.setRawMode(false);
   process.stdin.pause();
+  current.onFrame = null;
+  if (waitingForStdoutDrain) process.stdout.off("drain", onStdoutDrain);
+  onStdoutDrain();
   await current.rpc("session.detach", { sessionId: session.id }).catch(() => {});
   current.close();
   if (code === -1) console.error("\r\n[acro] detached");
