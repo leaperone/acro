@@ -50,7 +50,12 @@ final class WorkbenchModel: ObservableObject {
     @Published var selectedWorkspaceId: String? { didSet { persistLayout() } }
     @Published var selectedProjectId: String?
     @Published var selectedSessionId: String?
-    @Published var workspaceLayouts: [String: WorkspaceTerminalLayout] = [:] { didSet { persistLayout() } }
+    @Published var workspaceLayouts: [String: WorkspaceTerminalLayout] = [:] {
+        didSet {
+            persistLayout()
+            scheduleLayoutSync()
+        }
+    }
     @Published var expandedWorkspaceGroupIds: Set<String> = []
     @Published var expandedWorkspaceIds: Set<String> = []
     @Published var leftSidebarVisible = true { didSet { persistLayout() } }
@@ -70,6 +75,13 @@ final class WorkbenchModel: ObservableObject {
     @Published private(set) var terminalFocusRequest = 0
     @Published private(set) var flashSessionId: String?
     @Published private(set) var flashToken = 0
+
+    // ---- 布局多端同步状态(不入 @Published:纯簿记,不驱动 UI) ----
+    // 已应用的服务端布局修订号;自己推送成功后也记这里,回声(rev 相同)不会覆盖本地
+    private var appliedLayoutRevs: [String: Int] = [:]
+    // 上次与服务端达成一致的规范化编码;编码相同 = 无需推送
+    private var lastSyncedLayouts: [String: String] = [:]
+    private var layoutSyncTask: Task<Void, Never>?
 
     // ---- 拖拽与快捷键提示 ----
     @Published var draggingTab: TabDragPayload?
@@ -884,6 +896,20 @@ final class WorkbenchModel: ObservableObject {
 
         for connection in loadedConnections {
             for workspace in connection.workspaces {
+                // 布局多端同步:服务端 rev 比本地已应用的新 → 整棵替换(last-writer-wins)。
+                // 自己刚推送的修改 rev 已记录在 appliedLayoutRevs,不会被自己的回声覆盖。
+                if workspace.layoutRev > appliedLayoutRevs[workspace.id] ?? 0 {
+                    if let layoutJson = workspace.layout,
+                       let decoded = try? JSONDecoder().decode(
+                           WorkspaceTerminalLayout.self, from: Data(layoutJson.utf8)
+                       ) {
+                        workspaceLayouts[workspace.id] = decoded
+                        if let canonical = Self.encodeLayout(decoded) {
+                            lastSyncedLayouts[workspace.id] = canonical
+                        }
+                    }
+                    appliedLayoutRevs[workspace.id] = workspace.layoutRev
+                }
                 let workspaceSessions = sessions(in: workspace, on: connection)
                 let validSessionIds = Set(workspaceSessions.map(\.id))
                 if var layout = workspaceLayouts[workspace.id] {
@@ -926,6 +952,50 @@ final class WorkbenchModel: ObservableObject {
             expandGroupContaining(selectedWorkspaceId)
         }
         syncSelectionFromLayout()
+    }
+
+    // ---- 布局多端同步(服务端为真相源;orca 式 rev 单调门 + last-writer-wins) ----
+
+    private static func encodeLayout(_ layout: WorkspaceTerminalLayout) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys] // 稳定编码,字符串比较即等价比较
+        guard let data = try? encoder.encode(layout) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func scheduleLayoutSync() {
+        layoutSyncTask?.cancel()
+        layoutSyncTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.pushLayoutsToServers()
+        }
+    }
+
+    private func pushLayoutsToServers() async {
+        for entry in hub.entries {
+            let connection = entry.connection
+            guard connection.snapshotLoaded else { continue }
+            for workspace in connection.workspaces {
+                guard let layout = workspaceLayouts[workspace.id],
+                      let encoded = Self.encodeLayout(layout),
+                      encoded != lastSyncedLayouts[workspace.id]
+                else { continue }
+                do {
+                    let result = try await connection.rpc(
+                        "workspace.setLayout",
+                        ["workspaceId": workspace.id, "layout": encoded]
+                    )
+                    if let rev = (result as? [String: Any])?["rev"] as? Int {
+                        appliedLayoutRevs[workspace.id] = rev
+                    }
+                    lastSyncedLayouts[workspace.id] = encoded
+                } catch {
+                    // 断线或工作区刚被删:保留 lastSynced 不变,
+                    // 重连后的 refresh → reconcile 会再次调度推送
+                }
+            }
+        }
     }
 
     private func persistLayout() {

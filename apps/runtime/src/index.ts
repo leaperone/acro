@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import type { Session } from "@acro/protocol";
@@ -92,6 +93,11 @@ async function main(): Promise<void> {
     "workspaceGroup.remove": (_conn, { workspaceGroupId }) => {
       workspaces.removeGroup(workspaceGroupId);
       return { removed: true };
+    },
+    "workspace.setLayout": (_conn, { workspaceId, layout }) => {
+      const rev = workspaces.setLayout(workspaceId, layout);
+      emitRuntimeEvent("workspace.layoutChanged", { workspaceId, rev });
+      return { rev };
     },
     "workspace.remove": async (_conn, { workspaceId }) => {
       const workspace = workspaces.get(workspaceId);
@@ -204,6 +210,13 @@ async function main(): Promise<void> {
   const gateway = new Gateway(registry, identity.priv, handlers, (handle, data) =>
     daemon.sendInput(handle, data),
   );
+  // runtime 自身的事件流(工作区布局等),与 daemon 的 seq/boot 命名空间独立
+  const runtimeBoot = crypto.randomUUID();
+  let runtimeSeq = 0;
+  const emitRuntimeEvent = (event: string, payload: unknown): void => {
+    runtimeSeq += 1;
+    gateway.broadcastEvent({ seq: runtimeSeq, boot: runtimeBoot, event, payload });
+  };
   gateway.onAuthenticated = () => clearBootstrapOffer();
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
   daemon.on("event", (evt) => gateway.broadcastEvent(evt));

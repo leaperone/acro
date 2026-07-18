@@ -35,6 +35,10 @@ export const Workspace = z.object({
   projectIds: z.array(z.string()),
   sessionIds: z.array(z.string()),
   createdAt: z.string(),
+  // 分屏/标签布局:客户端自定义的 opaque JSON,服务端只存储转发不解释。
+  // layoutRev 由服务端单调递增,客户端用它做"只应用比本地新的布局"的同步门。
+  layout: z.string().nullable().default(null),
+  layoutRev: z.number().int().default(0),
 });
 export type Workspace = z.infer<typeof Workspace>;
 

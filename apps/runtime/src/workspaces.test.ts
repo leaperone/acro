@@ -93,3 +93,30 @@ test("workspace groups persist membership and preserve workspaces when removed",
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("workspace layout persists opaquely with a monotonic revision", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-layout-"));
+  const storage = {
+    workspaces: path.join(directory, "workspaces.json"),
+    workspaceGroups: path.join(directory, "workspace-groups.json"),
+  };
+
+  try {
+    const registry = new WorkspaceRegistry(storage);
+    const workspace = registry.create("Acro");
+    assert.equal(workspace.layout, null);
+    assert.equal(workspace.layoutRev, 0);
+
+    assert.equal(registry.setLayout(workspace.id, '{"root":1}'), 1);
+    assert.equal(registry.setLayout(workspace.id, '{"root":2}'), 2);
+    assert.throws(() => registry.setLayout("missing", "{}"));
+
+    // 重启后布局与修订号原样恢复;旧数据缺字段时走 schema 默认值
+    const restored = new WorkspaceRegistry(storage);
+    const loaded = restored.get(workspace.id);
+    assert.equal(loaded?.layout, '{"root":2}');
+    assert.equal(loaded?.layoutRev, 2);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
