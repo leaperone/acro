@@ -26,7 +26,14 @@ import { Session as SessionSchema, type Session } from "@acro/protocol";
 import { encodeOutFrame, decodeFrame, FRAME_IN } from "@acro/protocol";
 import { paths, ensureStateDirs } from "../paths.ts";
 import { readJson, writeJsonAtomic } from "../store.ts";
-import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
+import {
+  DAEMON_PROTOCOL_VERSION,
+  FrameReader,
+  KIND_BIN,
+  KIND_JSON,
+  packBin,
+  packJson,
+} from "./wire.ts";
 import { utf8SafeCut } from "./utf8.ts";
 
 const SCROLLBACK = 5000;
@@ -371,7 +378,7 @@ function handleExit(session: DaemonSession, removed: boolean): void {
 type Handler = (params: any) => Promise<unknown> | unknown;
 
 const handlers: Record<string, Handler> = {
-  "daemon.info": () => ({ boot, pid: process.pid }),
+  "daemon.info": () => ({ boot, pid: process.pid, protocolVersion: DAEMON_PROTOCOL_VERSION }),
   "session.create": (params: {
     cwd?: string;
     command?: string;
