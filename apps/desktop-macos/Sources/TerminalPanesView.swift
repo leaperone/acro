@@ -105,16 +105,18 @@ private struct RatioSplitView: View {
     let content: (TerminalLayoutNode) -> AnyView
     let onRatioChange: (Double) -> Void
 
-    private static let dividerHitThickness: CGFloat = 7
+    // 布局只让出 1pt(cmux 级细缝);拖拽命中区悬浮在两侧窗格上,不占空间
+    private static let dividerThickness: CGFloat = 1
+    private static let dividerHitThickness: CGFloat = 9
 
     var body: some View {
         GeometryReader { geometry in
             let horizontal = node.direction == .horizontal
             let total = horizontal ? geometry.size.width : geometry.size.height
             let firstLength = max(
-                0, total * node.ratio - Self.dividerHitThickness / 2
+                0, total * node.ratio - Self.dividerThickness / 2
             )
-            let secondLength = max(0, total - firstLength - Self.dividerHitThickness)
+            let secondLength = max(0, total - firstLength - Self.dividerThickness)
             Group {
                 if horizontal {
                     HStack(spacing: 0) {
@@ -139,35 +141,36 @@ private struct RatioSplitView: View {
     }
 
     private func divider(horizontal: Bool, total: CGFloat) -> some View {
-        ZStack {
-            Color.clear
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(
-                    width: horizontal ? 1 : nil,
-                    height: horizontal ? nil : 1
-                )
-        }
-        .frame(
-            width: horizontal ? Self.dividerHitThickness : nil,
-            height: horizontal ? nil : Self.dividerHitThickness
-        )
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            if hovering {
-                (horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
-            } else {
-                NSCursor.pop()
-            }
-        }
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .named("split-\(node.id)"))
-                .onChanged { value in
-                    guard total > 0 else { return }
-                    let position = horizontal ? value.location.x : value.location.y
-                    onRatioChange(Double(position / total))
-                }
-        )
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor))
+            .frame(
+                width: horizontal ? Self.dividerThickness : nil,
+                height: horizontal ? nil : Self.dividerThickness
+            )
+            .overlay(
+                Color.clear
+                    .frame(
+                        width: horizontal ? Self.dividerHitThickness : nil,
+                        height: horizontal ? nil : Self.dividerHitThickness
+                    )
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        if hovering {
+                            (horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .named("split-\(node.id)"))
+                            .onChanged { value in
+                                guard total > 0 else { return }
+                                let position = horizontal ? value.location.x : value.location.y
+                                onRatioChange(Double(position / total))
+                            }
+                    )
+            )
+            .zIndex(1)
     }
 }
 
@@ -294,15 +297,14 @@ private struct PaneTabBar: View {
             }
             .scrollIndicators(.never)
 
-            Spacer(minLength: 0)
-
             Button {
                 if let workspace = model.selectedWorkspace {
                     model.requestNewTerminal(in: workspace, paneId: pane.id)
                 }
             } label: {
                 Image(systemName: "plus")
-                    .frame(width: 22, height: 22)
+                    .font(.system(size: 10, weight: .medium))
+                    .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -310,42 +312,14 @@ private struct PaneTabBar: View {
             .help("新建标签(\(ShortcutSettings.stored(.newTerminalTab).displayString))")
             .accessibilityLabel("新建标签")
 
-            Divider()
-                .frame(height: 14)
-
-            Button {
-                model.focusPane(pane.id)
-                model.splitTerminal(.horizontal)
-            } label: {
-                Image(systemName: "rectangle.split.2x1")
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("向右分屏")
-            .accessibilityLabel("向右分屏")
-
-            Button {
-                model.focusPane(pane.id)
-                model.splitTerminal(.vertical)
-            } label: {
-                Image(systemName: "rectangle.split.1x2")
-                    .frame(width: 22, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("向下分屏")
-            .accessibilityLabel("向下分屏")
-            .padding(.trailing, 6)
+            Spacer(minLength: 0)
         }
-        .frame(height: 34)
+        .frame(height: 28)
         .background(.bar)
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(focused ? Color.accentColor : Color(nsColor: .separatorColor))
-                .frame(height: focused ? 2 : 1)
+                .fill(focused ? Color.accentColor.opacity(0.8) : Color(nsColor: .separatorColor))
+                .frame(height: 1)
         }
         .onDrop(
             of: [UTType.text],
@@ -428,14 +402,14 @@ private struct PaneTabItem: View {
             .help("关闭标签(终止终端)")
             .accessibilityLabel("关闭标签 \(title)")
         }
-        .padding(.leading, 8)
-        .padding(.trailing, 4)
-        .frame(height: 24)
+        .padding(.leading, 7)
+        .padding(.trailing, 3)
+        .frame(height: 21)
         .background(
             selected
-                ? AnyShapeStyle(.quaternary)
-                : hovered ? AnyShapeStyle(Color.primary.opacity(0.06)) : AnyShapeStyle(Color.clear),
-            in: RoundedRectangle(cornerRadius: 5)
+                ? AnyShapeStyle(Color.primary.opacity(0.08))
+                : hovered ? AnyShapeStyle(Color.primary.opacity(0.04)) : AnyShapeStyle(Color.clear),
+            in: RoundedRectangle(cornerRadius: 4)
         )
         .overlay(alignment: .leading) {
             if dropTargeted {

@@ -86,8 +86,10 @@ struct AcroWorkbenchCommands: Commands {
             item("向右分屏", "rectangle.split.2x1", .splitRight)
             item("向下分屏", "rectangle.split.1x2", .splitDown)
             item("均分窗格", "rectangle.split.3x1", .equalizeSplits)
-            item("上一个窗格", "chevron.left", .previousPane)
-            item("下一个窗格", "chevron.right", .nextPane)
+            item("聚焦左侧窗格", "arrow.left.square", .focusPaneLeft)
+            item("聚焦下方窗格", "arrow.down.square", .focusPaneDown)
+            item("聚焦上方窗格", "arrow.up.square", .focusPaneUp)
+            item("聚焦右侧窗格", "arrow.right.square", .focusPaneRight)
 
             Divider()
 

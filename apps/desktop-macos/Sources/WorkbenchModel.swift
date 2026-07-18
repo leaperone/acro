@@ -152,10 +152,14 @@ final class WorkbenchModel: ObservableObject {
             splitTerminal(.vertical)
         case .equalizeSplits:
             equalizeSplits()
-        case .previousPane:
-            focusAdjacentPane(offset: -1)
-        case .nextPane:
-            focusAdjacentPane(offset: 1)
+        case .focusPaneLeft:
+            focusPane(toward: .left)
+        case .focusPaneDown:
+            focusPane(toward: .down)
+        case .focusPaneUp:
+            focusPane(toward: .up)
+        case .focusPaneRight:
+            focusPane(toward: .right)
         case .closeTab:
             requestKillFocusedTab()
         case .previousTab:
@@ -438,14 +442,13 @@ final class WorkbenchModel: ObservableObject {
         requestTerminalFocus()
     }
 
-    func focusAdjacentPane(offset: Int) {
-        guard let layout = currentLayout, let root = layout.root else { return }
-        let panes = root.panes
-        guard panes.count > 1 else { return }
-        let currentIndex = panes.firstIndex { $0.id == layout.focusedPaneId } ?? 0
-        let next = panes[(currentIndex + offset + panes.count) % panes.count]
-        mutateCurrentLayout { $0.focusedPaneId = next.id }
-        if let sessionId = next.selectedSessionId { flashPane(sessionId) }
+    // vim 方向导航:按窗格几何找目标(⌘⇧HJKL)
+    func focusPane(toward direction: PaneDirection) {
+        guard let targetPaneId = currentLayout?.paneId(toward: direction) else { return }
+        mutateCurrentLayout { $0.focusedPaneId = targetPaneId }
+        if let sessionId = currentLayout?.root?.pane(withId: targetPaneId)?.selectedSessionId {
+            flashPane(sessionId)
+        }
         requestTerminalFocus()
     }
 

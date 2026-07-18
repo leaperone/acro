@@ -54,6 +54,33 @@ final class WorkbenchLayoutStateTests: XCTestCase {
         XCTAssertEqual(layout.root?.pane(withId: sourcePaneId), nil)
     }
 
+    func testDirectionalPaneNavigation() throws {
+        // 左 | (右上 / 右下) 的布局
+        var layout = WorkspaceTerminalLayout()
+        layout.adopt("left")
+        let leftPaneId = layout.focusedPane!.id
+        layout.split(fromPane: leftPaneId, direction: .horizontal, newSessionId: "rightTop")
+        let rightTopPaneId = layout.focusedPane!.id
+        layout.split(fromPane: rightTopPaneId, direction: .vertical, newSessionId: "rightBottom")
+        let rightBottomPaneId = layout.focusedPane!.id
+
+        // 从右下:向上 → 右上;向左 → 左
+        XCTAssertEqual(layout.paneId(toward: .up), rightTopPaneId)
+        XCTAssertEqual(layout.paneId(toward: .left), leftPaneId)
+        XCTAssertNil(layout.paneId(toward: .right))
+        XCTAssertNil(layout.paneId(toward: .down))
+
+        // 从左:向右 → 投影重叠相同时距离近者;右上/右下与左均全高重叠?
+        // 左窗格全高,右上/右下各半高,重叠各为自身高度,取重叠更大者之一(相等取先者)
+        layout.focusedPaneId = leftPaneId
+        let right = layout.paneId(toward: .right)
+        XCTAssertTrue(right == rightTopPaneId || right == rightBottomPaneId)
+
+        // 从右上:向下 → 右下
+        layout.focusedPaneId = rightTopPaneId
+        XCTAssertEqual(layout.paneId(toward: .down), rightBottomPaneId)
+    }
+
     func testPruneAndRoundTrip() throws {
         var layout = WorkspaceTerminalLayout()
         layout.adopt("one")

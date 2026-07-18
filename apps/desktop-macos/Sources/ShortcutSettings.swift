@@ -97,8 +97,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case splitRight
     case splitDown
     case equalizeSplits
-    case previousPane
-    case nextPane
+    case focusPaneLeft
+    case focusPaneDown
+    case focusPaneUp
+    case focusPaneRight
     case closeTab
     case previousTab
     case nextTab
@@ -118,8 +120,10 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .splitRight: "向右分屏"
         case .splitDown: "向下分屏"
         case .equalizeSplits: "均分窗格"
-        case .previousPane: "上一个窗格"
-        case .nextPane: "下一个窗格"
+        case .focusPaneLeft: "聚焦左侧窗格"
+        case .focusPaneDown: "聚焦下方窗格"
+        case .focusPaneUp: "聚焦上方窗格"
+        case .focusPaneRight: "聚焦右侧窗格"
         case .closeTab: "关闭标签(终止终端)"
         case .previousTab: "上一个标签"
         case .nextTab: "下一个标签"
@@ -148,8 +152,10 @@ final class ShortcutStore: ObservableObject {
         .splitRight: StoredShortcut(key: "d", command: true),
         .splitDown: StoredShortcut(key: "d", command: true, shift: true),
         .equalizeSplits: StoredShortcut(key: "=", command: true, option: true),
-        .previousPane: StoredShortcut(key: "left", command: true, option: true),
-        .nextPane: StoredShortcut(key: "right", command: true, option: true),
+        .focusPaneLeft: StoredShortcut(key: "h", command: true, shift: true),
+        .focusPaneDown: StoredShortcut(key: "j", command: true, shift: true),
+        .focusPaneUp: StoredShortcut(key: "k", command: true, shift: true),
+        .focusPaneRight: StoredShortcut(key: "l", command: true, shift: true),
         .closeTab: StoredShortcut(key: "w", command: true),
         .previousTab: StoredShortcut(key: "[", command: true, shift: true),
         .nextTab: StoredShortcut(key: "]", command: true, shift: true),

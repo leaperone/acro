@@ -276,6 +276,45 @@ extension TerminalLayoutNode: Codable {
     }
 }
 
+// vim 式方向导航(⌘⇧HJKL):h 左 j 下 k 上 l 右
+enum PaneDirection {
+    case left, right, up, down
+}
+
+extension TerminalLayoutNode {
+    // 按 ratio 递归切分单位矩形,得到每个窗格的几何位置
+    func paneFrames(in rect: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)) -> [(pane: PaneTabGroup, frame: CGRect)] {
+        switch self {
+        case .pane(let group):
+            return [(group, rect)]
+        case .split(let node):
+            let ratio = CGFloat(node.ratio)
+            let firstRect: CGRect
+            let secondRect: CGRect
+            if node.direction == .horizontal {
+                firstRect = CGRect(
+                    x: rect.minX, y: rect.minY,
+                    width: rect.width * ratio, height: rect.height
+                )
+                secondRect = CGRect(
+                    x: rect.minX + rect.width * ratio, y: rect.minY,
+                    width: rect.width * (1 - ratio), height: rect.height
+                )
+            } else {
+                firstRect = CGRect(
+                    x: rect.minX, y: rect.minY,
+                    width: rect.width, height: rect.height * ratio
+                )
+                secondRect = CGRect(
+                    x: rect.minX, y: rect.minY + rect.height * ratio,
+                    width: rect.width, height: rect.height * (1 - ratio)
+                )
+            }
+            return node.first.paneFrames(in: firstRect) + node.second.paneFrames(in: secondRect)
+        }
+    }
+}
+
 struct WorkspaceTerminalLayout: Codable, Equatable {
     var root: TerminalLayoutNode?
     var focusedPaneId: String?
@@ -393,6 +432,51 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
             }
         }
         self.root = next
+    }
+
+    // 方向邻居:候选须整体越过焦点窗格对应边缘;
+    // 垂直/水平投影重叠大的优先,重叠相同再比边缘距离
+    func paneId(toward direction: PaneDirection) -> String? {
+        guard let root, let focusedPane else { return nil }
+        let frames = root.paneFrames()
+        guard let focus = frames.first(where: { $0.pane.id == focusedPane.id })?.frame else {
+            return nil
+        }
+        let eps: CGFloat = 0.0001
+        var best: (id: String, overlap: CGFloat, distance: CGFloat)?
+        for (pane, frame) in frames where pane.id != focusedPane.id {
+            let beyond: Bool
+            let distance: CGFloat
+            let overlap: CGFloat
+            switch direction {
+            case .left:
+                beyond = frame.maxX <= focus.minX + eps
+                distance = focus.minX - frame.maxX
+                overlap = min(frame.maxY, focus.maxY) - max(frame.minY, focus.minY)
+            case .right:
+                beyond = frame.minX >= focus.maxX - eps
+                distance = frame.minX - focus.maxX
+                overlap = min(frame.maxY, focus.maxY) - max(frame.minY, focus.minY)
+            case .up:
+                beyond = frame.maxY <= focus.minY + eps
+                distance = focus.minY - frame.maxY
+                overlap = min(frame.maxX, focus.maxX) - max(frame.minX, focus.minX)
+            case .down:
+                beyond = frame.minY >= focus.maxY - eps
+                distance = frame.minY - focus.maxY
+                overlap = min(frame.maxX, focus.maxX) - max(frame.minX, focus.minX)
+            }
+            guard beyond else { continue }
+            if let current = best {
+                if overlap > current.overlap + eps
+                    || (abs(overlap - current.overlap) <= eps && distance < current.distance - eps) {
+                    best = (pane.id, overlap, distance)
+                }
+            } else {
+                best = (pane.id, overlap, distance)
+            }
+        }
+        return best?.id
     }
 
     mutating func prune(validSessionIds: Set<String>) {
