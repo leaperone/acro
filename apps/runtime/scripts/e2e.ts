@@ -330,6 +330,26 @@ async function main(): Promise<void> {
     assert.equal((await client.rpc<unknown[]>("session.focusList")).length, 0);
     log("focus lock ok");
 
+    // 尺寸仲裁:PTY = 各在挂客户端的最小值;小端断开后回涨
+    const sizeSeatShare = await client.rpc<{ offer: string }>("device.share", {
+      name: "size-seat",
+    });
+    const sizeSeat = new Client();
+    await sizeSeat.connect(decodePairingOffer(sizeSeatShare.offer));
+    await client.rpc("session.attach", { sessionId: session.id });
+    await sizeSeat.rpc("session.attach", { sessionId: session.id });
+    await client.rpc("session.resize", { sessionId: session.id, cols: 200, rows: 50 });
+    await sizeSeat.rpc("session.resize", { sessionId: session.id, cols: 100, rows: 30 });
+    const sized = (await client.rpc<Session[]>("session.list")).find((s) => s.id === session.id);
+    assert.equal(sized?.cols, 100, "pty cols must be the min across attached clients");
+    assert.equal(sized?.rows, 30, "pty rows must be the min across attached clients");
+    sizeSeat.close();
+    await sleep(500);
+    const regrown = (await client.rpc<Session[]>("session.list")).find((s) => s.id === session.id);
+    assert.equal(regrown?.cols, 200, "pty must regrow after the smaller client leaves");
+    assert.equal(regrown?.rows, 50, "pty must regrow after the smaller client leaves");
+    log("resize arbitration ok");
+
     // 断开重连:会话必须还在,快照必须包含断开前的输出,且不重发旧帧
     client.close();
     await sleep(500);
