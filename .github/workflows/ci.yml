@@ -19,7 +19,7 @@ jobs:
       - run: pnpm -C packages/protocol check
       - run: pnpm -C apps/runtime exec tsc --noEmit
       - run: pnpm -C apps/runtime test
-      - run: pnpm -C apps/cli exec tsc --noEmit
+      - run: pnpm -C apps/cli check
       - run: pnpm -C apps/mobile check
 
   desktop-macos:

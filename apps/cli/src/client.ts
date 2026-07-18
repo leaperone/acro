@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
-import type { MethodName, MethodParams, MethodResult } from "@acro/protocol";
+import type { MethodName, MethodParams, MethodResult, Session } from "@acro/protocol";
 import { decodeFrame, type Frame } from "@acro/protocol/frames";
 // e2ee 不引 zod:attach 冷启动路径保持轻量
 import { b64ToBytes, ClientHandshake, type E2eeSession } from "@acro/protocol/e2ee";
@@ -66,6 +66,17 @@ export function pickServer(config: ClientConfig, ref?: string): ServerEntry {
 
 export function activeServer(config: ClientConfig): ServerEntry {
   return pickServer(config);
+}
+
+export function resolveSessionRef(sessions: readonly Session[], ref: string): Session {
+  const exact = sessions.find((session) => session.id === ref);
+  if (exact) return exact;
+  const matches = sessions.filter((session) => session.id.startsWith(ref));
+  if (matches.length === 0) throw new Error(`session not found: ${ref}`);
+  if (matches.length > 1) {
+    throw new Error(`ambiguous session id: ${ref} (${matches.map((session) => session.id).join(", ")})`);
+  }
+  return matches[0]!;
 }
 
 const CONNECT_TIMEOUT_MS = 4000;
@@ -206,8 +217,33 @@ export class AcroClient {
     });
   }
 
-  sendBinary(data: Uint8Array): void {
+  sendBinary(data: Uint8Array): number {
+    if (this.ws.readyState !== WebSocket.OPEN) throw new Error("连接已断开");
     this.ws.send(this.session.sealBinary(data), { binary: true });
+    return this.ws.bufferedAmount;
+  }
+
+  waitForWritable(maxBufferedAmount: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const poll = () => {
+        if (this.ws.readyState !== WebSocket.OPEN) {
+          reject(new Error("连接已断开"));
+        } else if (this.ws.bufferedAmount <= maxBufferedAmount) {
+          resolve();
+        } else {
+          setTimeout(poll, 10);
+        }
+      };
+      poll();
+    });
+  }
+
+  pauseIncoming(): void {
+    this.ws.pause();
+  }
+
+  resumeIncoming(): void {
+    this.ws.resume();
   }
 
   close(): void {
