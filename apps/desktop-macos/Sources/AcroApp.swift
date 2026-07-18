@@ -31,7 +31,29 @@ final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private enum SidebarViewMode: String, CaseIterable, Identifiable {
+    case workspaces
+    case sessions
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .workspaces: "工作区"
+        case .sessions: "会话"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .workspaces: "square.stack.3d.up"
+        case .sessions: "terminal"
+        }
+    }
+}
+
 struct WorkbenchActions {
+    let newWorkspaceGroup: () -> Void
     let newWorkspace: () -> Void
     let newTerminal: () -> Void
     let showCommandPalette: () -> Void
@@ -85,6 +107,10 @@ struct AcroWorkbenchCommands: Commands {
                 actions?.newWorkspace()
             }
             .keyboardShortcut("n", modifiers: .command)
+
+            Button("新建分组", systemImage: "folder.badge.plus") {
+                actions?.newWorkspaceGroup()
+            }
         }
 
         CommandMenu("工作台") {
@@ -257,18 +283,35 @@ struct ContentView: View {
     @State private var workspaceLayouts: [String: WorkspaceTerminalLayout] = [:]
     @State private var terminalFocusRequest = 0
     @State private var layoutRestored = false
+    @State private var workspaceGroupsInitialized = false
+    @State private var workspaceExpansionInitialized = false
+    @State private var expandedWorkspaceGroupIds: Set<String> = []
     @State private var expandedWorkspaceIds: Set<String> = []
+    @State private var showingWorkspaceGroupEditor = false
+    @State private var editingWorkspaceGroupId: String?
+    @State private var workspaceGroupName = ""
     @State private var showingWorkspaceEditor = false
     @State private var editingWorkspaceId: String?
     @State private var workspaceName = ""
     @State private var pendingWorkspaceDeletion: [String: Any]?
+    @State private var pendingWorkspaceGroupRemoval: [String: Any]?
     @State private var pendingSessionTermination: [String: Any]?
     @State private var projectPickerWorkspace: [String: Any]?
     @State private var terminalProjectPickerWorkspace: [String: Any]?
     @State private var projectQuery = ""
+    @State private var projectPathInput = "~"
+    @State private var projectPathPreview = ""
+    @State private var projectDirectoryPath = ""
+    @State private var projectDirectoryParent: String?
+    @State private var projectDirectoryHome = ""
+    @State private var projectDirectoryEntries: [[String: Any]] = []
+    @State private var projectPickerLoading = false
     @State private var showingCommandPalette = false
+    @State private var hoveredWorkspaceGroupId: String?
+    @State private var hoveredWorkspaceId: String?
     @State private var errorMessage: String?
     @AppStorage("acro.desktop.workbench.layout.v1") private var persistedLayout = ""
+    @AppStorage("acro.desktop.sidebar.view-mode") private var sidebarViewMode = SidebarViewMode.workspaces
 
     var body: some View {
         ZStack {
@@ -278,7 +321,7 @@ struct ContentView: View {
                 GeometryReader { geometry in
                     HSplitView {
                         terminalContent
-                            .frame(minWidth: 440, maxHeight: .infinity)
+                            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
 
                         if inspectorVisible, geometry.size.width >= 720 {
@@ -287,6 +330,11 @@ struct ContentView: View {
                                 .frame(maxHeight: .infinity)
                         }
                     }
+                    .frame(
+                        width: geometry.size.width,
+                        height: geometry.size.height,
+                        alignment: .leading
+                    )
                 }
                 .navigationTitle(windowTitle)
                 .toolbar {
@@ -346,13 +394,24 @@ struct ContentView: View {
             persistLayout()
         }
         .alert(
-            editingWorkspaceId == nil ? "新建工作区" : "重命名工作区",
+            editingWorkspaceGroupId == nil ? "新建分组" : "重命名分组",
+            isPresented: $showingWorkspaceGroupEditor
+        ) {
+            TextField("名称", text: $workspaceGroupName)
+            Button("取消", role: .cancel) {}
+            Button(editingWorkspaceGroupId == nil ? "创建" : "保存") {
+                Task { await saveWorkspaceGroup() }
+            }
+            .disabled(workspaceGroupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .alert(
+            "重命名工作区",
             isPresented: $showingWorkspaceEditor
         ) {
             TextField("名称", text: $workspaceName)
             Button("取消", role: .cancel) {}
-            Button(editingWorkspaceId == nil ? "创建" : "保存") {
-                Task { await saveWorkspace() }
+            Button("保存") {
+                Task { await saveWorkspaceName() }
             }
             .disabled(workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
@@ -370,6 +429,16 @@ struct ContentView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("运行中的会话会阻止删除。")
+        }
+        .confirmationDialog("解散分组？", isPresented: workspaceGroupRemovalPresented) {
+            Button("解散", role: .destructive) {
+                if let group = pendingWorkspaceGroupRemoval {
+                    Task { await removeWorkspaceGroup(group) }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("工作区会保留，并移到未分组区域。")
         }
         .confirmationDialog("关闭终端？", isPresented: terminationPresented) {
             Button("关闭", role: .destructive) {
@@ -397,12 +466,36 @@ struct ContentView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                Picker("侧边栏视图", selection: $sidebarViewMode) {
+                    ForEach(SidebarViewMode.allCases) { mode in
+                        Image(systemName: mode.symbol)
+                            .accessibilityLabel(mode.title)
+                            .tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 64)
+                .help("切换工作区或会话视图")
                 Circle()
                     .fill(runtime.connected ? Color.green : Color.secondary)
                     .frame(width: 7, height: 7)
                     .help(runtime.connected ? "Runtime 已连接" : "Runtime 未连接")
+                Menu {
+                    Button("新建分组", systemImage: "folder.badge.plus") {
+                        presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("工作区管理")
+                .accessibilityLabel("工作区管理")
                 Button {
-                    presentWorkspaceEditor(workspaceId: nil, name: "")
+                    Task { await createWorkspace() }
                 } label: {
                     Image(systemName: "plus")
                         .frame(width: 20, height: 20)
@@ -418,11 +511,11 @@ struct ContentView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
-                    if runtime.workspaces.isEmpty {
+                    if runtime.workspaceGroups.isEmpty && runtime.workspaces.isEmpty {
                         Button {
-                            presentWorkspaceEditor(workspaceId: nil, name: "")
+                            Task { await createWorkspace() }
                         } label: {
-                            Label("新建工作区", systemImage: "plus")
+                            Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10)
                                 .frame(height: 34)
@@ -430,9 +523,22 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
                     } else {
-                        ForEach(runtime.workspaces.indices, id: \.self) { index in
-                            workspaceRow(runtime.workspaces[index])
+                        ForEach(runtime.workspaceGroups.indices, id: \.self) { index in
+                            workspaceGroupRow(runtime.workspaceGroups[index])
                                 .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if !ungroupedWorkspaces.isEmpty {
+                            if !runtime.workspaceGroups.isEmpty {
+                                Text("未分组")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.top, 8)
+                            }
+                            ForEach(ungroupedWorkspaces.indices, id: \.self) { index in
+                                workspaceRow(ungroupedWorkspaces[index])
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
@@ -447,7 +553,10 @@ struct ContentView: View {
 
     private var workbenchActions: WorkbenchActions {
         WorkbenchActions(
-            newWorkspace: { presentWorkspaceEditor(workspaceId: nil, name: "") },
+            newWorkspaceGroup: {
+                presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
+            },
+            newWorkspace: { Task { await createWorkspace() } },
             newTerminal: {
                 if let selectedWorkspace { requestNewTerminal(in: selectedWorkspace) }
             },
@@ -535,7 +644,7 @@ struct ContentView: View {
             } actions: {
                 if projects(in: selectedWorkspace).isEmpty {
                     Button("添加项目") {
-                        projectPickerWorkspace = selectedWorkspace
+                        presentProjectPicker(for: selectedWorkspace)
                     }
                 } else {
                     Button("新建终端") {
@@ -794,13 +903,20 @@ struct ContentView: View {
         )
     }
 
+    private var workspaceGroupRemovalPresented: Binding<Bool> {
+        Binding(
+            get: { pendingWorkspaceGroupRemoval != nil },
+            set: { if !$0 { pendingWorkspaceGroupRemoval = nil } }
+        )
+    }
+
     private var projectPickerPresented: Binding<Bool> {
         Binding(
             get: { projectPickerWorkspace != nil },
             set: {
                 if !$0 {
                     projectPickerWorkspace = nil
-                    projectQuery = ""
+                    resetProjectPicker()
                 }
             }
         )
@@ -827,46 +943,132 @@ struct ContentView: View {
 
     private var projectPicker: some View {
         NavigationStack {
-            List {
-                ForEach(filteredPickerProjects.indices, id: \.self) { index in
-                    let project = filteredPickerProjects[index]
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
                     Button {
-                        if let workspace = projectPickerWorkspace {
-                            Task {
-                                await addProject(project, to: workspace)
-                                projectPickerWorkspace = nil
-                                projectQuery = ""
-                            }
+                        Task { await loadProjectDirectory(projectDirectoryHome) }
+                    } label: {
+                        Image(systemName: "house")
+                    }
+                    .disabled(projectDirectoryHome.isEmpty)
+                    .help("主目录")
+                    .accessibilityLabel("主目录")
+
+                    Button {
+                        Task { await loadProjectDirectory("/") }
+                    } label: {
+                        Image(systemName: "internaldrive")
+                    }
+                    .help("根目录")
+                    .accessibilityLabel("根目录")
+
+                    Button {
+                        if let projectDirectoryParent {
+                            Task { await loadProjectDirectory(projectDirectoryParent) }
                         }
                     } label: {
-                        Label(string(project, "name"), systemImage: "folder")
+                        Image(systemName: "arrow.up")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(string(project, "name"))
+                    .disabled(projectDirectoryParent == nil)
+                    .help("上一级")
+                    .accessibilityLabel("上一级")
+
+                    TextField("路径", text: $projectPathInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            Task { await loadProjectDirectory(projectPathInput) }
+                        }
+
+                    Button {
+                        Task { await loadProjectDirectory(projectPathInput) }
+                    } label: {
+                        Image(systemName: "arrow.right.circle")
+                    }
+                    .help("打开路径")
+                    .accessibilityLabel("打开路径")
+                }
+                .padding(12)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("路径预览")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(projectPathPreview.isEmpty ? "正在读取…" : projectPathPreview)
+                        .font(.callout.monospaced())
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 10)
+
+                Divider()
+
+                if projectPickerLoading && projectDirectoryEntries.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(projectDirectoryEntries.indices, id: \.self) { index in
+                            let entry = projectDirectoryEntries[index]
+                            let entryPath = string(entry, "path")
+                            HStack(spacing: 8) {
+                                Button {
+                                    projectPathInput = entryPath
+                                    projectPathPreview = entryPath
+                                } label: {
+                                    Label(string(entry, "name"), systemImage: "folder")
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    Task { await loadProjectDirectory(entryPath) }
+                                } label: {
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help("打开文件夹")
+                                .accessibilityLabel("打开 \(string(entry, "name"))")
+                            }
+                            .listRowBackground(
+                                projectPathPreview == entryPath
+                                    ? Color.accentColor.opacity(0.12)
+                                    : Color.clear
+                            )
+                        }
+                    }
+                    .overlay {
+                        if projectDirectoryEntries.isEmpty && !projectPickerLoading {
+                            ContentUnavailableView("没有子目录", systemImage: "folder")
+                        }
+                    }
                 }
             }
-            .searchable(text: $projectQuery, prompt: "搜索项目")
-            .navigationTitle("添加项目")
+            .navigationTitle("选择项目目录")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") {
                         projectPickerWorkspace = nil
-                        projectQuery = ""
+                        resetProjectPicker()
                     }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("添加并打开终端") {
+                        Task { await registerProjectAndOpenTerminal() }
+                    }
+                    .disabled(projectPathPreview.isEmpty || projectPickerLoading)
                 }
             }
         }
-        .frame(minWidth: 420, minHeight: 480)
-    }
-
-    private var filteredPickerProjects: [[String: Any]] {
-        guard let workspace = projectPickerWorkspace else { return [] }
-        let projects = availableProjects(for: workspace)
-        let query = projectQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return projects }
-        return projects.filter {
-            string($0, "name").localizedCaseInsensitiveContains(query)
-                || string($0, "path").localizedCaseInsensitiveContains(query)
+        .frame(minWidth: 560, minHeight: 520)
+        .onAppear {
+            if projectDirectoryPath.isEmpty {
+                Task { await loadProjectDirectory("~") }
+            }
         }
     }
 
@@ -921,11 +1123,18 @@ struct ContentView: View {
     private var commandPaletteItems: [CommandPaletteItem] {
         var items: [CommandPaletteItem] = [
             CommandPaletteItem(
+                id: "command:new-workspace-group",
+                title: "新建分组",
+                subtitle: "组织相关工作区",
+                symbol: "folder.badge.plus",
+                action: { presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "") }
+            ),
+            CommandPaletteItem(
                 id: "command:new-workspace",
                 title: "新建工作区",
-                subtitle: "创建新的任务分组",
+                subtitle: "创建新的工作上下文",
                 symbol: "square.stack.3d.up.badge.plus",
-                action: { presentWorkspaceEditor(workspaceId: nil, name: "") }
+                action: { Task { await createWorkspace() } }
             ),
             CommandPaletteItem(
                 id: "command:toggle-sidebar",
@@ -1012,6 +1221,25 @@ struct ContentView: View {
         runtime.workspaces.map { string($0, "id") }
     }
 
+    private var workspaceGroupIds: [String] {
+        runtime.workspaceGroups.map { string($0, "id") }
+    }
+
+    private var ungroupedWorkspaces: [[String: Any]] {
+        let groupedIds = Set(runtime.workspaceGroups.flatMap { strings($0["workspaceIds"]) })
+        return runtime.workspaces.filter { !groupedIds.contains(string($0, "id")) }
+    }
+
+    private func workspaces(in group: [String: Any]) -> [[String: Any]] {
+        strings(group["workspaceIds"]).compactMap { workspaceId in
+            runtime.workspaces.first { string($0, "id") == workspaceId }
+        }
+    }
+
+    private func workspaceGroup(containing workspaceId: String) -> [String: Any]? {
+        runtime.workspaceGroups.first { strings($0["workspaceIds"]).contains(workspaceId) }
+    }
+
     private func projects(in workspace: [String: Any]) -> [[String: Any]] {
         strings(workspace["projectIds"]).compactMap { projectId in
             runtime.projects.first { string($0, "id") == projectId }
@@ -1032,26 +1260,131 @@ struct ContentView: View {
         .sorted { string($0, "createdAt") < string($1, "createdAt") }
     }
 
+    private func workspaceGroupRow(_ group: [String: Any]) -> some View {
+        let groupId = string(group, "id")
+        let expanded = expandedWorkspaceGroupIds.contains(groupId)
+        let groupWorkspaces = workspaces(in: group)
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+                Button {
+                    toggleWorkspaceGroup(groupId)
+                } label: {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded ? "折叠分组" : "展开分组")
+
+                Button {
+                    toggleWorkspaceGroup(groupId)
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "folder.fill")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text(string(group, "name"))
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if !groupWorkspaces.isEmpty {
+                            Text("\(groupWorkspaces.count)")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 32)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(string(group, "name"))
+                .accessibilityValue(expanded ? "已展开" : "已折叠")
+
+                Button {
+                    Task { await createWorkspace(in: groupId) }
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.plain)
+                .opacity(hoveredWorkspaceGroupId == groupId ? 1 : 0)
+                .allowsHitTesting(hoveredWorkspaceGroupId == groupId)
+                .help("在分组中新建工作区")
+                .accessibilityLabel("在 \(string(group, "name")) 新建工作区")
+            }
+            .padding(.horizontal, 6)
+            .modifier(SidebarRowSurface(selected: false))
+            .onHover { hovering in
+                hoveredWorkspaceGroupId = hovering ? groupId : nil
+            }
+            .contextMenu {
+                Button("新建工作区") {
+                    Task { await createWorkspace(in: groupId) }
+                }
+                Divider()
+                Button("重命名") {
+                    presentWorkspaceGroupEditor(
+                        workspaceGroupId: groupId,
+                        name: string(group, "name")
+                    )
+                }
+                Button("解散分组", role: .destructive) {
+                    pendingWorkspaceGroupRemoval = group
+                }
+            }
+
+            if expanded {
+                if groupWorkspaces.isEmpty {
+                    Button {
+                        Task { await createWorkspace(in: groupId) }
+                    } label: {
+                        Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                            .frame(height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 22)
+                } else {
+                    ForEach(groupWorkspaces.indices, id: \.self) { index in
+                        workspaceRow(groupWorkspaces[index])
+                            .padding(.leading, 14)
+                    }
+                }
+            }
+        }
+    }
+
     private func workspaceRow(_ workspace: [String: Any]) -> some View {
         let workspaceId = string(workspace, "id")
         let expanded = expandedWorkspaceIds.contains(workspaceId)
         let workspaceProjects = projects(in: workspace)
         let workspaceSessions = sessions(in: workspace)
+        let currentGroup = workspaceGroup(containing: workspaceId)
         return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Button {
-                    selectWorkspace(workspace)
-                    if expanded {
-                        expandedWorkspaceIds.remove(workspaceId)
-                    } else {
-                        expandedWorkspaceIds.insert(workspaceId)
-                    }
-                } label: {
-                    HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                if sidebarViewMode == .sessions {
+                    Button {
+                        toggleWorkspace(workspaceId)
+                    } label: {
                         Image(systemName: expanded ? "chevron.down" : "chevron.right")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 10)
+                            .frame(width: 18, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(expanded ? "折叠工作区" : "展开工作区")
+                }
+
+                Button {
+                    selectWorkspace(workspace)
+                } label: {
+                    HStack(spacing: 8) {
                         Image(systemName: "rectangle.3.group")
                             .foregroundStyle(.secondary)
                             .frame(width: 16)
@@ -1068,17 +1401,14 @@ struct ContentView: View {
                                 .background(.quaternary, in: Capsule())
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .frame(height: 34)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 32)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .modifier(SidebarRowSurface(
-                    selected: selectedWorkspaceId == workspaceId && selectedSessionId == nil
-                ))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(string(workspace, "name"))
-                .accessibilityValue(expanded ? "已展开" : "已折叠")
+
                 if !workspaceProjects.isEmpty {
                     Button {
                         requestNewTerminal(in: workspace)
@@ -1087,9 +1417,19 @@ struct ContentView: View {
                     }
                     .frame(width: 24, height: 24)
                     .buttonStyle(.plain)
+                    .opacity(hoveredWorkspaceId == workspaceId ? 1 : 0)
+                    .allowsHitTesting(hoveredWorkspaceId == workspaceId)
                     .help("新建终端")
                     .accessibilityLabel("在 \(string(workspace, "name")) 新建终端")
                 }
+            }
+            .padding(.horizontal, 6)
+            .modifier(SidebarRowSurface(
+                selected: selectedWorkspaceId == workspaceId
+                    && (sidebarViewMode == .workspaces || selectedSessionId == nil)
+            ))
+            .onHover { hovering in
+                hoveredWorkspaceId = hovering ? workspaceId : nil
             }
             .contextMenu {
                 if !workspaceProjects.isEmpty {
@@ -1105,8 +1445,27 @@ struct ContentView: View {
                         }
                     }
                 }
+                if !runtime.workspaceGroups.isEmpty {
+                    Menu("移动到分组") {
+                        ForEach(runtime.workspaceGroups.indices, id: \.self) { index in
+                            let group = runtime.workspaceGroups[index]
+                            Button(string(group, "name")) {
+                                Task { await moveWorkspace(workspace, to: group) }
+                            }
+                            .disabled(string(currentGroup ?? [:], "id") == string(group, "id"))
+                        }
+                    }
+                }
+                if currentGroup != nil {
+                    Button("移出分组") {
+                        Task { await moveWorkspace(workspace, to: nil) }
+                    }
+                }
+                if !workspaceProjects.isEmpty || !runtime.workspaceGroups.isEmpty {
+                    Divider()
+                }
                 Button("重命名") {
-                    presentWorkspaceEditor(
+                    presentWorkspaceRename(
                         workspaceId: workspaceId,
                         name: string(workspace, "name")
                     )
@@ -1115,12 +1474,11 @@ struct ContentView: View {
                     pendingWorkspaceDeletion = workspace
                 }
             }
-            if expanded {
+            if sidebarViewMode == .sessions && expanded {
                 if workspaceProjects.isEmpty {
                     Button {
                         selectedWorkspaceId = workspaceId
-                        projectPickerWorkspace = workspace
-                        projectQuery = ""
+                        presentProjectPicker(for: workspace)
                     } label: {
                         Label("添加项目", systemImage: "folder.badge.plus")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1222,6 +1580,7 @@ struct ContentView: View {
             layout = WorkspaceTerminalLayout(root: .leaf(sessionId), focusedSessionId: sessionId)
         }
         workspaceLayouts[workspaceId] = layout
+        expandGroupContaining(workspaceId)
         expandedWorkspaceIds.insert(workspaceId)
         requestTerminalFocus()
     }
@@ -1229,6 +1588,7 @@ struct ContentView: View {
     private func selectWorkspace(_ workspace: [String: Any]) {
         let workspaceId = string(workspace, "id")
         selectedWorkspaceId = workspaceId
+        expandGroupContaining(workspaceId)
         expandedWorkspaceIds.insert(workspaceId)
         if let sessionId = workspaceLayouts[workspaceId]?.focusedSessionId,
            let session = sessions(in: workspace).first(where: { string($0, "id") == sessionId }) {
@@ -1260,6 +1620,7 @@ struct ContentView: View {
         if !expandedWorkspaceIds.contains(workspaceId) {
             expandedWorkspaceIds.insert(workspaceId)
         }
+        expandGroupContaining(workspaceId)
     }
 
     private func focusSessionId(_ sessionId: String) {
@@ -1269,12 +1630,13 @@ struct ContentView: View {
 
     private func requestNewTerminal(in workspace: [String: Any]) {
         let workspaceProjects = projects(in: workspace)
-        selectedWorkspaceId = string(workspace, "id")
-        expandedWorkspaceIds.insert(string(workspace, "id"))
+        let workspaceId = string(workspace, "id")
+        selectedWorkspaceId = workspaceId
+        expandGroupContaining(workspaceId)
+        expandedWorkspaceIds.insert(workspaceId)
         switch workspaceProjects.count {
         case 0:
-            projectPickerWorkspace = workspace
-            projectQuery = ""
+            presentProjectPicker(for: workspace)
         case 1:
             Task { _ = await openTerminal(project: workspaceProjects[0], workspace: workspace) }
         default:
@@ -1390,29 +1752,116 @@ struct ContentView: View {
         return "\(projectName) · \(index + 1)"
     }
 
-    private func presentWorkspaceEditor(workspaceId: String?, name: String) {
+    private func toggleWorkspaceGroup(_ workspaceGroupId: String) {
+        if expandedWorkspaceGroupIds.contains(workspaceGroupId) {
+            expandedWorkspaceGroupIds.remove(workspaceGroupId)
+        } else {
+            expandedWorkspaceGroupIds.insert(workspaceGroupId)
+        }
+    }
+
+    private func toggleWorkspace(_ workspaceId: String) {
+        if expandedWorkspaceIds.contains(workspaceId) {
+            expandedWorkspaceIds.remove(workspaceId)
+        } else {
+            expandedWorkspaceIds.insert(workspaceId)
+        }
+    }
+
+    private func expandGroupContaining(_ workspaceId: String) {
+        guard let group = workspaceGroup(containing: workspaceId) else { return }
+        expandedWorkspaceGroupIds.insert(string(group, "id"))
+    }
+
+    private func presentWorkspaceGroupEditor(workspaceGroupId: String?, name: String) {
+        editingWorkspaceGroupId = workspaceGroupId
+        workspaceGroupName = name
+        showingWorkspaceGroupEditor = true
+    }
+
+    private func presentProjectPicker(for workspace: [String: Any]) {
+        resetProjectPicker()
+        projectPickerWorkspace = workspace
+    }
+
+    private func resetProjectPicker() {
+        projectPathInput = "~"
+        projectPathPreview = ""
+        projectDirectoryPath = ""
+        projectDirectoryParent = nil
+        projectDirectoryHome = ""
+        projectDirectoryEntries = []
+        projectPickerLoading = false
+    }
+
+    private func loadProjectDirectory(_ requestedPath: String) async {
+        guard projectPickerWorkspace != nil else { return }
+        projectPickerLoading = true
+        defer { projectPickerLoading = false }
+        do {
+            guard let listing = try await runtime.rpc(
+                "filesystem.listDirectories",
+                ["path": requestedPath]
+            ) as? [String: Any]
+            else { return }
+            let resolvedPath = string(listing, "path")
+            projectPathInput = resolvedPath
+            projectPathPreview = resolvedPath
+            projectDirectoryPath = resolvedPath
+            projectDirectoryParent = listing["parent"] as? String
+            projectDirectoryHome = string(listing, "home")
+            projectDirectoryEntries = listing["entries"] as? [[String: Any]] ?? []
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func registerProjectAndOpenTerminal() async {
+        guard let workspace = projectPickerWorkspace,
+              !projectPathPreview.isEmpty
+        else { return }
+        projectPickerLoading = true
+        do {
+            guard let project = try await runtime.rpc(
+                "project.register",
+                ["path": projectPathPreview]
+            ) as? [String: Any]
+            else {
+                projectPickerLoading = false
+                return
+            }
+            guard await addProject(project, to: workspace) else {
+                projectPickerLoading = false
+                return
+            }
+            projectPickerWorkspace = nil
+            resetProjectPicker()
+            _ = await openTerminal(project: project, workspace: workspace)
+        } catch {
+            projectPickerLoading = false
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func presentWorkspaceRename(workspaceId: String, name: String) {
         editingWorkspaceId = workspaceId
         workspaceName = name
         showingWorkspaceEditor = true
     }
 
-    private func saveWorkspace() async {
+    private func saveWorkspaceGroup() async {
         do {
-            let name = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let editingWorkspaceId {
-                _ = try await runtime.rpc("workspace.update", [
-                    "workspaceId": editingWorkspaceId,
+            let name = workspaceGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let editingWorkspaceGroupId {
+                _ = try await runtime.rpc("workspaceGroup.update", [
+                    "workspaceGroupId": editingWorkspaceGroupId,
                     "name": name,
                 ])
-            } else if let workspace = try await runtime.rpc(
-                "workspace.create",
+            } else if let group = try await runtime.rpc(
+                "workspaceGroup.create",
                 ["name": name]
             ) as? [String: Any] {
-                let workspaceId = string(workspace, "id")
-                expandedWorkspaceIds.insert(workspaceId)
-                selectedWorkspaceId = workspaceId
-                selectedProjectId = nil
-                selectedSessionId = nil
+                expandedWorkspaceGroupIds.insert(string(group, "id"))
             }
             await runtime.refresh()
         } catch {
@@ -1420,7 +1869,40 @@ struct ContentView: View {
         }
     }
 
-    private func addProject(_ project: [String: Any], to workspace: [String: Any]) async {
+    private func createWorkspace(in workspaceGroupId: String? = nil) async {
+        do {
+            var params: [String: Any] = [:]
+            if let workspaceGroupId { params["workspaceGroupId"] = workspaceGroupId }
+            guard let workspace = try await runtime.rpc("workspace.create", params)
+                as? [String: Any]
+            else { return }
+            let workspaceId = string(workspace, "id")
+            if let workspaceGroupId { expandedWorkspaceGroupIds.insert(workspaceGroupId) }
+            expandedWorkspaceIds.insert(workspaceId)
+            selectedWorkspaceId = workspaceId
+            selectedProjectId = nil
+            selectedSessionId = nil
+            await runtime.refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func saveWorkspaceName() async {
+        guard let editingWorkspaceId else { return }
+        do {
+            _ = try await runtime.rpc("workspace.update", [
+                "workspaceId": editingWorkspaceId,
+                "name": workspaceName.trimmingCharacters(in: .whitespacesAndNewlines),
+            ])
+            await runtime.refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    private func addProject(_ project: [String: Any], to workspace: [String: Any]) async -> Bool {
         do {
             var projectIds = strings(workspace["projectIds"])
             projectIds.append(string(project, "id"))
@@ -1433,8 +1915,10 @@ struct ContentView: View {
             selectedSessionId = nil
             expandedWorkspaceIds.insert(string(workspace, "id"))
             await runtime.refresh()
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -1452,6 +1936,38 @@ struct ContentView: View {
             }
             await runtime.refresh()
         } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func moveWorkspace(
+        _ workspace: [String: Any],
+        to group: [String: Any]?
+    ) async {
+        do {
+            let groupId = group.map { string($0, "id") }
+            _ = try await runtime.rpc("workspace.update", [
+                "workspaceId": string(workspace, "id"),
+                "workspaceGroupId": groupId ?? NSNull(),
+            ])
+            if let groupId { expandedWorkspaceGroupIds.insert(groupId) }
+            await runtime.refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func removeWorkspaceGroup(_ group: [String: Any]) async {
+        do {
+            let groupId = string(group, "id")
+            _ = try await runtime.rpc("workspaceGroup.remove", [
+                "workspaceGroupId": groupId,
+            ])
+            expandedWorkspaceGroupIds.remove(groupId)
+            pendingWorkspaceGroupRemoval = nil
+            await runtime.refresh()
+        } catch {
+            pendingWorkspaceGroupRemoval = nil
             errorMessage = error.localizedDescription
         }
     }
@@ -1545,8 +2061,17 @@ struct ContentView: View {
 
     private func reconcileLayoutState() {
         guard runtime.snapshotLoaded else { return }
+        let validWorkspaceGroupIds = Set(workspaceGroupIds)
+        if workspaceGroupsInitialized {
+            expandedWorkspaceGroupIds.formIntersection(validWorkspaceGroupIds)
+        } else {
+            workspaceGroupsInitialized = true
+            expandedWorkspaceGroupIds = validWorkspaceGroupIds
+        }
         let validWorkspaceIds = Set(workspaceIds)
         expandedWorkspaceIds.formIntersection(validWorkspaceIds)
+        let shouldInitializeWorkspaceExpansion = !workspaceExpansionInitialized
+        workspaceExpansionInitialized = true
         workspaceLayouts = workspaceLayouts.filter { validWorkspaceIds.contains($0.key) }
 
         for workspace in runtime.workspaces {
@@ -1577,7 +2102,10 @@ struct ContentView: View {
             selectedSessionId = nil
             return
         }
-        expandedWorkspaceIds.insert(selectedWorkspaceId)
+        if shouldInitializeWorkspaceExpansion {
+            expandedWorkspaceIds.insert(selectedWorkspaceId)
+            expandGroupContaining(selectedWorkspaceId)
+        }
         guard let focusedSessionId = workspaceLayouts[selectedWorkspaceId]?.focusedSessionId,
               let focusedSession = activeSessions.first(where: {
                   string($0, "id") == focusedSessionId

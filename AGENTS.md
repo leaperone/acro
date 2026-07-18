@@ -9,7 +9,7 @@ Acro 是团队内部使用的远程开发控制台。它管理工作区、项目
 - 不自研终端模拟器、Git 实现或网络穿透协议。优先复用 libghostty、xterm.js、@xterm/headless、系统 Git、Playwright 和安全私网。
 - Workspace 是用户手动创建的工作上下文。只有用户加入 Workspace 的项目才出现在工作台中。
 - Acro 不管理 Git 分支、Worktree 或提交流程。终端里的 Agent 按项目规则自行处理这些工作。
-- 高危 Git、文件和系统操作必须在服务端校验，不能只依赖客户端确认。
+- Runtime 只校验设备和远程控制 RPC。终端输入对 Acro 不透明；Git、文件和生产操作由终端里的 Agent 按项目规则处理。
 
 ## Monorepo
 

@@ -7,7 +7,7 @@ import { DaemonClient } from "./daemon/client.ts";
 import { BrowserManager } from "./browser.ts";
 import { SimulatorManager } from "./simulator.ts";
 import { HelperClient } from "./computer.ts";
-import { discoverProjects, findProject } from "./projects.ts";
+import { listDirectories, ProjectRegistry } from "./projects.ts";
 import { WorkspaceRegistry } from "./workspaces.ts";
 import { createHttpHandler } from "./http.ts";
 import { Gateway, type Handlers } from "./ws.ts";
@@ -29,18 +29,25 @@ async function main(): Promise<void> {
   const browsers = new BrowserManager();
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
+  const projects = new ProjectRegistry();
   const workspaces = new WorkspaceRegistry();
 
   const handlers: Handlers = {
     "device.list": () => registry.list(),
-    "project.list": () => discoverProjects(config.projectRoots),
+    "project.list": () => projects.list(),
+    "project.register": (_conn, { path }) => projects.register(path),
+    "filesystem.listDirectories": (_conn, { path }) => listDirectories(path),
     "workspace.list": () => workspaces.list(),
-    "workspace.create": (_conn, { name }) => workspaces.create(name),
-    "workspace.update": async (_conn, { workspaceId, name, projectIds }) => {
+    "workspace.create": (_conn, { name, workspaceGroupId }) =>
+      workspaces.create(name, workspaceGroupId),
+    "workspace.update": async (
+      _conn,
+      { workspaceId, name, projectIds, workspaceGroupId },
+    ) => {
       const current = workspaces.get(workspaceId);
       if (!current) throw new Error("workspace not found");
       if (projectIds) {
-        const knownProjectIds = new Set(discoverProjects(config.projectRoots).map((p) => p.id));
+        const knownProjectIds = new Set(projects.list().map((project) => project.id));
         const missing = projectIds.find((id) => !knownProjectIds.has(id));
         if (missing) throw new Error("project not found");
 
@@ -57,7 +64,15 @@ async function main(): Promise<void> {
           if (hasActiveSession) throw new Error("project has active sessions in this workspace");
         }
       }
-      return workspaces.update(workspaceId, { name, projectIds });
+      return workspaces.update(workspaceId, { name, projectIds, workspaceGroupId });
+    },
+    "workspaceGroup.list": () => workspaces.listGroups(),
+    "workspaceGroup.create": (_conn, { name }) => workspaces.createGroup(name),
+    "workspaceGroup.update": (_conn, { workspaceGroupId, name }) =>
+      workspaces.updateGroup(workspaceGroupId, name),
+    "workspaceGroup.remove": (_conn, { workspaceGroupId }) => {
+      workspaces.removeGroup(workspaceGroupId);
+      return { removed: true };
     },
     "workspace.remove": async (_conn, { workspaceId }) => {
       const workspace = workspaces.get(workspaceId);
@@ -75,7 +90,7 @@ async function main(): Promise<void> {
       let cwd = params.cwd;
       let projectId = params.projectId;
       if (params.projectId) {
-        const project = findProject(config.projectRoots, params.projectId);
+        const project = projects.get(params.projectId);
         if (!project) throw new Error("project not found");
         cwd = project.path;
       }

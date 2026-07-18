@@ -21,7 +21,7 @@ const { Terminal } = xtermHeadless;
 const { SerializeAddon } = xtermSerialize;
 type Terminal = InstanceType<typeof Terminal>;
 type SerializeAddon = InstanceType<typeof SerializeAddon>;
-import type { Session } from "@acro/protocol";
+import { Session as SessionSchema, type Session } from "@acro/protocol";
 import { encodeOutFrame, decodeFrame, FRAME_IN } from "@acro/protocol";
 import { paths, ensureStateDirs } from "../paths.ts";
 import { readJson, writeJsonAtomic } from "../store.ts";
@@ -193,14 +193,18 @@ const dead = new Map<string, Session>();
 function loadDeadSessions(): void {
   if (!fs.existsSync(paths.sessions)) return;
   for (const id of fs.readdirSync(paths.sessions)) {
-    const meta = readJson<Session | null>(path.join(paths.sessions, id, "meta.json"), null);
-    if (!meta) continue;
+    const metaPath = path.join(paths.sessions, id, "meta.json");
+    const stored = readJson<unknown>(metaPath, null);
+    const parsed = SessionSchema.safeParse(stored);
+    if (!parsed.success) continue;
+    const meta = parsed.data;
     // 上一个 daemon 进程死掉时还活着的会话,现在必然已死
     if (meta.alive) {
       meta.alive = false;
       meta.exitCode = null;
-      writeJsonAtomic(path.join(paths.sessions, id, "meta.json"), meta);
     }
+    // 旧版本可能留下已废弃字段；按协议真源重写，避免内部状态继续携带。
+    writeJsonAtomic(metaPath, meta);
     dead.set(meta.id, meta);
   }
 }

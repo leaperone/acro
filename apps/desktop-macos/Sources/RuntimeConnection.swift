@@ -27,6 +27,7 @@ struct ClientConfig: Codable {
 final class RuntimeConnection: ObservableObject {
     @Published var connected = false
     @Published var projects: [[String: Any]] = []
+    @Published var workspaceGroups: [[String: Any]] = []
     @Published var workspaces: [[String: Any]] = []
     @Published var sessions: [[String: Any]] = []
     @Published var snapshotLoaded = false
@@ -115,11 +116,13 @@ final class RuntimeConnection: ObservableObject {
         let generation = refreshGeneration
         do {
             guard let nextProjects = try await rpc("project.list") as? [[String: Any]],
+                  let nextWorkspaceGroups = try await rpc("workspaceGroup.list") as? [[String: Any]],
                   let nextWorkspaces = try await rpc("workspace.list") as? [[String: Any]],
                   let nextSessions = try await rpc("session.list") as? [[String: Any]],
                   generation == refreshGeneration
             else { return }
             projects = nextProjects
+            workspaceGroups = nextWorkspaceGroups
             workspaces = nextWorkspaces
             sessions = nextSessions
             snapshotLoaded = true

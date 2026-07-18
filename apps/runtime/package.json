@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node src/index.ts",
     "check": "tsc --noEmit",
+    "test": "node --test src/*.test.ts",
     "e2e": "node scripts/e2e.ts"
   },
   "dependencies": {

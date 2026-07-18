@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { Device, Project, Session, Workspace } from "./models.ts";
+import {
+  Device,
+  DirectoryListing,
+  Project,
+  Session,
+  Workspace,
+  WorkspaceGroup,
+} from "./models.ts";
 
 // 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
 
@@ -47,12 +54,23 @@ export const methods = {
     params: z.object({}),
     result: z.array(Project),
   },
+  "project.register": {
+    params: z.object({ path: z.string().trim().min(1) }),
+    result: Project,
+  },
+  "filesystem.listDirectories": {
+    params: z.object({ path: z.string().optional() }),
+    result: DirectoryListing,
+  },
   "workspace.list": {
     params: z.object({}),
     result: z.array(Workspace),
   },
   "workspace.create": {
-    params: z.object({ name: z.string().trim().min(1).max(80) }),
+    params: z.object({
+      name: z.string().trim().min(1).max(80).optional(),
+      workspaceGroupId: z.string().optional(),
+    }),
     result: Workspace,
   },
   "workspace.update": {
@@ -61,11 +79,37 @@ export const methods = {
         workspaceId: z.string(),
         name: z.string().trim().min(1).max(80).optional(),
         projectIds: z.array(z.string()).optional(),
+        workspaceGroupId: z.string().nullable().optional(),
       })
-      .refine((value) => value.name !== undefined || value.projectIds !== undefined, {
-        message: "name or projectIds is required",
-      }),
+      .refine(
+        (value) =>
+          value.name !== undefined ||
+          value.projectIds !== undefined ||
+          value.workspaceGroupId !== undefined,
+        {
+          message: "name, projectIds, or workspaceGroupId is required",
+        },
+      ),
     result: Workspace,
+  },
+  "workspaceGroup.list": {
+    params: z.object({}),
+    result: z.array(WorkspaceGroup),
+  },
+  "workspaceGroup.create": {
+    params: z.object({ name: z.string().trim().min(1).max(80) }),
+    result: WorkspaceGroup,
+  },
+  "workspaceGroup.update": {
+    params: z.object({
+      workspaceGroupId: z.string(),
+      name: z.string().trim().min(1).max(80),
+    }),
+    result: WorkspaceGroup,
+  },
+  "workspaceGroup.remove": {
+    params: z.object({ workspaceGroupId: z.string() }),
+    result: z.object({ removed: z.boolean() }),
   },
   "workspace.remove": {
     params: z.object({ workspaceId: z.string() }),
