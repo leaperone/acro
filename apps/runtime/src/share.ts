@@ -37,10 +37,12 @@ export class ServerIdentity {
   }
 }
 
-// 非 internal IPv4 地址(LAN / Tailscale 等),写进配对码供客户端直连
+// 真实网卡(macOS 的 en0/en1 = Wi-Fi/以太网)的 IPv4 地址,写进配对码供客户端直连。
+// vmnet/utun 等虚拟接口的宿主地址对外不可达,只会污染入口列表,一律排除。
 export function lanEndpoints(port: number): string[] {
   const endpoints: string[] = [];
-  for (const infos of Object.values(os.networkInterfaces())) {
+  for (const [name, infos] of Object.entries(os.networkInterfaces())) {
+    if (!/^en\d+$/.test(name)) continue;
     for (const info of infos ?? []) {
       if (info.family === "IPv4" && !info.internal) endpoints.push(`${info.address}:${port}`);
     }
