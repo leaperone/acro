@@ -9,6 +9,7 @@ import SwiftUI
 final class AcroTerminalNSView: NSView {
     private var surface: ghostty_surface_t?
     private var cStrings: [UnsafeMutablePointer<CChar>] = []
+    private var requestedFocusRequest = 0
     private var appliedFocusRequest = 0
     private let command: String
     private var markedText = ""
@@ -40,7 +41,7 @@ final class AcroTerminalNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         createSurfaceIfNeeded()
-        focusTerminal()
+        applyFocusRequest(requestedFocusRequest)
     }
 
     override func layout() {
@@ -86,7 +87,7 @@ final class AcroTerminalNSView: NSView {
         let scale = window.backingScaleFactor
         ghostty_surface_set_content_scale(surface, scale, scale)
         syncSize()
-        ghostty_surface_set_focus(surface, true)
+        ghostty_surface_set_focus(surface, window.firstResponder === self)
         if let screen = window.screen,
            let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32 {
             ghostty_surface_set_display_id(surface, displayID)
@@ -109,16 +110,30 @@ final class AcroTerminalNSView: NSView {
         onClose?()
     }
 
+    func closePaneFromShortcut() {
+        onClose?()
+    }
+
     func applyFocusRequest(_ request: Int) {
-        guard request != appliedFocusRequest else { return }
+        requestedFocusRequest = request
+        guard request > 0, request != appliedFocusRequest, window != nil else { return }
         appliedFocusRequest = request
         focusTerminal()
     }
 
     private func focusTerminal() {
         NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
-        window?.makeFirstResponder(self)
+        guard let window else { return }
+        window.makeKeyAndOrderFront(nil)
+        if window.firstResponder !== self {
+            window.makeFirstResponder(self)
+        }
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window else { return }
+            if window.firstResponder !== self {
+                window.makeFirstResponder(self)
+            }
+        }
     }
 
     // ---- 焦点 ----
@@ -127,7 +142,6 @@ final class AcroTerminalNSView: NSView {
         let ok = super.becomeFirstResponder()
         if ok {
             if let surface { ghostty_surface_set_focus(surface, true) }
-            onFocus?()
         }
         return ok
     }
@@ -251,15 +265,16 @@ final class AcroTerminalNSView: NSView {
 
     private func isAppShortcut(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags.contains(.command) else { return false }
         let key = (event.charactersIgnoringModifiers ?? "").lowercased()
-        if flags.contains(.option) {
-            return ["b", "i", "t"].contains(key) || event.keyCode == 123 || event.keyCode == 124
+        if flags == [.command, .option] {
+            return ["b", "i", "t"].contains(key) || [123, 124].contains(event.keyCode)
         }
-        if flags.contains(.shift) {
+        if flags == [.command, .shift] {
             return ["p", "d", "w", "[", "]"].contains(key)
         }
+        guard flags == .command else { return false }
         return ["n", "t", "d", "w"].contains(key)
+            || (Int(key).map { (1...9).contains($0) } ?? false)
     }
 
     override func keyUp(with event: NSEvent) {
@@ -298,6 +313,7 @@ final class AcroTerminalNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        onFocus?()
         focusTerminal()
         forwardMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
     }

@@ -29,16 +29,21 @@ final class RuntimeConnection: ObservableObject {
     @Published var projects: [[String: Any]] = []
     @Published var workspaces: [[String: Any]] = []
     @Published var sessions: [[String: Any]] = []
+    @Published var snapshotLoaded = false
+    @Published var snapshotRevision = 0
 
     private var task: URLSessionWebSocketTask?
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Any, Error>] = [:]
+    private var refreshGeneration = 0
     var onTerminalFrame: ((UInt32, UInt32, Data) -> Void)?
 
     func connect(config: ClientConfig) {
         guard let url = URL(string: "ws://\(config.host)/ws?token=\(config.token)") else { return }
         let task = URLSession.shared.webSocketTask(with: url)
         self.task = task
+        refreshGeneration &+= 1
+        snapshotLoaded = false
         task.resume()
         connected = true
         receiveLoop()
@@ -106,14 +111,21 @@ final class RuntimeConnection: ObservableObject {
     }
 
     func refresh() async {
-        if let list = try? await rpc("project.list") as? [[String: Any]] {
-            projects = list
-        }
-        if let list = try? await rpc("workspace.list") as? [[String: Any]] {
-            workspaces = list
-        }
-        if let list = try? await rpc("session.list") as? [[String: Any]] {
-            sessions = list
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        do {
+            guard let nextProjects = try await rpc("project.list") as? [[String: Any]],
+                  let nextWorkspaces = try await rpc("workspace.list") as? [[String: Any]],
+                  let nextSessions = try await rpc("session.list") as? [[String: Any]],
+                  generation == refreshGeneration
+            else { return }
+            projects = nextProjects
+            workspaces = nextWorkspaces
+            sessions = nextSessions
+            snapshotLoaded = true
+            snapshotRevision &+= 1
+        } catch {
+            // 保留上一份完整快照；后续事件或显式操作会再次刷新。
         }
     }
 }
