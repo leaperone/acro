@@ -780,6 +780,17 @@ final class WorkbenchModel: ObservableObject {
     func deleteWorkspace(_ workspace: Workspace) async {
         let connection = pendingRuntime
         do {
+            let activeSessionIds = Set(sessions(in: workspace, on: connection).map(\.id))
+            for sessionId in activeSessionIds {
+                _ = try await connection.rpc("session.kill", ["sessionId": sessionId])
+            }
+            for _ in 0..<30 where !activeSessionIds.isEmpty {
+                let remoteSessions = try await connection.rpc("session.list", as: [Session].self)
+                if !remoteSessions.contains(where: {
+                    $0.alive && activeSessionIds.contains($0.id)
+                }) { break }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
             _ = try await connection.rpc(
                 "workspace.remove", ["workspaceId": workspace.id, "force": true]
             )
