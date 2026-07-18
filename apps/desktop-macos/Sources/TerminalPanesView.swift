@@ -297,24 +297,22 @@ private struct PaneTabBar: View {
     var trafficLightClearance = false
 
     var body: some View {
-        // NonDraggableArea 阻断标题栏带的窗口拖动,标签 .onDrag 才能拿到手势;
-        // 标签条层级的 onDrop 必须在嵌套 hosting view 内,否则空白区落点被挡
-        NonDraggableArea {
-            tabBarContent
-                .onDrop(
-                    of: [UTType.text],
-                    delegate: TabBarDropDelegate(
-                        canAccept: { model.validDrag(model.draggingTab) },
-                        perform: {
-                            guard let payload = model.draggingTab else { return false }
-                            model.draggingTab = nil
-                            // 标签条空白 = 显式"排到末尾";nil(反悔语义)留给窗格 body 中心区
-                            model.moveTab(payload, toPane: pane.id, at: pane.sessionIds.count)
-                            return true
-                        }
-                    )
+        // 窗口级 isMovable=false 已根治标题栏带拖窗,标签条留在主 hosting view;
+        // 嵌套 NSHostingView 会破坏 .onDrag 的拖拽会话,不要再包一层
+        tabBarContent
+            .onDrop(
+                of: [UTType.text],
+                delegate: TabBarDropDelegate(
+                    canAccept: { model.validDrag(model.draggingTab) },
+                    perform: {
+                        guard let payload = model.draggingTab else { return false }
+                        model.draggingTab = nil
+                        // 标签条空白 = 显式"排到末尾";nil(反悔语义)留给窗格 body 中心区
+                        model.moveTab(payload, toPane: pane.id, at: pane.sessionIds.count)
+                        return true
+                    }
                 )
-        }
+            )
         .frame(height: 28)
         .background(.bar)
         .overlay(alignment: .bottom) {

@@ -255,35 +255,6 @@ struct WindowDragHandle: NSViewRepresentable {
     func updateNSView(_ nsView: WindowDragNSView, context: Context) {}
 }
 
-// 标题栏带内的交互区(标签条等):SwiftUI 默认 hosting view 在无标题栏窗口的
-// 顶部标题栏带内返回可拖窗,AppKit 在 mouse-down 即启动窗口移动,抢在 .onDrag
-// 拖拽阈值之前。cmux 的解法是主 hosting view 整体 mouseDownCanMoveWindow=false
-// (CmuxMainWindow / TitlebarAccessoryHostingView);SwiftUI WindowGroup 无法替换
-// 主 hosting view,改为把交互内容嵌进本子类,窗口拖动仍只走 WindowDragHandle。
-final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
-    private let zeroSafeAreaLayoutGuide = NSLayoutGuide()
-
-    override var mouseDownCanMoveWindow: Bool { false }
-    // 无标题栏窗口的标题栏 safe area 会把嵌套内容往下推出条带,归零(cmux MainWindowHostingView 同款)
-    override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
-    override var safeAreaRect: NSRect { bounds }
-    override var safeAreaLayoutGuide: NSLayoutGuide { zeroSafeAreaLayoutGuide }
-}
-
-struct NonDraggableArea<Content: View>: NSViewRepresentable {
-    @ViewBuilder var content: () -> Content
-
-    func makeNSView(context: Context) -> NSHostingView<Content> {
-        let view = NonDraggableHostingView(rootView: content())
-        view.sizingOptions = []
-        return view
-    }
-
-    func updateNSView(_ nsView: NSHostingView<Content>, context: Context) {
-        nsView.rootView = content()
-    }
-}
-
 // 无标题栏窗口:内容全幅。
 // isMovable=false 是"窗口拖动只走 WindowDragHandle"的硬保证:
 // 标题栏带的隐式拖动看的是"被命中的最深层 NSView"的 mouseDownCanMoveWindow,
