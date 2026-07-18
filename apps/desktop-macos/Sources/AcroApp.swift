@@ -188,17 +188,7 @@ enum AttachCommand {
     static func resolve(sessionId: String, serverId: String?) -> String {
         let env = ProcessInfo.processInfo.environment
         let runtimeArguments = runtimeProgramArguments()
-        let node = [
-            env["ACRO_NODE"],
-            runtimeArguments?.first,
-            "/opt/homebrew/bin/node",
-            "/opt/homebrew/opt/node@22/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node",
-        ]
-        .compactMap { $0 }
-        .first { FileManager.default.isExecutableFile(atPath: $0) }
-            ?? "node"
+        let node = NodeExecutable.resolve(runtimeNode: runtimeArguments?.first) ?? "node"
         // 优先级:显式 env → app bundle 内置(打包分发) → runtime 同仓(开发机) → 开发默认
         let bundledCli = Bundle.main.resourcePath.map { "\($0)/cli.cjs" }
         let cli = env["ACRO_CLI_PATH"]
