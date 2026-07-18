@@ -3,6 +3,14 @@
   <channel>
     <title>Acro Desktop</title>
     <item>
+      <title>0.0.6</title>
+      <pubDate>Sat, 18 Jul 2026 13:44:50 GMT</pubDate>
+      <sparkle:version>0.0.6</sparkle:version>
+      <sparkle:shortVersionString>0.0.6</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.6/Acro-v0.0.6-macos.zip" type="application/octet-stream" length="26840689" sparkle:edSignature="C7WRp3aEKW7N6LtG8MQYPvPvG3gas8FGZr1a7PfWNBvPVd+4di5znFjC+36aMo1aLe6LMQnKFukilVX43SBlBg==" />
+    </item>
+    <item>
       <title>0.0.5</title>
       <pubDate>Sat, 18 Jul 2026 13:02:01 GMT</pubDate>
       <sparkle:version>0.0.5</sparkle:version>
