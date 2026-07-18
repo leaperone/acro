@@ -12,9 +12,11 @@ VERSION="${1:-0.0.0}"
 BUILD_VERSION="${2:-0}"
 SIGN_IDENTITY="${ACRO_SIGN_IDENTITY:--}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
+NODE_ENTITLEMENTS="$DIR/Node.entitlements"
 cd "$DIR"
 
 [[ "$BUILD_VERSION" =~ ^[0-9]+$ ]] || { echo "build_version must be an integer"; exit 1; }
+[[ -f "$NODE_ENTITLEMENTS" ]] || { echo "missing Node.entitlements" >&2; exit 1; }
 
 swift build -c release
 
@@ -24,6 +26,21 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 cp .build/release/AcroDesktop "$APP/Contents/MacOS/AcroDesktop"
 cp -RL Resources/ghostty "$APP/Contents/Resources/ghostty"
 cp -RL Resources/terminfo "$APP/Contents/Resources/terminfo"
+
+# GUI 进程不能依赖用户安装 Node。复制 CI/开发机当前 Node，发布包自包含。
+NODE_SOURCE="$(command -v node || true)"
+[[ -n "$NODE_SOURCE" && -x "$NODE_SOURCE" ]] \
+    || { echo "node executable not found" >&2; exit 1; }
+BUNDLED_NODE="$APP/Contents/Resources/node"
+cp -L "$NODE_SOURCE" "$BUNDLED_NODE"
+chmod 755 "$BUNDLED_NODE"
+APP_ARCHS="$(lipo -archs "$APP/Contents/MacOS/AcroDesktop")"
+NODE_ARCHS="$(lipo -archs "$BUNDLED_NODE")"
+for ARCH in $APP_ARCHS; do
+    [[ " $NODE_ARCHS " == *" $ARCH "* ]] \
+        || { echo "bundled node lacks app architecture: $ARCH" >&2; exit 1; }
+done
+"$BUNDLED_NODE" --version > /dev/null
 
 # 打包 acro CLI(attach 桥):单文件 bundle,客户端机器无需 checkout 仓库
 (cd ../cli && pnpm build)
@@ -75,6 +92,8 @@ PLIST
 xattr -cr "$APP"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    # ad-hoc 没有 Team ID，保留官方 Node 签名里的 library-validation 例外，
+    # 才能加载同包的 ad-hoc node-pty；正式包在下方改签为 Acro 最小权限。
     codesign --force --deep --sign - "$APP"
 else
     echo "==> signing with: $SIGN_IDENTITY"
@@ -90,9 +109,19 @@ else
     # 否则公证被拒("The staple and validate action failed")
     find "$APP/Contents/Resources/runtime" -type f \( -name "*.node" -o -name "spawn-helper" \) \
         -exec codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" {} \;
+    codesign --force --options runtime --timestamp --entitlements "$NODE_ENTITLEMENTS" \
+        --sign "$SIGN_IDENTITY" "$BUNDLED_NODE"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 fi
 
+codesign --verify --strict "$BUNDLED_NODE"
+NODE_SIGNED_ENTITLEMENTS="$(codesign -d --entitlements :- "$BUNDLED_NODE" 2>/dev/null)"
+grep -q 'com.apple.security.cs.allow-jit' <<< "$NODE_SIGNED_ENTITLEMENTS"
+if [[ "$SIGN_IDENTITY" != "-" ]] \
+    && grep -q 'com.apple.security.get-task-allow' <<< "$NODE_SIGNED_ENTITLEMENTS"; then
+    echo "bundled node must not allow debugger attachment" >&2
+    exit 1
+fi
 if [[ -n "$(find "$RT/node_modules/node-pty/prebuilds" -type f -name "spawn-helper" ! -perm -111 -print -quit)" ]]; then
     echo "spawn-helper is not executable" >&2
     exit 1

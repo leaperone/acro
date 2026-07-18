@@ -46,3 +46,21 @@ jobs:
         run: swift build --package-path apps/desktop-macos
       - name: test
         run: swift test --package-path apps/desktop-macos
+      - name: package smoke
+        run: |
+          bash apps/desktop-macos/scripts/package-app.sh 0.0.0-ci "$GITHUB_RUN_NUMBER"
+          RESOURCES="apps/desktop-macos/dist/Acro.app/Contents/Resources"
+          env -i HOME="$RUNNER_TEMP/acro-smoke-home" PATH=/usr/bin:/bin \
+            "$RESOURCES/node" "$RESOURCES/cli.cjs" --help > /dev/null
+          codesign --verify --deep --strict apps/desktop-macos/dist/Acro.app
+          STATE="$RUNNER_TEMP/acro-runtime-smoke"
+          ACRO_STATE_DIR="$STATE" ACRO_PORT=18790 \
+            ACRO_DAEMON_ENTRY="$RESOURCES/runtime/daemon.cjs" \
+            "$RESOURCES/node" "$RESOURCES/runtime/runtime.cjs" > "$RUNNER_TEMP/runtime.log" 2>&1 &
+          RUNTIME_PID=$!
+          trap 'kill "$RUNTIME_PID" 2>/dev/null || true; [[ ! -f "$STATE/daemon.meta.json" ]] || kill "$(jq -r .pid "$STATE/daemon.meta.json")" 2>/dev/null || true' EXIT
+          for _ in {1..100}; do
+            curl -fsS http://127.0.0.1:18790/health && break
+            sleep 0.1
+          done
+          curl -fsS http://127.0.0.1:18790/health

@@ -6,6 +6,28 @@
 import AppKit
 import Foundation
 
+enum NodeExecutable {
+    static func resolve(
+        runtimeNode: String? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        resourcePath: String? = Bundle.main.resourcePath,
+        fileManager: FileManager = .default
+    ) -> String? {
+        let bundledNode = resourcePath.map { "\($0)/node" }
+        return [
+            environment["ACRO_NODE"],
+            bundledNode,
+            runtimeNode,
+            "/opt/homebrew/bin/node",
+            "/opt/homebrew/opt/node@22/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ]
+        .compactMap { $0 }
+        .first { fileManager.isExecutableFile(atPath: $0) }
+    }
+}
+
 @MainActor
 final class LocalRuntimeManager {
     // runtime config 默认端口(apps/runtime/src/config.ts)
@@ -61,7 +83,7 @@ final class LocalRuntimeManager {
         spawnAttempted = true
         let runtimeEntry = "\(resources)/runtime/runtime.cjs"
         guard FileManager.default.fileExists(atPath: runtimeEntry),
-              let node = Self.findNode()
+              let node = NodeExecutable.resolve()
         else { return false }
 
         let statePath = "\(NSHomeDirectory())/.acro"
@@ -117,17 +139,4 @@ final class LocalRuntimeManager {
         }
     }
 
-    // 与 AttachCommand 相同的 node 候选序(GUI 进程没有用户 PATH)
-    static func findNode() -> String? {
-        let env = ProcessInfo.processInfo.environment
-        return [
-            env["ACRO_NODE"],
-            "/opt/homebrew/bin/node",
-            "/opt/homebrew/opt/node@22/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node",
-        ]
-        .compactMap { $0 }
-        .first { FileManager.default.isExecutableFile(atPath: $0) }
-    }
 }
