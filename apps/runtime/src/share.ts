@@ -10,27 +10,33 @@ import {
   generateKeyPair,
   ServerHandshake,
 } from "@acro/protocol";
+import { z } from "zod";
 import { paths } from "./paths.ts";
 import type { DeviceRegistry } from "./devices.ts";
+import { readJson, writeJsonAtomic } from "./store.ts";
+
+const StoredServerIdentity = z.object({ priv: z.string() });
 
 export class ServerIdentity {
   readonly priv: Uint8Array;
   readonly pub: Uint8Array;
 
-  constructor() {
-    let priv: Uint8Array | null = null;
-    try {
-      const stored = JSON.parse(fs.readFileSync(paths.serverKey, "utf8")) as { priv: string };
-      const bytes = b64ToBytes(stored.priv);
-      if (bytes.length === 32) priv = bytes;
-    } catch {
-      // 首次启动或文件损坏:重新生成(旧配对码随之失效,须重新配对)
-    }
-    if (!priv) {
+  constructor(file = paths.serverKey) {
+    const stored = readJson<unknown | undefined>(file, undefined);
+    let priv: Uint8Array;
+    if (stored === undefined) {
       priv = generateKeyPair().priv;
-      fs.writeFileSync(paths.serverKey, JSON.stringify({ priv: bytesToB64(priv) }), {
-        mode: 0o600,
-      });
+      writeJsonAtomic(file, { priv: bytesToB64(priv) });
+    } else {
+      try {
+        const parsed = StoredServerIdentity.parse(stored);
+        priv = b64ToBytes(parsed.priv);
+        if (priv.length !== 32) throw new Error("private key must be 32 bytes");
+      } catch (error) {
+        throw new Error(`invalid server identity ${file}: ${(error as Error).message}`, {
+          cause: error,
+        });
+      }
     }
     this.priv = priv;
     this.pub = new ServerHandshake(priv).pub;

@@ -5,8 +5,11 @@ import { PRIVATE_FILE_MODE } from "./paths.ts";
 export function readJson<T>(file: string, fallback: T): T {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8")) as T;
-  } catch {
-    return fallback;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+    throw new Error(`failed to read JSON state ${file}: ${(error as Error).message}`, {
+      cause: error,
+    });
   }
 }
 

@@ -1,0 +1,45 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { DeviceRegistry } from "./devices.ts";
+
+test("device mutations replace memory only after state persists", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-devices-"));
+  const file = path.join(directory, "devices.json");
+  try {
+    const registry = new DeviceRegistry(file);
+    const grant = registry.createGrant("test");
+    fs.rmSync(file);
+    fs.mkdirSync(file);
+
+    assert.throws(() => registry.remove(grant.device.id));
+    assert.deepEqual(registry.list().map((device) => device.id), [grant.device.id]);
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      assert.equal(registry.auth(grant.token)?.id, grant.device.id);
+    } finally {
+      console.warn = warn;
+    }
+    fs.rmSync(file, { recursive: true });
+    assert.equal(registry.remove(grant.device.id)?.id, grant.device.id);
+    assert.deepEqual(registry.list(), []);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("device state rejects a malformed entry without rewriting it", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-devices-invalid-"));
+  const file = path.join(directory, "devices.json");
+  const contents = JSON.stringify([{ id: "device" }]);
+  try {
+    fs.writeFileSync(file, contents);
+    assert.throws(() => new DeviceRegistry(file));
+    assert.equal(fs.readFileSync(file, "utf8"), contents);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

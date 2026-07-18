@@ -120,3 +120,20 @@ test("workspace layout persists opaquely with a monotonic revision", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("workspace state rejects corruption without normalizing or rewriting it", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-invalid-"));
+  const storage = {
+    workspaces: path.join(directory, "workspaces.json"),
+    workspaceGroups: path.join(directory, "workspace-groups.json"),
+  };
+  const contents = JSON.stringify([{ id: "workspace" }]);
+  try {
+    fs.writeFileSync(storage.workspaces, contents);
+    assert.throws(() => new WorkspaceRegistry(storage));
+    assert.equal(fs.readFileSync(storage.workspaces, "utf8"), contents);
+    assert.equal(fs.existsSync(storage.workspaceGroups), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

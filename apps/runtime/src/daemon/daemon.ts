@@ -386,7 +386,13 @@ function loadDeadSessions(): void {
   if (!fs.existsSync(paths.sessions)) return;
   for (const id of fs.readdirSync(paths.sessions)) {
     const metaPath = path.join(paths.sessions, id, "meta.json");
-    const stored = readJson<unknown>(metaPath, null);
+    let stored: unknown;
+    try {
+      stored = readJson<unknown>(metaPath, null);
+    } catch (error) {
+      console.warn(`[daemon] failed to read session metadata ${metaPath}: ${(error as Error).message}`);
+      continue;
+    }
     const parsed = SessionSchema.safeParse(stored);
     if (!parsed.success) continue;
     const meta = parsed.data;
