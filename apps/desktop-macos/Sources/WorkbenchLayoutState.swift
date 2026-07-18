@@ -362,9 +362,14 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
         direction: TerminalSplitDirection,
         newSessionId: String
     ) {
+        // 会话可能已被 reconcile 并入某窗格(session.create 后 refresh 先到):先摘除,避免双占位
+        if let source = root?.paneContaining(newSessionId) {
+            root = root?.updatingPane(source.id) { _ = $0.removeTab(newSessionId) }
+        }
         let newPane = PaneTabGroup(sessionIds: [newSessionId])
         root = root?.splitting(paneId: paneId, direction: direction, newPane: newPane)
         focusedPaneId = newPane.id
+        reconcileFocus()
     }
 
     mutating func removeTab(_ sessionId: String) {

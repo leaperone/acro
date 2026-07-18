@@ -123,6 +123,10 @@ final class WorkbenchModel: ObservableObject {
 
     // ---- 项目目录选择器 ----
 
+    // 只有用户主动编辑过的工作区布局才推送服务端。reconcile 的派生修改
+    // (prune / 并入新会话)不算用户意图:被动端若把它推上去,会以更高 rev
+    // 覆盖主动端刚做的分屏/移动(last-writer-wins 打架,分屏"闪一下弹回")。
+    private var dirtyLayoutWorkspaceIds: Set<String> = []
     private var layoutRestored = false
     private var workspaceGroupsInitialized = false
     private var workspaceExpansionInitialized = false
@@ -318,6 +322,7 @@ final class WorkbenchModel: ObservableObject {
         guard let selectedWorkspaceId else { return }
         var layout = workspaceLayouts[selectedWorkspaceId] ?? WorkspaceTerminalLayout()
         transform(&layout)
+        dirtyLayoutWorkspaceIds.insert(selectedWorkspaceId)
         workspaceLayouts[selectedWorkspaceId] = layout
         syncSelectionFromLayout()
     }
@@ -614,6 +619,7 @@ final class WorkbenchModel: ObservableObject {
             await connection.refresh()
             if let workspaceId, var layout = workspaceLayouts[workspaceId] {
                 layout.removeTab(session.id)
+                dirtyLayoutWorkspaceIds.insert(workspaceId)
                 workspaceLayouts[workspaceId] = layout
                 if selectedWorkspaceId == workspaceId {
                     syncSelectionFromLayout()
@@ -917,7 +923,8 @@ final class WorkbenchModel: ObservableObject {
             let connection = entry.connection
             guard connection.snapshotLoaded else { continue }
             for workspace in connection.workspaces {
-                guard !layoutPushFrozen.contains(workspace.id),
+                guard dirtyLayoutWorkspaceIds.contains(workspace.id),
+                      !layoutPushFrozen.contains(workspace.id),
                       let layout = workspaceLayouts[workspace.id],
                       let encoded = Self.encodeLayout(layout),
                       encoded != lastSyncedLayouts[workspace.id]
@@ -935,6 +942,10 @@ final class WorkbenchModel: ObservableObject {
                        rev >= appliedLayoutRevs[workspace.id] ?? 0 {
                         appliedLayoutRevs[workspace.id] = rev
                         lastSyncedLayouts[workspace.id] = encoded
+                    }
+                    // rpc await 期间用户又编辑过则保持 dirty,下一轮继续推
+                    if workspaceLayouts[workspace.id].flatMap(Self.encodeLayout) == encoded {
+                        dirtyLayoutWorkspaceIds.remove(workspace.id)
                     }
                 } catch {
                     // 断线或工作区刚被删:保留 lastSynced 不变,
