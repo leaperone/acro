@@ -186,6 +186,14 @@ export class Gateway {
     for (const conn of this.conns) conn.simChannels.delete(channel);
   }
 
+  dropSession(sessionId: string): void {
+    for (const conn of this.conns) {
+      for (const [channel, state] of conn.attached) {
+        if (state.sessionId === sessionId) conn.attached.delete(channel);
+      }
+    }
+  }
+
   // 撤销授权时立即断开该设备的所有活动连接(orca terminateClientConnections)
   terminateDevice(deviceId: string): void {
     for (const conn of this.conns) {

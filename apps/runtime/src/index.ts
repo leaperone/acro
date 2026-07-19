@@ -130,6 +130,8 @@ async function main(): Promise<void> {
     runExclusiveControl(`browser:${browserId}`, task);
   const runSessionControl = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
     runExclusiveControl(`session:${sessionId}`, task);
+  const runSessionSize = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
+    runExclusiveControl(`size:${sessionId}`, task);
   const runComputerControl = <T>(task: () => T | Promise<T>): Promise<T> =>
     runExclusiveControl("computer", task);
   const requireActiveDevice = (conn: Conn): NonNullable<Conn["device"]> => {
@@ -178,15 +180,22 @@ async function main(): Promise<void> {
     const rows = Math.min(...votes.map((v) => v.rows));
     const applied = appliedSizes.get(sessionId);
     if (applied && applied.cols === cols && applied.rows === rows) return;
-    appliedSizes.set(sessionId, { cols, rows });
     await daemon.request("session.resize", { sessionId, cols, rows });
+    appliedSizes.set(sessionId, { cols, rows });
   };
-  const dropSizeVote = (conn: Conn, sessionId: string): void => {
-    const votes = sessionSizes.get(sessionId);
-    if (!votes?.delete(conn)) return;
-    if (votes.size === 0) sessionSizes.delete(sessionId);
-    void applySessionSize(sessionId);
-  };
+  const dropSizeVote = (conn: Conn, sessionId: string): Promise<void> =>
+    runSessionSize(sessionId, async () => {
+      const votes = sessionSizes.get(sessionId);
+      if (!votes?.delete(conn)) return;
+      if (votes.size === 0) sessionSizes.delete(sessionId);
+      try {
+        await applySessionSize(sessionId);
+      } catch (error) {
+        if ((error as Error).message !== "session not alive") throw error;
+        sessionSizes.delete(sessionId);
+        appliedSizes.delete(sessionId);
+      }
+    });
 
   const handlers: Handlers = {
     "device.list": () => registry.list(),
@@ -363,19 +372,32 @@ async function main(): Promise<void> {
       for (const [channel, st] of conn.attached) {
         if (st.sessionId === sessionId) conn.attached.delete(channel);
       }
-      dropSizeVote(conn, sessionId);
+      void dropSizeVote(conn, sessionId).catch(() => {});
       return { detached: true };
     },
-    "session.resize": async (conn, params) => {
-      let votes = sessionSizes.get(params.sessionId);
-      if (!votes) {
-        votes = new Map();
-        sessionSizes.set(params.sessionId, votes);
-      }
-      votes.set(conn, { cols: params.cols, rows: params.rows });
-      await applySessionSize(params.sessionId);
-      return { resized: true };
-    },
+    "session.resize": (conn, params) =>
+      runSessionSize(params.sessionId, async () => {
+        requireActiveDevice(conn);
+        if (![...conn.attached.values()].some((state) => state.sessionId === params.sessionId)) {
+          throw new Error("session not attached");
+        }
+        let votes = sessionSizes.get(params.sessionId);
+        if (!votes) {
+          votes = new Map();
+          sessionSizes.set(params.sessionId, votes);
+        }
+        const previous = votes.get(conn);
+        votes.set(conn, { cols: params.cols, rows: params.rows });
+        try {
+          await applySessionSize(params.sessionId);
+          return { resized: true };
+        } catch (error) {
+          if (previous) votes.set(conn, previous);
+          else votes.delete(conn);
+          if (votes.size === 0) sessionSizes.delete(params.sessionId);
+          throw error;
+        }
+      }),
     "session.kill": async (_conn, { sessionId }) => {
       await daemon.request("session.kill", { sessionId });
       return { killed: true };
@@ -572,10 +594,13 @@ async function main(): Promise<void> {
     if (evt.event === "session.exit" || evt.event === "session.removed") {
       const sessionId = (evt.payload as { sessionId?: string }).sessionId;
       if (sessionId) {
+        gateway.dropSession(sessionId);
         pendingFocusClaims.delete(sessionId);
         focusOwners.delete(sessionId);
-        sessionSizes.delete(sessionId);
-        appliedSizes.delete(sessionId);
+        void runSessionSize(sessionId, () => {
+          sessionSizes.delete(sessionId);
+          appliedSizes.delete(sessionId);
+        });
       }
     }
     gateway.broadcastEvent(evt);
@@ -587,7 +612,9 @@ async function main(): Promise<void> {
   // 占用设备的连接全部断开后自动释放,其他设备无需手动接管
   gateway.onConnClosed = (conn) => {
     conn.pendingSimAttaches.clear();
-    for (const sessionId of [...sessionSizes.keys()]) dropSizeVote(conn, sessionId);
+    for (const sessionId of [...sessionSizes.keys()]) {
+      void dropSizeVote(conn, sessionId).catch(() => {});
+    }
     for (const [channel, browserId] of conn.browserChannels) {
       void browsers
         .detach(browserId, () => !gateway.hasBrowserChannel(channel))
