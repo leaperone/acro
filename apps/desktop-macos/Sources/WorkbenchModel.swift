@@ -177,6 +177,14 @@ final class WorkbenchModel: ObservableObject {
                 self?.controlHeld = false
             }
         }
+        // 布局落盘去抖有 250ms 窗口;退出前同步兜底一次,避免丢失最后一次布局变更
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.flushLayoutNow()
+            }
+        }
         NotificationCenter.default.addObserver(
             forName: .acroShortcutAction, object: nil, queue: .main
         ) { [weak self] note in
@@ -1191,6 +1199,13 @@ final class WorkbenchModel: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.writeLayoutSnapshot()
         }
+    }
+
+    // 退出兜底:取消挂起的去抖任务并立即同步落盘
+    private func flushLayoutNow() {
+        layoutPersistTask?.cancel()
+        layoutPersistTask = nil
+        writeLayoutSnapshot()
     }
 
     private func writeLayoutSnapshot() {
