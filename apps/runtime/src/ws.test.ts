@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { WebSocket } from "ws";
 import type { DeviceRegistry } from "./devices.ts";
 import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.ts";
@@ -97,6 +99,32 @@ test("connection removal aborts in-flight RPC work", () => {
     gateway.terminateDevice(conn.device!.id);
     assert.equal(conn.abortController.signal.aborted, true);
     assert.match((conn.abortController.signal.reason as Error).message, /connection closed/);
+  } finally {
+    close();
+  }
+});
+
+test("websocket upgrades are rejected before allocating beyond the connection cap", () => {
+  const { gateway, close } = fixture(0);
+  const conns = (gateway as unknown as { conns: Set<Conn> }).conns;
+  while (conns.size < 128) conns.add({} as Conn);
+  let response = "";
+  let destroyed = 0;
+  const socket = {
+    write(data: string) {
+      response += data;
+      return true;
+    },
+    destroy() {
+      destroyed += 1;
+    },
+  } as unknown as Duplex;
+
+  try {
+    gateway.handleUpgrade({ url: "/ws" } as IncomingMessage, socket, Buffer.alloc(0));
+    assert.match(response, /^HTTP\/1\.1 503 Service Unavailable/);
+    assert.equal(destroyed, 1);
+    assert.equal(conns.size, 128);
   } finally {
     close();
   }

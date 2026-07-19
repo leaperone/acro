@@ -48,6 +48,8 @@ export interface Conn {
 const HEARTBEAT_INTERVAL_MS = 15_000;
 // 握手 + 认证必须在此时限内完成(取自 orca 的 PRE_AUTH_TIMEOUT)
 const PRE_AUTH_TIMEOUT_MS = 10_000;
+// 未认证连接也会占用 socket、握手状态和定时器；在升级前拒绝，避免公开入口被耗尽。
+const MAX_WS_CONNECTIONS = 128;
 // 布局控制消息上限 256KB,终端输入通常远小于 1MB;更大的单帧只会放大内存攻击面。
 const MAX_INBOUND_BYTES = 1024 * 1024;
 // 慢客户端不能让 ws 内部发送队列无限增长。画面可以丢帧;终端必须断线后靠快照恢复。
@@ -105,6 +107,11 @@ export class Gateway {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== "/ws") {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    if (this.conns.size >= MAX_WS_CONNECTIONS) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
