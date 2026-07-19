@@ -464,10 +464,52 @@ final class RuntimeConnection: ObservableObject {
                 completePending(id, .failure(RpcError(message: err)))
             }
         case "evt":
+            if currentRefreshJob == nil,
+               let event = obj["event"] as? String,
+               applyIncrementalEvent(event, payload: obj["payload"])
+            {
+                return
+            }
             scheduleRefresh()
         default:
             break
         }
+    }
+
+    @discardableResult
+    func applyIncrementalEvent(_ event: String, payload: Any?) -> Bool {
+        guard event == "session.title",
+              let payload = payload as? [String: Any],
+              let sessionId = payload["sessionId"] as? String,
+              let index = sessions.firstIndex(where: { $0.id == sessionId })
+        else { return false }
+
+        let title: String?
+        switch payload["title"] {
+        case let value as String:
+            title = value
+        case is NSNull:
+            title = nil
+        default:
+            return false
+        }
+
+        let current = sessions[index]
+        guard current.title != title else { return true }
+        var updated = sessions
+        updated[index] = Session(
+            id: current.id,
+            cwd: current.cwd,
+            command: current.command,
+            cols: current.cols,
+            rows: current.rows,
+            createdAt: current.createdAt,
+            alive: current.alive,
+            exitCode: current.exitCode,
+            title: title
+        )
+        sessions = updated
+        return true
     }
 
     func rpc(_ method: String, _ params: [String: Any] = [:]) async throws -> Any {
