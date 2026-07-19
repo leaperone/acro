@@ -14,6 +14,7 @@ const projectsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "acro-e2e-cli-project
 const runtimeEntry = fileURLToPath(new URL("../../runtime/src/index.ts", import.meta.url));
 const cliEntry = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
 const clientConfig = path.join(clientDir, "client.json");
+const localClientConfig = path.join(clientDir, "local-client.json");
 
 const runtimeEnv = {
   ...process.env,
@@ -28,6 +29,14 @@ function sleep(ms: number): Promise<void> {
 
 function cli(...args: string[]): string {
   return execFileSync(process.execPath, [cliEntry, ...args], { env: cliEnv, encoding: "utf8" });
+}
+
+function cliWithInput(input: string, ...args: string[]): string {
+  return execFileSync(process.execPath, [cliEntry, ...args], {
+    env: cliEnv,
+    encoding: "utf8",
+    input,
+  });
 }
 
 async function main(): Promise<void> {
@@ -61,7 +70,14 @@ async function main(): Promise<void> {
     }
 
     const offer = fs.readFileSync(path.join(stateDir, "bootstrap-offer.txt"), "utf8").trim();
-    const pairOut = cli("pair", offer, "--name", "e2e-cli");
+    const localPairOut = execFileSync(process.execPath, [cliEntry, "pair", "--name", "e2e-local"], {
+      env: { ...cliEnv, ACRO_CLIENT_CONFIG: localClientConfig, ACRO_STATE_DIR: stateDir },
+      encoding: "utf8",
+    });
+    assert.match(localPairOut, /已配对 e2e-local/);
+    console.log("[e2e] local bootstrap pair ok");
+
+    const pairOut = cliWithInput(`${offer}\n`, "pair", "--name", "e2e-cli");
     assert.match(pairOut, /已配对 e2e-cli/);
     assert.equal(fs.statSync(clientDir).mode & 0o777, 0o700);
     assert.equal(fs.statSync(clientConfig).mode & 0o777, 0o600);
