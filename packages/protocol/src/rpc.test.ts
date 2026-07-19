@@ -71,3 +71,10 @@ test("session removal accepts only UUID session ids", () => {
   );
   assert.equal(params.safeParse({ sessionId: "../workspace-state.json" }).success, false);
 });
+
+test("daemon restart requires explicit destructive intent", () => {
+  const params = methods["daemon.restart"].params;
+  assert.equal(params.safeParse({ force: true }).success, true);
+  assert.equal(params.safeParse({ force: false }).success, false);
+  assert.equal(params.safeParse({}).success, false);
+});

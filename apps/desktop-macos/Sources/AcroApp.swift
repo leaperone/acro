@@ -13,6 +13,7 @@ extension Notification.Name {
     static let acroShortcutAction = Notification.Name("acro.shortcut.action")
     static let acroSelectWorkspace = Notification.Name("acro.shortcut.selectWorkspace")
     static let acroSelectTabByNumber = Notification.Name("acro.shortcut.selectTabByNumber")
+    static let acroRestartTerminalDaemon = Notification.Name("acro.daemon.restart")
 }
 
 func postShortcut(_ action: ShortcutAction) {
@@ -79,6 +80,9 @@ struct AcroWorkbenchCommands: Commands {
         CommandGroup(after: .appInfo) {
             Button("检查更新…", systemImage: "arrow.down.circle") {
                 UpdaterController.shared.checkForUpdates()
+            }
+            Button("重启终端服务…", systemImage: "arrow.clockwise") {
+                NotificationCenter.default.post(name: .acroRestartTerminalDaemon, object: nil)
             }
         }
 

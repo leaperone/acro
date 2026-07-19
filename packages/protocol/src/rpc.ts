@@ -68,6 +68,10 @@ export const methods = {
     params: z.object({ deviceId: z.string() }),
     result: z.object({ revoked: z.boolean() }),
   },
+  "daemon.restart": {
+    params: z.object({ force: z.literal(true) }),
+    result: z.object({ restarting: z.boolean() }),
+  },
   "workspace.list": {
     params: z.object({}),
     result: z.array(Workspace),

@@ -8,6 +8,7 @@ import { DaemonClient } from "./daemon/client.ts";
 import {
   removeDaemonSession,
   removeDaemonSessions,
+  restartTerminalDaemon,
   untrackedDeadSessionIds,
 } from "./daemon/session-cleanup.ts";
 import { BrowserManager } from "./browser.ts";
@@ -102,12 +103,15 @@ async function main(): Promise<void> {
     }
     return sessions;
   };
-  const daemonSessions = await reconcileWorkspaceSessions();
-  const storedWorkspaces = workspaces.list();
-  const liveSessionIds = new Set(
-    daemonSessions.filter((session) => session.alive).map((session) => session.id),
-  );
-  if (!storedWorkspaces.some((workspace) => workspace.sessionIds.some((id) => liveSessionIds.has(id)))) {
+  const ensureLiveWorkspaceSession = async (): Promise<void> => {
+    const daemonSessions = await reconcileWorkspaceSessions();
+    const storedWorkspaces = workspaces.list();
+    const liveSessionIds = new Set(
+      daemonSessions.filter((session) => session.alive).map((session) => session.id),
+    );
+    if (storedWorkspaces.some((workspace) => workspace.sessionIds.some((id) => liveSessionIds.has(id)))) {
+      return;
+    }
     const workspace = storedWorkspaces[0] ?? workspaces.create();
     const sessionId = crypto.randomUUID();
     workspaces.addSession(workspace.id, sessionId);
@@ -128,7 +132,8 @@ async function main(): Promise<void> {
       }
       throw error;
     }
-  }
+  };
+  await ensureLiveWorkspaceSession();
   // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
   const pendingFocusClaims = new Map<string, symbol>();
@@ -224,6 +229,11 @@ async function main(): Promise<void> {
         localOffer = ensureLocalOffer(registry, identity, config.port);
       }
       return { revoked: true };
+    },
+    "daemon.restart": async (conn) => {
+      requireActiveDevice(conn);
+      await restartTerminalDaemon(daemon);
+      return { restarting: true };
     },
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>
@@ -615,8 +625,8 @@ async function main(): Promise<void> {
   };
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
   daemon.on("up", () => {
-    void reconcileWorkspaceSessions().catch((error) => {
-      console.warn(`[runtime] failed to reconcile workspace sessions: ${error.message}`);
+    void ensureLiveWorkspaceSession().catch((error) => {
+      console.warn(`[runtime] failed to restore terminal session: ${error.message}`);
     });
   });
   daemon.on("lateResponsesDrained", (methods: string[]) => {

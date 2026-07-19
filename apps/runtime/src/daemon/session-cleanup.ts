@@ -45,3 +45,21 @@ export async function removeDaemonSessions(
     );
   }
 }
+
+export async function restartTerminalDaemon(
+  daemon: DaemonRequester,
+  signal: (pid: number, signal: NodeJS.Signals) => unknown = process.kill,
+): Promise<void> {
+  const info = (await daemon.request("daemon.info")) as { pid?: unknown; boot?: unknown };
+  if (
+    typeof info.pid !== "number" ||
+    !Number.isSafeInteger(info.pid) ||
+    info.pid <= 1 ||
+    info.pid === process.pid ||
+    typeof info.boot !== "string" ||
+    info.boot.length === 0
+  ) {
+    throw new Error("invalid terminal daemon identity");
+  }
+  signal(info.pid, "SIGTERM");
+}

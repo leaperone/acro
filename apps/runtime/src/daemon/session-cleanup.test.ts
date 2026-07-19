@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   removeDaemonSessions,
+  restartTerminalDaemon,
   type DaemonRequester,
   untrackedDeadSessionIds,
 } from "./session-cleanup.ts";
@@ -53,4 +54,26 @@ test("workspace cleanup keeps the legacy daemon fallback", async () => {
   await removeDaemonSessions(daemon, ["session"]);
 
   assert.deepEqual(calls, ["session.remove", "session.kill"]);
+});
+
+test("daemon restart signals the process that answered daemon.info", async () => {
+  const signals: Array<[number, NodeJS.Signals]> = [];
+  const daemon: DaemonRequester = {
+    request: async (method) => {
+      assert.equal(method, "daemon.info");
+      return { pid: 4242, boot: "boot-id" };
+    },
+  };
+
+  await restartTerminalDaemon(daemon, (pid, signal) => signals.push([pid, signal]));
+
+  assert.deepEqual(signals, [[4242, "SIGTERM"]]);
+});
+
+test("daemon restart rejects an invalid process identity", async () => {
+  const daemon: DaemonRequester = {
+    request: async () => ({ pid: 0, boot: "" }),
+  };
+
+  await assert.rejects(restartTerminalDaemon(daemon), /invalid terminal daemon identity/);
 });

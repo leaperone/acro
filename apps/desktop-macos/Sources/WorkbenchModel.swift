@@ -124,6 +124,7 @@ final class WorkbenchModel: ObservableObject {
     @Published var pendingSessionTermination: Session? {
         didSet { if pendingSessionTermination != nil { pendingServerId = selectedServerId } }
     }
+    @Published var showingDaemonRestartConfirmation = false
     // 弹框/编辑器打开时的目标服务器:确认动作按它路由,
     // 避免弹框期间切换服务器把破坏性 RPC 发错目标
     private var pendingServerId: String?
@@ -213,6 +214,13 @@ final class WorkbenchModel: ObservableObject {
                 self?.selectTab(number: digit)
             }
         }
+        NotificationCenter.default.addObserver(
+            forName: .acroRestartTerminalDaemon, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.requestRestartTerminalDaemon()
+            }
+        }
     }
 
     private func scopedID(_ resourceId: String) -> ScopedResourceID? {
@@ -289,6 +297,32 @@ final class WorkbenchModel: ObservableObject {
     var activeSessions: [Session] {
         let workspaceSessionIds = Set(runtime.workspaces.flatMap(\.sessionIds))
         return runtime.sessions.filter { $0.alive && workspaceSessionIds.contains($0.id) }
+    }
+
+    var pendingDaemonRestartSessionCount: Int {
+        pendingRuntime?.sessions.filter(\.alive).count ?? 0
+    }
+
+    func requestRestartTerminalDaemon() {
+        guard runtime.connected, let serverId = serverId(for: runtime) else {
+            errorMessage = "服务器尚未连接"
+            return
+        }
+        pendingServerId = serverId
+        showingDaemonRestartConfirmation = true
+    }
+
+    func restartTerminalDaemon() async {
+        defer {
+            showingDaemonRestartConfirmation = false
+            pendingServerId = nil
+        }
+        guard let connection = requirePendingRuntime() else { return }
+        do {
+            _ = try await connection.rpc("daemon.restart", ["force": true])
+        } catch {
+            if connection.connected { errorMessage = error.localizedDescription }
+        }
     }
 
     var currentWorkspaceSessions: [Session] {
