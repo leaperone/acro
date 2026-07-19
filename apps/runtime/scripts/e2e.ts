@@ -231,14 +231,14 @@ async function main(): Promise<void> {
     log("session checkpoint rollback ok");
 
     // Workspace 关联写失败时必须在启动 PTY 前拒绝,内存关联保持原值。
-    const workspacesPath = path.join(stateDir, "workspaces.json");
-    const workspacesBackup = path.join(stateDir, "workspaces-backup.json");
+    const workspacesPath = path.join(stateDir, "workspace-state.json");
+    const workspaceStateBefore = fs.readFileSync(workspacesPath, "utf8");
+    const workspaceStateTmp = path.join(stateDir, ".workspace-state.json.tmp");
     const beforeWorkspaceFailure = await client.rpc<Session[]>("session.list");
     const workspaceBeforeFailure = (await client.rpc<Workspace[]>("workspace.list")).find(
       (item) => item.id === updatedWorkspace.id,
     );
-    fs.renameSync(workspacesPath, workspacesBackup);
-    fs.mkdirSync(workspacesPath);
+    fs.mkdirSync(workspaceStateTmp);
     try {
       await assert.rejects(
         client.rpc("session.create", {
@@ -249,8 +249,7 @@ async function main(): Promise<void> {
         }),
       );
     } finally {
-      fs.rmSync(workspacesPath, { recursive: true, force: true });
-      fs.renameSync(workspacesBackup, workspacesPath);
+      fs.rmSync(workspaceStateTmp, { recursive: true, force: true });
     }
     assert.deepEqual(
       (await client.rpc<Session[]>("session.list")).map((item) => item.id).sort(),
@@ -262,6 +261,7 @@ async function main(): Promise<void> {
       )?.sessionIds,
       workspaceBeforeFailure?.sessionIds,
     );
+    assert.equal(fs.readFileSync(workspacesPath, "utf8"), workspaceStateBefore);
     log("workspace session rollback ok");
 
     // 会话:显式 cwd 指到 fixture 仓库,跑 /bin/sh(避免用户 shell 配置噪音)

@@ -16,6 +16,8 @@ export const paths = {
   bootstrapOffer: path.join(stateDir, "bootstrap-offer.txt"),
   localOffer: path.join(stateDir, "local-offer.txt"),
   projects: path.join(stateDir, "projects.json"),
+  workspaceState: path.join(stateDir, "workspace-state.json"),
+  workspaceStateMarker: path.join(stateDir, "workspace-state.ready.json"),
   workspaces: path.join(stateDir, "workspaces.json"),
   workspaceGroups: path.join(stateDir, "workspace-groups.json"),
   runtimeLock: path.join(stateDir, "runtime.lock"),

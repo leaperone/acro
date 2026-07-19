@@ -9,7 +9,17 @@ import { z } from "zod";
 import { paths } from "./paths.ts";
 import { readJson, writeJsonAtomic } from "./store.ts";
 
+const WorkspaceStateSchema = z.object({
+  v: z.literal(1),
+  workspaces: z.array(WorkspaceSchema),
+  workspaceGroups: z.array(WorkspaceGroupSchema),
+});
+const WorkspaceStateMarkerSchema = z.object({ v: z.literal(1) });
+const MISSING = Symbol("missing workspace state");
+
 interface WorkspaceStorage {
+  workspaceState: string;
+  workspaceStateMarker: string;
   workspaces: string;
   workspaceGroups: string;
 }
@@ -22,14 +32,30 @@ export class WorkspaceRegistry {
   constructor(storage: WorkspaceStorage = paths) {
     this.storage = storage;
     try {
-      this.workspaces = z.array(WorkspaceSchema).parse(readJson<unknown>(storage.workspaces, []));
-      this.workspaceGroups = z
-        .array(WorkspaceGroupSchema)
-        .parse(readJson<unknown>(storage.workspaceGroups, []));
+      const stored = readJson<unknown | typeof MISSING>(storage.workspaceState, MISSING);
+      if (stored !== MISSING) {
+        const state = WorkspaceStateSchema.parse(stored);
+        this.workspaces = state.workspaces;
+        this.workspaceGroups = state.workspaceGroups;
+        this.ensureStateMarker();
+      } else {
+        const marker = readJson<unknown | typeof MISSING>(storage.workspaceStateMarker, MISSING);
+        if (marker !== MISSING) {
+          WorkspaceStateMarkerSchema.parse(marker);
+          throw new Error("workspace state is missing after migration");
+        }
+        this.workspaces = z.array(WorkspaceSchema).parse(readJson<unknown>(storage.workspaces, []));
+        this.workspaceGroups = z
+          .array(WorkspaceGroupSchema)
+          .parse(readJson<unknown>(storage.workspaceGroups, []));
+        this.validateGroups(this.workspaces, this.workspaceGroups);
+        this.persist(this.workspaces, this.workspaceGroups);
+        this.ensureStateMarker();
+      }
     } catch (error) {
       throw new Error(`invalid workspace state: ${(error as Error).message}`, { cause: error });
     }
-    this.validateGroups();
+    this.validateGroups(this.workspaces, this.workspaceGroups);
   }
 
   list(): Workspace[] {
@@ -51,26 +77,21 @@ export class WorkspaceRegistry {
   }
 
   create(name?: string, workspaceGroupId?: string): Workspace {
-    const group = workspaceGroupId ? this.getGroupMutable(workspaceGroupId) : null;
-    const workspace: Workspace = {
-      id: crypto.randomUUID(),
-      name: name?.trim() || this.nextWorkspaceName(),
-      sessionIds: [],
-      createdAt: new Date().toISOString(),
-      layout: null,
-      layoutRev: 0,
-    };
-    this.workspaces.push(workspace);
-    group?.workspaceIds.push(workspace.id);
-    this.saveAll();
-    return cloneWorkspace(workspace);
-  }
-
-  private nextWorkspaceName(): string {
-    const names = new Set(this.workspaces.map((workspace) => workspace.name));
-    let index = 1;
-    while (names.has(`工作区 ${index}`)) index += 1;
-    return `工作区 ${index}`;
+    let created!: Workspace;
+    this.commit((workspaces, groups) => {
+      const group = workspaceGroupId ? this.getGroupMutable(groups, workspaceGroupId) : null;
+      created = {
+        id: crypto.randomUUID(),
+        name: name?.trim() || this.nextWorkspaceName(workspaces),
+        sessionIds: [],
+        createdAt: new Date().toISOString(),
+        layout: null,
+        layoutRev: 0,
+      };
+      workspaces.push(created);
+      group?.workspaceIds.push(created.id);
+    });
+    return cloneWorkspace(created);
   }
 
   update(
@@ -80,146 +101,190 @@ export class WorkspaceRegistry {
       workspaceGroupId?: string | null | undefined;
     },
   ): Workspace {
-    const workspace = this.getMutable(workspaceId);
-    if (patch.name !== undefined) workspace.name = patch.name.trim();
-    if (patch.workspaceGroupId !== undefined) {
-      const target = patch.workspaceGroupId
-        ? this.getGroupMutable(patch.workspaceGroupId)
-        : null;
-      for (const group of this.workspaceGroups) {
-        group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
+    let updated!: Workspace;
+    this.commit((workspaces, groups) => {
+      updated = this.getMutable(workspaces, workspaceId);
+      if (patch.name !== undefined) updated.name = patch.name.trim();
+      if (patch.workspaceGroupId !== undefined) {
+        const target = patch.workspaceGroupId
+          ? this.getGroupMutable(groups, patch.workspaceGroupId)
+          : null;
+        for (const group of groups) {
+          group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
+        }
+        target?.workspaceIds.push(workspaceId);
       }
-      target?.workspaceIds.push(workspaceId);
-    }
-    this.saveAll();
-    return cloneWorkspace(workspace);
+    });
+    return cloneWorkspace(updated);
   }
 
   // 拖拽重排:先从所有分组摘除,再插入目标分组或未分组序列的 index 位
   reorder(workspaceId: string, workspaceGroupId: string | null, index: number): void {
-    this.getMutable(workspaceId);
-    const target = workspaceGroupId ? this.getGroupMutable(workspaceGroupId) : null;
-    for (const group of this.workspaceGroups) {
-      group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
-    }
-    if (target) {
-      target.workspaceIds.splice(Math.min(index, target.workspaceIds.length), 0, workspaceId);
-    } else {
-      // 未分组顺序即 workspaces 数组顺序:把自己插到第 index 个未分组项之前
-      const grouped = new Set(this.workspaceGroups.flatMap((group) => group.workspaceIds));
-      const self = this.workspaces.findIndex((item) => item.id === workspaceId);
-      const [workspace] = this.workspaces.splice(self, 1);
+    this.commit((workspaces, groups) => {
+      this.getMutable(workspaces, workspaceId);
+      const target = workspaceGroupId ? this.getGroupMutable(groups, workspaceGroupId) : null;
+      for (const group of groups) {
+        group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
+      }
+      if (target) {
+        target.workspaceIds.splice(Math.min(index, target.workspaceIds.length), 0, workspaceId);
+        return;
+      }
+
+      const grouped = new Set(groups.flatMap((group) => group.workspaceIds));
+      const self = workspaces.findIndex((item) => item.id === workspaceId);
+      const [workspace] = workspaces.splice(self, 1);
       let seen = 0;
-      let insertAt = this.workspaces.length;
-      for (let i = 0; i < this.workspaces.length; i += 1) {
-        if (grouped.has(this.workspaces[i]!.id)) continue;
+      let insertAt = workspaces.length;
+      for (let i = 0; i < workspaces.length; i += 1) {
+        if (grouped.has(workspaces[i]!.id)) continue;
         if (seen === index) {
           insertAt = i;
           break;
         }
         seen += 1;
       }
-      this.workspaces.splice(insertAt, 0, workspace!);
-    }
-    this.saveAll();
+      workspaces.splice(insertAt, 0, workspace!);
+    });
   }
 
   createGroup(name: string): WorkspaceGroup {
-    const group: WorkspaceGroup = {
-      id: crypto.randomUUID(),
-      name: name.trim(),
-      workspaceIds: [],
-      createdAt: new Date().toISOString(),
-    };
-    this.workspaceGroups.push(group);
-    this.saveGroups();
-    return cloneWorkspaceGroup(group);
+    let created!: WorkspaceGroup;
+    this.commit((_workspaces, groups) => {
+      created = {
+        id: crypto.randomUUID(),
+        name: name.trim(),
+        workspaceIds: [],
+        createdAt: new Date().toISOString(),
+      };
+      groups.push(created);
+    });
+    return cloneWorkspaceGroup(created);
   }
 
   updateGroup(workspaceGroupId: string, name: string): WorkspaceGroup {
-    const group = this.getGroupMutable(workspaceGroupId);
-    group.name = name.trim();
-    this.saveGroups();
-    return cloneWorkspaceGroup(group);
+    let updated!: WorkspaceGroup;
+    this.commit((_workspaces, groups) => {
+      updated = this.getGroupMutable(groups, workspaceGroupId);
+      updated.name = name.trim();
+    });
+    return cloneWorkspaceGroup(updated);
   }
 
   removeGroup(workspaceGroupId: string): void {
-    const index = this.workspaceGroups.findIndex((group) => group.id === workspaceGroupId);
-    if (index === -1) throw new Error("workspace group not found");
-    this.workspaceGroups.splice(index, 1);
-    this.saveGroups();
+    this.commit((_workspaces, groups) => {
+      const index = groups.findIndex((group) => group.id === workspaceGroupId);
+      if (index === -1) throw new Error("workspace group not found");
+      groups.splice(index, 1);
+    });
   }
 
   // 布局是客户端自定义的 opaque JSON:只存储并递增修订号,不解释内容
   setLayout(workspaceId: string, layout: string): number {
-    const workspace = this.getMutable(workspaceId);
-    workspace.layout = layout;
-    workspace.layoutRev = (workspace.layoutRev ?? 0) + 1;
-    this.saveWorkspaces();
-    return workspace.layoutRev;
+    let revision = 0;
+    this.commit((workspaces) => {
+      const workspace = this.getMutable(workspaces, workspaceId);
+      workspace.layout = layout;
+      workspace.layoutRev = (workspace.layoutRev ?? 0) + 1;
+      revision = workspace.layoutRev;
+    });
+    return revision;
   }
 
   addSession(workspaceId: string, sessionId: string): void {
-    const index = this.workspaces.findIndex((workspace) => workspace.id === workspaceId);
-    if (index === -1) throw new Error("workspace not found");
-    if (this.workspaces[index]!.sessionIds.includes(sessionId)) return;
-    const next = this.workspaces.map(cloneWorkspace);
-    next[index]!.sessionIds.push(sessionId);
-    writeJsonAtomic(this.storage.workspaces, next);
-    this.workspaces = next;
+    const current = this.get(workspaceId);
+    if (!current) throw new Error("workspace not found");
+    if (current.sessionIds.includes(sessionId)) return;
+    this.commit((workspaces) => {
+      this.getMutable(workspaces, workspaceId).sessionIds.push(sessionId);
+    });
   }
 
   removeSession(workspaceId: string, sessionId: string): void {
-    const index = this.workspaces.findIndex((workspace) => workspace.id === workspaceId);
-    if (index === -1) throw new Error("workspace not found");
-    if (!this.workspaces[index]!.sessionIds.includes(sessionId)) return;
-    const next = this.workspaces.map(cloneWorkspace);
-    next[index]!.sessionIds = next[index]!.sessionIds.filter((id) => id !== sessionId);
-    writeJsonAtomic(this.storage.workspaces, next);
-    this.workspaces = next;
+    const current = this.get(workspaceId);
+    if (!current) throw new Error("workspace not found");
+    if (!current.sessionIds.includes(sessionId)) return;
+    this.commit((workspaces) => {
+      const workspace = this.getMutable(workspaces, workspaceId);
+      workspace.sessionIds = workspace.sessionIds.filter((id) => id !== sessionId);
+    });
   }
 
   removeSessions(sessionIds: ReadonlySet<string>): void {
-    if (sessionIds.size === 0) return;
-    const next = this.workspaces.map(cloneWorkspace);
-    let changed = false;
-    for (const workspace of next) {
-      const remaining = workspace.sessionIds.filter((id) => !sessionIds.has(id));
-      if (remaining.length === workspace.sessionIds.length) continue;
-      workspace.sessionIds = remaining;
-      changed = true;
+    if (
+      sessionIds.size === 0 ||
+      !this.workspaces.some((workspace) => workspace.sessionIds.some((id) => sessionIds.has(id)))
+    ) {
+      return;
     }
-    if (!changed) return;
-    writeJsonAtomic(this.storage.workspaces, next);
-    this.workspaces = next;
+    this.commit((workspaces) => {
+      for (const workspace of workspaces) {
+        workspace.sessionIds = workspace.sessionIds.filter((id) => !sessionIds.has(id));
+      }
+    });
   }
 
   remove(workspaceId: string): void {
-    const index = this.workspaces.findIndex((workspace) => workspace.id === workspaceId);
-    if (index === -1) throw new Error("workspace not found");
-    this.workspaces.splice(index, 1);
-    for (const group of this.workspaceGroups) {
-      group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
-    }
-    this.saveAll();
+    this.commit((workspaces, groups) => {
+      const index = workspaces.findIndex((workspace) => workspace.id === workspaceId);
+      if (index === -1) throw new Error("workspace not found");
+      workspaces.splice(index, 1);
+      for (const group of groups) {
+        group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
+      }
+    });
   }
 
-  private getMutable(workspaceId: string): Workspace {
-    const workspace = this.workspaces.find((item) => item.id === workspaceId);
+  private commit(mutate: (workspaces: Workspace[], groups: WorkspaceGroup[]) => void): void {
+    const workspaces = this.workspaces.map(cloneWorkspace);
+    const groups = this.workspaceGroups.map(cloneWorkspaceGroup);
+    mutate(workspaces, groups);
+    this.validateGroups(workspaces, groups);
+    this.persist(workspaces, groups);
+    this.workspaces = workspaces;
+    this.workspaceGroups = groups;
+  }
+
+  private persist(workspaces: Workspace[], workspaceGroups: WorkspaceGroup[]): void {
+    writeJsonAtomic(this.storage.workspaceState, {
+      v: 1,
+      workspaces,
+      workspaceGroups,
+    });
+  }
+
+  private ensureStateMarker(): void {
+    const stored = readJson<unknown | typeof MISSING>(this.storage.workspaceStateMarker, MISSING);
+    if (stored === MISSING) {
+      writeJsonAtomic(this.storage.workspaceStateMarker, { v: 1 });
+      return;
+    }
+    WorkspaceStateMarkerSchema.parse(stored);
+  }
+
+  private nextWorkspaceName(workspaces: Workspace[]): string {
+    const names = new Set(workspaces.map((workspace) => workspace.name));
+    let index = 1;
+    while (names.has(`工作区 ${index}`)) index += 1;
+    return `工作区 ${index}`;
+  }
+
+  private getMutable(workspaces: Workspace[], workspaceId: string): Workspace {
+    const workspace = workspaces.find((item) => item.id === workspaceId);
     if (!workspace) throw new Error("workspace not found");
     return workspace;
   }
 
-  private getGroupMutable(workspaceGroupId: string): WorkspaceGroup {
-    const group = this.workspaceGroups.find((item) => item.id === workspaceGroupId);
+  private getGroupMutable(groups: WorkspaceGroup[], workspaceGroupId: string): WorkspaceGroup {
+    const group = groups.find((item) => item.id === workspaceGroupId);
     if (!group) throw new Error("workspace group not found");
     return group;
   }
 
-  private validateGroups(): void {
-    const validWorkspaceIds = new Set(this.workspaces.map((workspace) => workspace.id));
+  private validateGroups(workspaces: Workspace[], groups: WorkspaceGroup[]): void {
+    const validWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
     const claimed = new Set<string>();
-    for (const group of this.workspaceGroups) {
+    for (const group of groups) {
       for (const id of group.workspaceIds) {
         if (!validWorkspaceIds.has(id)) {
           throw new Error(`workspace group ${group.id} references missing workspace ${id}`);
@@ -230,19 +295,6 @@ export class WorkspaceRegistry {
         claimed.add(id);
       }
     }
-  }
-
-  private saveWorkspaces(): void {
-    writeJsonAtomic(this.storage.workspaces, this.workspaces);
-  }
-
-  private saveGroups(): void {
-    writeJsonAtomic(this.storage.workspaceGroups, this.workspaceGroups);
-  }
-
-  private saveAll(): void {
-    this.saveWorkspaces();
-    this.saveGroups();
   }
 }
 
