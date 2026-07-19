@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type net from "node:net";
 import test from "node:test";
 import { encodeOutFrame } from "@acro/protocol";
 import { DaemonClient } from "./client.ts";
@@ -21,6 +22,7 @@ test("daemon response hooks run before following frames in the same chunk", asyn
             resolve: (value: unknown) => void;
             reject: (error: Error) => void;
             beforeResolve: (value: unknown) => void;
+            timer: NodeJS.Timeout;
           }
         >;
       }
@@ -30,6 +32,7 @@ test("daemon response hooks run before following frames in the same chunk", asyn
       beforeResolve: () => {
         attached = true;
       },
+      timer: setTimeout(() => {}, 1000),
     });
   });
   const response = packJson({ t: "res", id: 1, ok: true, result: { handle: 7, seq: 3 } });
@@ -39,4 +42,67 @@ test("daemon response hooks run before following frames in the same chunk", asyn
 
   assert.deepEqual(await result, { handle: 7, seq: 3 });
   assert.equal(frameSeen, true);
+});
+
+test("daemon requests time out, stall new work, and recover after late responses", async () => {
+  const client = new DaemonClient(20, 1);
+  let drainedMethods: string[] = [];
+  client.on("lateResponsesDrained", (methods: string[]) => {
+    drainedMethods = methods;
+  });
+  (
+    client as unknown as {
+      socket: net.Socket;
+    }
+  ).socket = {
+    write: (_data: Buffer, callback?: (error?: Error | null) => void) => {
+      callback?.();
+      return true;
+    },
+  } as unknown as net.Socket;
+
+  const blocked = client.request("blocked");
+  await assert.rejects(client.request("overflow"), /queue full/);
+  await assert.rejects(blocked, /daemon timeout: blocked/);
+  await assert.rejects(client.request("stalled"), /daemon stalled/);
+  assert.equal(
+    (client as unknown as { pending: Map<number, unknown> }).pending.size,
+    0,
+  );
+
+  (client as unknown as { onData(chunk: Buffer): void }).onData(
+    packJson({ t: "res", id: 1, ok: true, result: {} }),
+  );
+  assert.deepEqual(drainedMethods, ["blocked"]);
+  const recovered = client.request("recovered");
+  (client as unknown as { onData(chunk: Buffer): void }).onData(
+    packJson({ t: "res", id: 2, ok: true, result: { ok: true } }),
+  );
+  assert.deepEqual(await recovered, { ok: true });
+});
+
+test("daemon write failures close the broken socket and release pending work", async () => {
+  const client = new DaemonClient(1000, 1);
+  let destroyed = false;
+  (
+    client as unknown as {
+      socket: net.Socket;
+    }
+  ).socket = {
+    write: (_data: Buffer, callback?: (error?: Error | null) => void) => {
+      callback?.(new Error("write failed"));
+      return false;
+    },
+    destroy: () => {
+      destroyed = true;
+      return undefined as unknown as net.Socket;
+    },
+  } as unknown as net.Socket;
+
+  await assert.rejects(client.request("write"), /write failed/);
+  assert.equal(destroyed, true);
+  assert.equal(
+    (client as unknown as { pending: Map<number, unknown> }).pending.size,
+    0,
+  );
 });

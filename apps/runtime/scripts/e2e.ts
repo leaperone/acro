@@ -451,12 +451,17 @@ async function main(): Promise<void> {
       sessionId: session.id,
     });
     await client.waitOutput("ATTACH_GAP_0600", 15000);
-    await sleep(300);
-    const gapCombined =
-      Buffer.from(gapAttach.snapshot, "base64").toString("utf8") + gapClient.output;
-    const gapNumbers = new Set(
-      [...gapCombined.matchAll(/ATTACH_GAP_(\d{4})/g)].map((match) => Number(match[1])),
-    );
+    const gapDeadline = Date.now() + 5000;
+    let gapNumbers = new Set<number>();
+    while (gapNumbers.size < 600) {
+      const gapCombined =
+        Buffer.from(gapAttach.snapshot, "base64").toString("utf8") + gapClient.output;
+      gapNumbers = new Set(
+        [...gapCombined.matchAll(/ATTACH_GAP_(\d{4})/g)].map((match) => Number(match[1])),
+      );
+      if (Date.now() > gapDeadline) break;
+      await sleep(50);
+    }
     for (let i = 1; i <= 600; i += 1) {
       assert.ok(gapNumbers.has(i), `attach output missing sequence ${i}`);
     }

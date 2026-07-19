@@ -5,6 +5,7 @@ import type { Session } from "@acro/protocol";
 import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
+import { removeDaemonSessions } from "./daemon/session-cleanup.ts";
 import { BrowserManager } from "./browser.ts";
 import { SimulatorManager } from "./simulator.ts";
 import { HelperClient } from "./computer.ts";
@@ -30,24 +31,13 @@ interface SnapshotResult {
   rows: number;
 }
 
-async function removeDaemonSession(daemon: DaemonClient, sessionId: string): Promise<void> {
-  try {
-    await daemon.request("session.remove", { sessionId });
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("unknown method")) {
-      await daemon.request("session.kill", { sessionId });
-      return;
-    }
-    throw error;
-  }
-}
-
 function daemonMayHaveCreatedSession(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
     message.includes("connection lost") ||
     message.includes("EPIPE") ||
-    message.includes("ECONNRESET")
+    message.includes("ECONNRESET") ||
+    message.includes("daemon timeout:")
   );
 }
 
@@ -67,9 +57,7 @@ async function main(): Promise<void> {
   const helper = new HelperClient();
   const workspaces = new WorkspaceRegistry();
   for (const workspace of workspaces.listPendingRemovals()) {
-    await Promise.all(
-      workspace.sessionIds.map((sessionId) => removeDaemonSession(daemon, sessionId)),
-    );
+    await removeDaemonSessions(daemon, workspace.sessionIds);
     workspaces.remove(workspace.id);
   }
   const creatingSessionIds = new Set<string>();
@@ -246,12 +234,8 @@ async function main(): Promise<void> {
           conn.abortController.signal.throwIfAborted();
           workspaces.beginRemoval(workspaceId);
         }
-        await Promise.all(
-          workspace.sessionIds.map((sessionId) =>
-            // 旧 daemon 尚无 remove 时退回 kill；普通进程仍会退出，别的工作区不受影响。
-            removeDaemonSession(daemon, sessionId),
-          ),
-        );
+        // 分批清理，历史会话再多也不会超过 daemon pending 预算。
+        await removeDaemonSessions(daemon, workspace.sessionIds);
         for (const sessionId of workspace.sessionIds) {
           pendingFocusClaims.delete(sessionId);
           focusOwners.delete(sessionId);
@@ -594,6 +578,12 @@ async function main(): Promise<void> {
   daemon.on("up", () => {
     void reconcileWorkspaceSessions().catch((error) => {
       console.warn(`[runtime] failed to reconcile workspace sessions: ${error.message}`);
+    });
+  });
+  daemon.on("lateResponsesDrained", (methods: string[]) => {
+    if (!methods.includes("session.createOwned")) return;
+    void reconcileWorkspaceSessions().catch((error) => {
+      console.warn(`[runtime] failed to reconcile late session creation: ${error.message}`);
     });
   });
   daemon.on("event", (evt) => {

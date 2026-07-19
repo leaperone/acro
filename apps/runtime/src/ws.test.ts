@@ -8,9 +8,12 @@ import type { DeviceRegistry } from "./devices.ts";
 import {
   admissionMatchesToken,
   Gateway,
+  MAX_IN_FLIGHT_RPC_PER_CONNECTION,
+  MAX_IN_FLIGHT_RPC_TOTAL,
   MAX_PREAUTH_CONNECTIONS_PER_ADMISSION,
   MAX_UNKNOWN_PREAUTH_CONNECTIONS,
   removeSurfaceChannels,
+  rpcAdmissionFailure,
   websocketAdmissionFailure,
   type Conn,
   type Handlers,
@@ -21,6 +24,7 @@ function fixture(bufferedAmount: number) {
   let sent = 0;
   let terminated = 0;
   let closed = 0;
+  const messages: unknown[] = [];
   const ws = {
     readyState: WebSocket.OPEN,
     bufferedAmount,
@@ -39,6 +43,10 @@ function fixture(bufferedAmount: number) {
         sealed += 1;
         return data;
       },
+      sealText(text: string) {
+        messages.push(JSON.parse(text));
+        return new Uint8Array([1]);
+      },
     },
     device: { id: "device", name: "Device", createdAt: "", lastSeenAt: null },
     admissionId: null,
@@ -46,6 +54,7 @@ function fixture(bufferedAmount: number) {
     browserChannels: new Map(),
     simChannels: new Map(),
     pendingSimAttaches: new Map(),
+    inFlightRpc: 0,
     alive: true,
   } as unknown as Conn;
   const gateway = new Gateway({} as DeviceRegistry, new Uint8Array(32), {} as Handlers, () => {});
@@ -56,6 +65,7 @@ function fixture(bufferedAmount: number) {
   return {
     gateway,
     conn,
+    messages,
     counts: () => ({ sealed, sent, terminated, closed }),
     close: () => clearInterval((gateway as unknown as { heartbeat: NodeJS.Timeout }).heartbeat),
   };
@@ -166,6 +176,65 @@ test("known admission hints must match the encrypted auth token", () => {
   assert.equal(admissionMatchesToken(admissionId, token), true);
   assert.equal(admissionMatchesToken(admissionId, "x".repeat(64)), false);
   assert.equal(admissionMatchesToken(null, token), true);
+});
+
+test("RPC admission has independent connection and runtime budgets", () => {
+  assert.equal(
+    rpcAdmissionFailure(MAX_IN_FLIGHT_RPC_PER_CONNECTION - 1, MAX_IN_FLIGHT_RPC_TOTAL - 1),
+    null,
+  );
+  assert.equal(rpcAdmissionFailure(MAX_IN_FLIGHT_RPC_PER_CONNECTION, 0), "connection");
+  assert.equal(rpcAdmissionFailure(0, MAX_IN_FLIGHT_RPC_TOTAL), "total");
+});
+
+test("RPC dispatch rejects overflow and releases its admission slots", async () => {
+  const { gateway, conn, messages, close } = fixture(0);
+  let release!: () => void;
+  const blocker = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let calls = 0;
+  (gateway as unknown as { handlers: Handlers }).handlers = {
+    "session.list": async () => {
+      calls += 1;
+      await blocker;
+      return [];
+    },
+  } as unknown as Handlers;
+  const dispatch = (
+    gateway as unknown as {
+      dispatch(
+        connection: Conn,
+        request: { t: "req"; id: number; method: string; params: unknown },
+      ): Promise<void>;
+    }
+  ).dispatch.bind(gateway);
+
+  try {
+    const running = Array.from({ length: MAX_IN_FLIGHT_RPC_PER_CONNECTION }, (_, id) =>
+      dispatch(conn, { t: "req", id, method: "session.list", params: {} }),
+    );
+    assert.equal(calls, MAX_IN_FLIGHT_RPC_PER_CONNECTION);
+    await dispatch(conn, { t: "req", id: 99, method: "session.list", params: {} });
+    assert.deepEqual(messages, [
+      {
+        t: "res",
+        id: 99,
+        ok: false,
+        error: { code: "busy", message: "too many concurrent RPC requests" },
+      },
+    ]);
+
+    release();
+    await Promise.all(running);
+    assert.equal(conn.inFlightRpc, 0);
+    assert.equal((gateway as unknown as { inFlightRpc: number }).inFlightRpc, 0);
+    await dispatch(conn, { t: "req", id: 100, method: "session.list", params: {} });
+    assert.equal(calls, MAX_IN_FLIGHT_RPC_PER_CONNECTION + 1);
+  } finally {
+    release();
+    close();
+  }
 });
 
 test("surface detach removes only the requested surface", () => {

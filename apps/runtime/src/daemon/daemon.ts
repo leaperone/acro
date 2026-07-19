@@ -31,6 +31,8 @@ import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 import { utf8SafeCut } from "./utf8.ts";
 import {
   daemonClientBufferExceeded,
+  daemonRequestCapacityExceeded,
+  daemonRequestExpired,
   daemonSessionCapacityExceeded,
   shouldPausePty,
 } from "./backpressure.ts";
@@ -568,7 +570,10 @@ interface DaemonRequest {
   id: number;
   method: string;
   params?: unknown;
+  deadline?: unknown;
 }
+
+let daemonRequestsInFlight = 0;
 
 const handlers: Record<string, Handler> = {
   "daemon.info": () => ({ boot, pid: process.pid }),
@@ -627,6 +632,7 @@ const handlers: Record<string, Handler> = {
 };
 
 async function respond(socket: net.Socket, req: DaemonRequest, withReplay: boolean): Promise<void> {
+  if (socket.destroyed) return;
   let replay: AttachReplay | null = null;
   if (withReplay) {
     const sessionId = (req.params as { sessionId?: unknown } | undefined)?.sessionId;
@@ -639,6 +645,9 @@ async function respond(socket: net.Socket, req: DaemonRequest, withReplay: boole
 
   let response: Buffer;
   try {
+    if (daemonRequestExpired(req.deadline)) {
+      throw new Error(`daemon request expired: ${req.method}`);
+    }
     const handler = handlers[req.method];
     if (!handler) throw new Error(`unknown method ${req.method}`);
     const result = await handler(req.params ?? {});
@@ -668,14 +677,35 @@ async function respond(socket: net.Socket, req: DaemonRequest, withReplay: boole
 }
 
 function dispatchRequest(socket: net.Socket, req: DaemonRequest): void {
+  if (daemonRequestCapacityExceeded(daemonRequestsInFlight)) {
+    if (!socket.destroyed) {
+      try {
+        socket.write(
+          packJson({
+            t: "res",
+            id: req.id,
+            ok: false,
+            error: { code: "daemon_busy", message: "daemon request capacity reached" },
+          }),
+        );
+      } catch {
+        socket.destroy();
+      }
+    }
+    return;
+  }
+  daemonRequestsInFlight += 1;
   if (req.method !== "session.snapshot") {
-    void respond(socket, req, false);
+    void respond(socket, req, false).finally(() => {
+      daemonRequestsInFlight -= 1;
+    });
     return;
   }
   const previous = snapshotRequests.get(socket) ?? Promise.resolve();
   const current = previous.then(() => respond(socket, req, true));
   snapshotRequests.set(socket, current);
   void current.finally(() => {
+    daemonRequestsInFlight -= 1;
     if (snapshotRequests.get(socket) === current) snapshotRequests.delete(socket);
   });
 }

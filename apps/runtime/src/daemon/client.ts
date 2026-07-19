@@ -14,7 +14,11 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   beforeResolve?: ((value: unknown) => void) | undefined;
+  timer: NodeJS.Timeout;
 }
+
+export const DAEMON_REQUEST_TIMEOUT_MS = 15_000;
+export const MAX_PENDING_DAEMON_REQUESTS = 256;
 
 export interface DaemonEvent {
   seq: number;
@@ -28,7 +32,21 @@ export class DaemonClient extends EventEmitter {
   private reader = new FrameReader();
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  private timedOut = new Map<number, string>();
+  private completedTimedOutMethods = new Set<string>();
+  private stalled = false;
   private closed = false;
+  private readonly requestTimeoutMs: number;
+  private readonly maxPending: number;
+
+  constructor(
+    requestTimeoutMs = DAEMON_REQUEST_TIMEOUT_MS,
+    maxPending = MAX_PENDING_DAEMON_REQUESTS,
+  ) {
+    super();
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.maxPending = maxPending;
+  }
 
   static async connect(): Promise<DaemonClient> {
     const client = new DaemonClient();
@@ -70,8 +88,14 @@ export class DaemonClient extends EventEmitter {
     if (this.socket !== socket) return;
     this.socket = null;
     this.reader.reset();
-    for (const p of this.pending.values()) p.reject(new Error("daemon connection lost"));
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error("daemon connection lost"));
+    }
     this.pending.clear();
+    this.timedOut.clear();
+    this.completedTimedOutMethods.clear();
+    this.stalled = false;
     this.emit("down");
     if (this.closed) return;
     void retry(() => this.ensureConnected(), 100, 200).catch(() => {});
@@ -91,8 +115,18 @@ export class DaemonClient extends EventEmitter {
         | ({ t: "evt" } & DaemonEvent);
       if (parsed.t === "res") {
         const p = this.pending.get(parsed.id);
-        if (!p) continue;
+        if (!p) {
+          const timedOutMethod = this.timedOut.get(parsed.id);
+          if (timedOutMethod) {
+            this.timedOut.delete(parsed.id);
+            this.completedTimedOutMethods.add(timedOutMethod);
+            this.recoverIfDrained();
+          }
+          continue;
+        }
         this.pending.delete(parsed.id);
+        clearTimeout(p.timer);
+        this.recoverIfDrained();
         if (parsed.ok) {
           try {
             p.beforeResolve?.(parsed.result);
@@ -113,22 +147,55 @@ export class DaemonClient extends EventEmitter {
     beforeResolve?: (result: T) => void,
   ): Promise<T> {
     if (!this.socket) return Promise.reject(new Error("daemon not connected"));
+    if (this.stalled) return Promise.reject(new Error("daemon stalled after request timeout"));
+    if (this.pending.size >= this.maxPending) {
+      return Promise.reject(new Error("daemon request queue full"));
+    }
     const id = this.nextId++;
     const socket = this.socket;
+    const deadline = Date.now() + this.requestTimeoutMs;
     return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        this.timedOut.set(id, method);
+        this.stalled = true;
+        pending.reject(new Error(`daemon timeout: ${method}`));
+      }, this.requestTimeoutMs);
       this.pending.set(id, {
         resolve: resolve as (v: unknown) => void,
         reject,
         beforeResolve: beforeResolve as ((value: unknown) => void) | undefined,
+        timer,
       });
-      socket.write(packJson({ t: "req", id, method, params }), (error) => {
-        if (!error) return;
+      const failWrite = (error: Error) => {
         const pending = this.pending.get(id);
-        if (!pending) return;
-        this.pending.delete(id);
-        reject(error);
-      });
+        if (pending) {
+          this.pending.delete(id);
+          clearTimeout(pending.timer);
+          this.recoverIfDrained();
+          pending.reject(error);
+        }
+        socket.destroy();
+      };
+      try {
+        socket.write(packJson({ t: "req", id, method, params, deadline }), (error) => {
+          if (error) failWrite(error);
+        });
+      } catch (error) {
+        failWrite(error instanceof Error ? error : new Error(String(error)));
+      }
     });
+  }
+
+  private recoverIfDrained(): void {
+    if (this.stalled && this.timedOut.size === 0 && this.pending.size === 0) {
+      this.stalled = false;
+      const methods = [...this.completedTimedOutMethods];
+      this.completedTimedOutMethods.clear();
+      this.emit("lateResponsesDrained", methods);
+    }
   }
 
   sendInput(handle: number, data: Uint8Array): void {
