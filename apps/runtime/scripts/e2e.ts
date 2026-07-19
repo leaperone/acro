@@ -341,7 +341,28 @@ async function main(): Promise<void> {
     });
     const seat = new Client();
     await seat.connect(decodePairingOffer(seatShare.offer));
-    await client.rpc("session.claimFocus", { sessionId: session.id });
+    const raceSeats: Client[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const raceShare = await client.rpc<{ offer: string }>("device.share", {
+        name: `focus-racer-${index}`,
+      });
+      const racer = new Client();
+      await racer.connect(decodePairingOffer(raceShare.offer));
+      raceSeats.push(racer);
+    }
+    const claimers = [client, seat, ...raceSeats];
+    const claims = await Promise.all(
+      claimers.map((claimer) =>
+        claimer.rpc<{ claimed: boolean }>("session.claimFocus", { sessionId: session.id }),
+      ),
+    );
+    assert.equal(
+      claims.filter((claim) => claim.claimed).length,
+      1,
+      "concurrent silent claims must have exactly one winner",
+    );
+    await client.rpc("session.claimFocus", { sessionId: session.id, force: true });
+    for (const racer of raceSeats) racer.close();
     const owners = await client.rpc<Array<{ sessionId: string; deviceId: string }>>(
       "session.focusList",
     );
