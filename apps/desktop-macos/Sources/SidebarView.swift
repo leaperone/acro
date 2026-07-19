@@ -100,8 +100,35 @@ struct WorkspaceRowActions {
     let delete: () -> Void
     let moveToGroup: (String?) -> Void
     let beginDrag: () -> NSItemProvider
-    let acceptDrop: () -> Bool
-    let performDrop: () -> Bool
+    let acceptDrop: (SidebarWorkspaceDropEdge) -> Bool
+    let performDrop: (SidebarWorkspaceDropEdge) -> Bool
+}
+
+enum SidebarWorkspaceDropEdge: Equatable {
+    case top
+    case bottom
+
+    static func resolve(locationY: CGFloat, height: CGFloat) -> Self {
+        locationY < max(height, 1) / 2 ? .top : .bottom
+    }
+}
+
+enum SidebarWorkspaceDropPlanner {
+    static func insertionIndex(
+        draggedWorkspaceId: String,
+        targetWorkspaceId: String,
+        orderedWorkspaceIds: [String],
+        edge: SidebarWorkspaceDropEdge
+    ) -> Int? {
+        guard draggedWorkspaceId != targetWorkspaceId else { return nil }
+        let remaining = orderedWorkspaceIds.filter { $0 != draggedWorkspaceId }
+        guard let targetIndex = remaining.firstIndex(of: targetWorkspaceId) else { return nil }
+        let insertionIndex = targetIndex + (edge == .bottom ? 1 : 0)
+        guard orderedWorkspaceIds.firstIndex(of: draggedWorkspaceId) != insertionIndex else {
+            return nil
+        }
+        return insertionIndex
+    }
 }
 
 struct SessionRowSnapshot: Equatable {
@@ -205,7 +232,7 @@ struct WorkspaceRow: View, Equatable {
     let snapshot: WorkspaceRowSnapshot
     let actions: WorkspaceRowActions
     @State private var hovered = false
-    @State private var dropTargeted = false
+    @State private var dropEdge: SidebarWorkspaceDropEdge?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.snapshot == rhs.snapshot
@@ -275,8 +302,8 @@ struct WorkspaceRow: View, Equatable {
         }
         .padding(.horizontal, 6)
         .modifier(SidebarRowSurface(selected: snapshot.isSelected))
-        .overlay(alignment: .top) {
-            if dropTargeted {
+        .overlay(alignment: dropEdge == .bottom ? .bottom : .top) {
+            if dropEdge != nil {
                 RoundedRectangle(cornerRadius: 1)
                     .fill(Color.accentColor)
                     .frame(height: 2)
@@ -316,8 +343,9 @@ struct WorkspaceRow: View, Equatable {
         .onDrag(actions.beginDrag)
         .onDrop(
             of: [UTType.text],
-            delegate: SidebarRowDropDelegate(
-                isTargeted: Binding(get: { dropTargeted }, set: { dropTargeted = $0 }),
+            delegate: SidebarWorkspaceRowDropDelegate(
+                edge: Binding(get: { dropEdge }, set: { dropEdge = $0 }),
+                height: snapshot.pathLabel == nil ? 32 : 40,
                 canAccept: actions.acceptDrop,
                 perform: actions.performDrop
             )
@@ -388,10 +416,59 @@ private struct SidebarRowDropDelegate: DropDelegate {
         isTargeted.wrappedValue = false
     }
 
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: canAccept() ? .move : .forbidden)
+    }
+
     func performDrop(info: DropInfo) -> Bool {
         isTargeted.wrappedValue = false
         return perform()
     }
+}
+
+private struct SidebarWorkspaceRowDropDelegate: DropDelegate {
+    let edge: Binding<SidebarWorkspaceDropEdge?>
+    let height: CGFloat
+    let canAccept: (SidebarWorkspaceDropEdge) -> Bool
+    let perform: (SidebarWorkspaceDropEdge) -> Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        canAccept(resolvedEdge(info))
+    }
+
+    func dropEntered(info: DropInfo) {
+        updateEdge(info)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        updateEdge(info)
+        return DropProposal(operation: edge.wrappedValue == nil ? .forbidden : .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        edge.wrappedValue = nil
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let resolved = resolvedEdge(info)
+        edge.wrappedValue = nil
+        return canAccept(resolved) && perform(resolved)
+    }
+
+    private func updateEdge(_ info: DropInfo) {
+        let resolved = resolvedEdge(info)
+        edge.wrappedValue = canAccept(resolved) ? resolved : nil
+    }
+
+    private func resolvedEdge(_ info: DropInfo) -> SidebarWorkspaceDropEdge {
+        .resolve(locationY: info.location.y, height: height)
+    }
+}
+
+// SwiftUI onDrag 没有结束回调;provider 销毁时清理 ESC 取消和拖出窗口的残留状态。
+private final class WorkspaceDragItemProvider: NSItemProvider {
+    var onEnd: (() -> Void)?
+    deinit { onEnd?() }
 }
 
 // ---- 侧边栏容器(snapshot 边界之上,持有 model 并投影快照) ----
@@ -427,10 +504,16 @@ struct SidebarView: View {
                 .frame(height: 24)
                 .contentShape(Rectangle())
                 .onDrop(of: [UTType.text], isTargeted: nil) { _ in
-                    guard let dragId = model.draggingWorkspaceId else { return false }
-                    model.draggingWorkspaceId = nil
+                    guard let payload = model.draggingWorkspace,
+                          let entry = hub.entries.first(where: { $0.id == payload.serverId })
+                    else { return false }
+                    model.draggingWorkspace = nil
+                    model.activate(serverId: payload.serverId)
                     model.requestReorderWorkspace(
-                        dragId, toGroup: nil, index: model.ungroupedWorkspaces.count)
+                        payload.workspaceId,
+                        toGroup: nil,
+                        index: model.ungroupedWorkspaces(on: entry.connection).count
+                    )
                     return true
                 }
 
@@ -749,14 +832,15 @@ struct SidebarView: View {
                     model.pendingWorkspaceGroupRemoval = group
                 },
                 acceptWorkspaceDrop: {
-                    model.draggingWorkspaceId != nil && model.draggingWorkspaceServerId == entry.id
+                    model.draggingWorkspace?.serverId == entry.id
                 },
                 performWorkspaceDrop: {
-                    guard let dragId = model.draggingWorkspaceId else { return false }
-                    model.draggingWorkspaceId = nil
+                    guard let payload = model.draggingWorkspace,
+                          payload.serverId == entry.id else { return false }
+                    model.draggingWorkspace = nil
                     model.activate(serverId: entry.id)
                     model.requestReorderWorkspace(
-                        dragId, toGroup: group.id, index: group.workspaceIds.count)
+                        payload.workspaceId, toGroup: group.id, index: group.workspaceIds.count)
                     return true
                 }
             )
@@ -842,25 +926,39 @@ struct SidebarView: View {
                     model.requestMoveWorkspace(workspace, to: target)
                 },
                 beginDrag: {
-                    model.draggingWorkspaceId = workspace.id
-                    model.draggingWorkspaceServerId = entry.id
-                    return NSItemProvider(object: workspace.id as NSString)
+                    let payload = WorkspaceDragPayload(workspaceId: workspace.id, serverId: entry.id)
+                    model.draggingWorkspace = payload
+                    let provider = WorkspaceDragItemProvider(object: workspace.id as NSString)
+                    provider.onEnd = { Task { @MainActor in model.endWorkspaceDrag(payload) } }
+                    return provider
                 },
-                acceptDrop: {
-                    model.draggingWorkspaceId != nil && model.draggingWorkspaceId != workspace.id
-                        && model.draggingWorkspaceServerId == entry.id
-                },
-                performDrop: {
-                    guard let dragId = model.draggingWorkspaceId else { return false }
-                    model.draggingWorkspaceId = nil
-                    model.activate(serverId: entry.id)
-                    // 落点 = 目标行之前;index 按"移除自己之后"的容器序列计算
+                acceptDrop: { edge in
+                    guard let payload = model.draggingWorkspace,
+                          payload.serverId == entry.id else { return false }
                     let container = group.map { model.workspaces(in: $0, on: connection) }
                         ?? model.ungroupedWorkspaces(on: connection)
-                    let index = container
-                        .filter { $0.id != dragId }
-                        .firstIndex { $0.id == workspace.id } ?? container.count
-                    model.requestReorderWorkspace(dragId, toGroup: group?.id, index: index)
+                    return SidebarWorkspaceDropPlanner.insertionIndex(
+                        draggedWorkspaceId: payload.workspaceId,
+                        targetWorkspaceId: workspace.id,
+                        orderedWorkspaceIds: container.map(\.id),
+                        edge: edge
+                    ) != nil
+                },
+                performDrop: { edge in
+                    guard let payload = model.draggingWorkspace,
+                          payload.serverId == entry.id else { return false }
+                    let container = group.map { model.workspaces(in: $0, on: connection) }
+                        ?? model.ungroupedWorkspaces(on: connection)
+                    guard let index = SidebarWorkspaceDropPlanner.insertionIndex(
+                        draggedWorkspaceId: payload.workspaceId,
+                        targetWorkspaceId: workspace.id,
+                        orderedWorkspaceIds: container.map(\.id),
+                        edge: edge
+                    ) else { return false }
+                    model.draggingWorkspace = nil
+                    model.activate(serverId: entry.id)
+                    model.requestReorderWorkspace(
+                        payload.workspaceId, toGroup: group?.id, index: index)
                     return true
                 }
             )
