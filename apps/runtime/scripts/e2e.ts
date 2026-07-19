@@ -293,6 +293,50 @@ async function main(): Promise<void> {
     assert.equal(fs.readFileSync(workspacesPath, "utf8"), workspaceStateBefore);
     log("workspace session rollback ok");
 
+    // 删除工作区期间不能并发关联新终端，否则删除快照之外的 PTY 会变成不可见孤儿。
+    const raceWorkspace = await client.rpc<Workspace>("workspace.create", {
+      name: "Workspace Delete Race",
+    });
+    const raceSession = await client.rpc<Session>("session.create", {
+      workspaceId: raceWorkspace.id,
+      command: "trap '' HUP TERM INT; while true; do sleep 1; done",
+      cols: 80,
+      rows: 24,
+    });
+    const removingRaceWorkspace = client.rpc("workspace.remove", {
+      workspaceId: raceWorkspace.id,
+      force: true,
+    });
+    assert.equal(
+      await Promise.race([
+        removingRaceWorkspace.then(() => "removed" as const),
+        sleep(100).then(() => "pending" as const),
+      ]),
+      "pending",
+      "race fixture must keep workspace removal in flight",
+    );
+    await assert.rejects(
+      client.rpc("session.create", {
+        workspaceId: raceWorkspace.id,
+        command: "/bin/sh",
+        cols: 80,
+        rows: 24,
+      }),
+      /workspace not found/,
+    );
+    await removingRaceWorkspace;
+    assert.equal(
+      (await client.rpc<Workspace[]>("workspace.list")).some(
+        (item) => item.id === raceWorkspace.id,
+      ),
+      false,
+    );
+    assert.equal(
+      (await client.rpc<Session[]>("session.list")).some((item) => item.id === raceSession.id),
+      false,
+    );
+    log("workspace deletion serializes session creation");
+
     // 会话:显式 cwd 指到 fixture 仓库,跑 /bin/sh(避免用户 shell 配置噪音)
     const session = await client.rpc<Session>("session.create", {
       workspaceId: updatedWorkspace.id,

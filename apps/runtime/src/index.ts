@@ -132,6 +132,8 @@ async function main(): Promise<void> {
     runExclusiveControl(`session:${sessionId}`, task);
   const runSessionSize = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
     runExclusiveControl(`size:${sessionId}`, task);
+  const runWorkspaceMutation = <T>(workspaceId: string, task: () => T | Promise<T>): Promise<T> =>
+    runExclusiveControl(`workspace:${workspaceId}`, task);
   const runComputerControl = <T>(task: () => T | Promise<T>): Promise<T> =>
     runExclusiveControl("computer", task);
   const requireActiveDevice = (conn: Conn): NonNullable<Conn["device"]> => {
@@ -234,84 +236,90 @@ async function main(): Promise<void> {
       emitRuntimeEvent("workspace.layoutChanged", { workspaceId, rev });
       return { rev };
     },
-    "workspace.remove": async (_conn, { workspaceId, force }) => {
-      const workspace = workspaces.get(workspaceId);
-      if (!workspace) throw new Error("workspace not found");
-      const sessions = await daemon.request<Session[]>("session.list");
-      const hasActiveSessions = sessions.some(
-        (session) => session.alive && workspace.sessionIds.includes(session.id),
-      );
-      if (hasActiveSessions && !force) {
-        throw new Error("workspace has active sessions");
-      }
-      await Promise.all(
-        workspace.sessionIds.map((sessionId) =>
-          // 旧 daemon 尚无 remove 时退回 kill；普通进程仍会退出，别的工作区不受影响。
-          removeDaemonSession(daemon, sessionId),
-        ),
-      );
-      for (const sessionId of workspace.sessionIds) {
-        pendingFocusClaims.delete(sessionId);
-        focusOwners.delete(sessionId);
-        sessionSizes.delete(sessionId);
-        appliedSizes.delete(sessionId);
-      }
-      workspaces.remove(workspaceId);
-      emitRuntimeEvent("workspace.removed", { workspaceId });
-      return { removed: true };
-    },
+    "workspace.remove": (_conn, { workspaceId, force }) =>
+      runWorkspaceMutation(workspaceId, async () => {
+        const workspace = workspaces.get(workspaceId);
+        if (!workspace) throw new Error("workspace not found");
+        const sessions = await daemon.request<Session[]>("session.list");
+        const hasActiveSessions = sessions.some(
+          (session) => session.alive && workspace.sessionIds.includes(session.id),
+        );
+        if (hasActiveSessions && !force) {
+          throw new Error("workspace has active sessions");
+        }
+        await Promise.all(
+          workspace.sessionIds.map((sessionId) =>
+            // 旧 daemon 尚无 remove 时退回 kill；普通进程仍会退出，别的工作区不受影响。
+            removeDaemonSession(daemon, sessionId),
+          ),
+        );
+        for (const sessionId of workspace.sessionIds) {
+          pendingFocusClaims.delete(sessionId);
+          focusOwners.delete(sessionId);
+          sessionSizes.delete(sessionId);
+          appliedSizes.delete(sessionId);
+        }
+        workspaces.remove(workspaceId);
+        emitRuntimeEvent("workspace.removed", { workspaceId });
+        return { removed: true };
+      }),
     "session.create": async (_conn, params) => {
-      const workspace = params.workspaceId ? workspaces.get(params.workspaceId) : null;
-      if (params.workspaceId && !workspace) throw new Error("workspace not found");
-      // 路径遵循既定事实:显式 cwd > 继承源会话的实时目录 > 家目录
-      let cwd = params.cwd;
-      if (!cwd && params.inheritCwdFrom) {
+      const create = async (): Promise<Session> => {
+        const workspace = params.workspaceId ? workspaces.get(params.workspaceId) : null;
+        if (params.workspaceId && !workspace) throw new Error("workspace not found");
+        // 路径遵循既定事实:显式 cwd > 继承源会话的实时目录 > 家目录
+        let cwd = params.cwd;
+        if (!cwd && params.inheritCwdFrom) {
+          try {
+            cwd = await daemon
+              .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
+              .then((result) => result.cwd ?? undefined);
+          } catch (error) {
+            if ((error as Error).message === "unknown method session.cwd") {
+              throw new Error(
+                "terminal daemon is outdated; close existing terminals, then restart the server Mac",
+              );
+            }
+            throw error;
+          }
+          if (!cwd) throw new Error("source terminal working directory is unavailable");
+        }
+        const { workspaceId, inheritCwdFrom, ...daemonParams } = params;
+        const sessionId = crypto.randomUUID();
+        let associated = false;
+        creatingSessionIds.add(sessionId);
         try {
-          cwd = await daemon
-            .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
-            .then((result) => result.cwd ?? undefined);
+          if (workspaceId) {
+            workspaces.addSession(workspaceId, sessionId);
+            associated = true;
+          }
+          const daemonCreateParams = {
+            ...daemonParams,
+            id: sessionId,
+            cwd: cwd ?? os.homedir(),
+          };
+          const { session } = await daemon.request<{ session: Session; handle: number }>(
+            "session.createOwned",
+            daemonCreateParams,
+          );
+          return session;
         } catch (error) {
-          if ((error as Error).message === "unknown method session.cwd") {
+          if (workspaceId && associated && !daemonMayHaveCreatedSession(error)) {
+            workspaces.removeSession(workspaceId, sessionId);
+          }
+          if ((error as Error).message === "unknown method session.createOwned") {
             throw new Error(
               "terminal daemon is outdated; close existing terminals, then restart the server Mac",
             );
           }
           throw error;
+        } finally {
+          creatingSessionIds.delete(sessionId);
         }
-        if (!cwd) throw new Error("source terminal working directory is unavailable");
-      }
-      const { workspaceId, inheritCwdFrom, ...daemonParams } = params;
-      const sessionId = crypto.randomUUID();
-      let associated = false;
-      creatingSessionIds.add(sessionId);
-      try {
-        if (workspaceId) {
-          workspaces.addSession(workspaceId, sessionId);
-          associated = true;
-        }
-        const daemonCreateParams = {
-          ...daemonParams,
-          id: sessionId,
-          cwd: cwd ?? os.homedir(),
-        };
-        const { session } = await daemon.request<{ session: Session; handle: number }>(
-          "session.createOwned",
-          daemonCreateParams,
-        );
-        return session;
-      } catch (error) {
-        if (workspaceId && associated && !daemonMayHaveCreatedSession(error)) {
-          workspaces.removeSession(workspaceId, sessionId);
-        }
-        if ((error as Error).message === "unknown method session.createOwned") {
-          throw new Error(
-            "terminal daemon is outdated; close existing terminals, then restart the server Mac",
-          );
-        }
-        throw error;
-      } finally {
-        creatingSessionIds.delete(sessionId);
-      }
+      };
+      return params.workspaceId
+        ? runWorkspaceMutation(params.workspaceId, create)
+        : create();
     },
     "session.list": () => daemon.request<Session[]>("session.list"),
     "session.claimFocus": (conn, { sessionId, force }) =>
