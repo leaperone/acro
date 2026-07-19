@@ -5,20 +5,26 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// 拖到窗格身上的落点区域:边缘 22% 分屏,中间并入标签组
-private enum PaneDropZone: Equatable {
+private extension UTType {
+    static let acroTabTransfer = UTType(
+        exportedAs: "one.leaper.acro.tab-transfer",
+        conformingTo: .data
+    )
+}
+
+// 拖到窗格身上的落点区域:沿用 Bonsplit 的 25% / 最少 80pt 边缘分屏区。
+enum PaneDropZone: Equatable {
     case center
     case left, right, top, bottom
 
     static func zone(at point: CGPoint, in size: CGSize) -> PaneDropZone {
         guard size.width > 0, size.height > 0 else { return .center }
-        let x = point.x / size.width
-        let y = point.y / size.height
-        let edge = 0.22
-        if x < edge { return .left }
-        if x > 1 - edge { return .right }
-        if y < edge { return .top }
-        if y > 1 - edge { return .bottom }
+        let horizontalEdge = max(80, size.width * 0.25)
+        let verticalEdge = max(80, size.height * 0.25)
+        if point.x < horizontalEdge { return .left }
+        if point.x > size.width - horizontalEdge { return .right }
+        if point.y < verticalEdge { return .top }
+        if point.y > size.height - verticalEdge { return .bottom }
         return .center
     }
 
@@ -35,12 +41,43 @@ private enum PaneDropZone: Equatable {
     }
 
     func highlightRect(in size: CGSize) -> CGRect {
+        let padding: CGFloat = 4
         switch self {
-        case .center: CGRect(origin: .zero, size: size)
-        case .left: CGRect(x: 0, y: 0, width: size.width / 2, height: size.height)
-        case .right: CGRect(x: size.width / 2, y: 0, width: size.width / 2, height: size.height)
-        case .top: CGRect(x: 0, y: 0, width: size.width, height: size.height / 2)
-        case .bottom: CGRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2)
+        case .center:
+            return CGRect(
+                x: padding,
+                y: padding,
+                width: max(0, size.width - padding * 2),
+                height: max(0, size.height - padding * 2)
+            )
+        case .left:
+            return CGRect(
+                x: padding,
+                y: padding,
+                width: max(0, size.width / 2 - padding),
+                height: max(0, size.height - padding * 2)
+            )
+        case .right:
+            return CGRect(
+                x: size.width / 2,
+                y: padding,
+                width: max(0, size.width / 2 - padding),
+                height: max(0, size.height - padding * 2)
+            )
+        case .top:
+            return CGRect(
+                x: padding,
+                y: padding,
+                width: max(0, size.width - padding * 2),
+                height: max(0, size.height / 2 - padding)
+            )
+        case .bottom:
+            return CGRect(
+                x: padding,
+                y: size.height / 2,
+                width: max(0, size.width - padding * 2),
+                height: max(0, size.height / 2 - padding)
+            )
         }
     }
 }
@@ -195,17 +232,54 @@ private struct PaneView: View {
                     ForEach(pane.sessionIds, id: \.self) { sessionId in
                         terminal(sessionId: sessionId)
                             .opacity(pane.selectedSessionId == sessionId ? 1 : 0)
-                            .allowsHitTesting(pane.selectedSessionId == sessionId)
+                            .allowsHitTesting(
+                                model.draggingTab == nil && pane.selectedSessionId == sessionId
+                            )
                     }
                     if pane.sessionIds.isEmpty {
                         ContentUnavailableView("终端已结束", systemImage: "terminal")
                     }
 
+                    // 常驻 drop layer:内嵌 AppKit 终端会抢走容器级拖拽目标。
+                    // Bonsplit 同样把透明 drop layer 放在内容最上层。
+                    Color.clear
+                        .onDrop(
+                            of: [.acroTabTransfer],
+                            delegate: PaneBodyDropDelegate(
+                                size: { geometry.size },
+                                zone: Binding(get: { dropZone }, set: { dropZone = $0 }),
+                                canAccept: {
+                                    guard let payload = model.draggingTab,
+                                          model.validDrag(payload) else {
+                                        return false
+                                    }
+                                    return !(payload.sourcePaneId == pane.id
+                                        && pane.sessionIds == [payload.sessionId])
+                                },
+                                perform: { zone in
+                                    guard let payload = model.draggingTab else { return false }
+                                    model.draggingTab = nil
+                                    if let direction = zone.direction {
+                                        model.moveTabToSplit(
+                                            payload,
+                                            ofPane: pane.id,
+                                            direction: direction,
+                                            newPaneFirst: zone.newPaneFirst
+                                        )
+                                    } else {
+                                        model.moveTab(payload, toPane: pane.id, at: nil)
+                                    }
+                                    return true
+                                }
+                            )
+                        )
+
                     if let dropZone {
-                        Rectangle()
-                            .fill(Color.accentColor.opacity(0.16))
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.accentColor.opacity(0.25))
                             .overlay(
-                                Rectangle().stroke(Color.accentColor.opacity(0.6), lineWidth: 1.5)
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.accentColor, lineWidth: 2)
                             )
                             .frame(
                                 width: dropZone.highlightRect(in: geometry.size).width,
@@ -216,38 +290,9 @@ private struct PaneView: View {
                                 y: dropZone.highlightRect(in: geometry.size).midY
                             )
                             .allowsHitTesting(false)
+                            .animation(.spring(duration: 0.25, bounce: 0.15), value: dropZone)
                     }
                 }
-                .onDrop(
-                    of: [UTType.text],
-                    delegate: PaneBodyDropDelegate(
-                        size: { geometry.size },
-                        zone: Binding(get: { dropZone }, set: { dropZone = $0 }),
-                        canAccept: {
-                            guard let payload = model.draggingTab, model.validDrag(payload) else {
-                                return false
-                            }
-                            // 单标签窗格拖到自己身上没有可执行动作,不给高亮承诺
-                            return !(payload.sourcePaneId == pane.id
-                                && pane.sessionIds == [payload.sessionId])
-                        },
-                        perform: { zone in
-                            guard let payload = model.draggingTab else { return false }
-                            model.draggingTab = nil
-                            if let direction = zone.direction {
-                                model.moveTabToSplit(
-                                    payload,
-                                    ofPane: pane.id,
-                                    direction: direction,
-                                    newPaneFirst: zone.newPaneFirst
-                                )
-                            } else {
-                                model.moveTab(payload, toPane: pane.id, at: nil)
-                            }
-                            return true
-                        }
-                    )
-                )
             }
         }
         // 不设 minWidth/minHeight:RatioSplitView 用定长 frame 排版,
@@ -310,7 +355,7 @@ private struct PaneTabBar: View {
         // 嵌套 NSHostingView 会破坏 .onDrag 的拖拽会话,不要再包一层
         tabBarContent
             .onDrop(
-                of: [UTType.text],
+                of: [.acroTabTransfer],
                 delegate: TabBarDropDelegate(
                     canAccept: { model.validDrag(model.draggingTab) },
                     perform: {
@@ -322,29 +367,30 @@ private struct PaneTabBar: View {
                     }
                 )
             )
-        .frame(height: 28)
-        .background(.bar)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(focused ? Color.accentColor.opacity(0.8) : Color(nsColor: .separatorColor))
-                .frame(height: 1)
-        }
+            .frame(height: 28)
+            .background {
+                ZStack(alignment: .bottom) {
+                    Rectangle().fill(.bar)
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(height: 1)
+                }
+            }
     }
 
     private var tabBarContent: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             if trafficLightClearance {
                 WindowDragHandle()
-                    .frame(width: 70)
+                    .frame(width: 80)
                     .frame(maxHeight: .infinity)
             }
             ScrollView(.horizontal) {
-                HStack(spacing: 3) {
+                HStack(spacing: 0) {
                     ForEach(Array(pane.sessionIds.enumerated()), id: \.element) { index, sessionId in
                         tab(sessionId: sessionId, index: index)
                     }
                 }
-                .padding(.horizontal, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.never)
@@ -392,7 +438,15 @@ private struct PaneTabBar: View {
             beginDrag: {
                 let payload = TabDragPayload(sessionId: sessionId, sourcePaneId: pane.id)
                 model.draggingTab = payload
-                let provider = TabDragItemProvider(object: sessionId as NSString)
+                let provider = TabDragItemProvider()
+                let data = Data(sessionId.utf8)
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: UTType.acroTabTransfer.identifier,
+                    visibility: .ownProcess
+                ) { completion in
+                    completion(data, nil)
+                    return nil
+                }
                 provider.onEnd = { Task { @MainActor in model.endTabDrag(payload) } }
                 return provider
             },
@@ -427,56 +481,65 @@ private struct PaneTabItem: View {
     @State private var dropTargeted = false
 
     var body: some View {
-        HStack(spacing: 2) {
-            // 选择区域用 Button:mouse-up 触发,不与 onDrag 的 mouse-down 抢事件
-            Button(action: select) {
-                HStack(spacing: 5) {
-                    Image(systemName: "terminal.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(selected && focused ? Color.accentColor : .secondary)
-                    Text(title)
-                        .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
-                        .lineLimit(1)
-                        .foregroundStyle(selected ? .primary : .secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+        HStack(spacing: 6) {
+            Image(systemName: "terminal.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(selected ? .primary : .secondary)
+
+            Text(title)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .foregroundStyle(selected ? .primary : .secondary)
 
             ZStack {
                 if let shortcutHint {
                     ShortcutHintPill(text: shortcutHint, fontSize: 8)
-                } else {
+                } else if selected || hovered {
                     Button(action: kill) {
                         Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .frame(width: 14, height: 14)
+                            .font(.system(size: 9, weight: .semibold))
+                            .frame(width: 16, height: 16)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
-                    .opacity(hovered ? 1 : 0)
                     .help("关闭标签(终止终端)")
                     .accessibilityLabel("关闭标签 \(title)")
                 }
             }
-            .frame(width: 30, height: 18)
+            .frame(width: 28, height: 20)
         }
-        .padding(.leading, 7)
-        .padding(.trailing, 3)
-        .frame(height: 21)
+        .padding(.horizontal, 6)
+        .frame(minWidth: 48, maxWidth: 220, minHeight: 28, maxHeight: 28)
+        .fixedSize(horizontal: true, vertical: false)
         .background(
             selected
-                ? AnyShapeStyle(Color.primary.opacity(0.08))
-                : hovered ? AnyShapeStyle(Color.primary.opacity(0.04)) : AnyShapeStyle(Color.clear),
-            in: RoundedRectangle(cornerRadius: 4)
+                ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
+                : hovered
+                    ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                    : AnyShapeStyle(Color.clear)
         )
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+                .padding(.bottom, selected ? 1 : 0)
+        }
+        .overlay(alignment: .top) {
+            if selected {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .saturation(focused ? 1 : 0)
+                    .frame(height: 1.5)
+                    .padding(.trailing, 1)
+            }
+        }
         .overlay(alignment: .leading) {
             if dropTargeted {
-                RoundedRectangle(cornerRadius: 1)
+                Rectangle()
                     .fill(Color.accentColor)
-                    .frame(width: 2, height: 18)
-                    .offset(x: -2.5)
+                    .frame(width: 2, height: 20)
             }
         }
         .onHover { hovered = $0 }
@@ -486,9 +549,11 @@ private struct PaneTabItem: View {
             Divider()
             Button("关闭标签(终止终端)", role: .destructive, action: kill)
         }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: select)
         .onDrag(beginDrag)
         .onDrop(
-            of: [UTType.text],
+            of: [.acroTabTransfer],
             delegate: TabInsertDropDelegate(
                 isTargeted: Binding(get: { dropTargeted }, set: { dropTargeted = $0 }),
                 canAccept: acceptDrop,
