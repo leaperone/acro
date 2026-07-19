@@ -43,3 +43,9 @@ struct SessionFocus: Codable, Equatable, Hashable, Sendable {
     let deviceId: String
     let deviceName: String
 }
+
+struct BrowserControl: Codable, Equatable, Hashable, Sendable {
+    let browserId: String
+    let deviceId: String
+    let deviceName: String
+}
