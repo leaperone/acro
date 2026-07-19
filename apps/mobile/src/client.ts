@@ -6,6 +6,7 @@ import {
   decodePairingOffer,
   type E2eeSession,
   type Frame,
+  pairingWebSocketUrl,
 } from "@acro/protocol";
 
 // 一个远程 Runtime = 一个 token + 多个入口(LAN 直连、FRP 公网等)。
@@ -69,7 +70,7 @@ interface Channel {
 // 单个入口:WS 连接 + E2EE 握手 + 信道内认证
 function connectEndpoint(endpoint: string, config: ServerConfig): Promise<Channel> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://${endpoint}/ws`);
+    const ws = new WebSocket(pairingWebSocketUrl(endpoint, config.token));
     ws.binaryType = "arraybuffer";
     const handshake = new ClientHandshake(b64ToBytes(config.pub));
     let session: E2eeSession | null = null;

@@ -7,6 +7,7 @@ import {
   encodeInFrame,
   type Frame,
   FRAME_OUT,
+  pairingWebSocketUrl,
   type PairingOffer,
 } from "@acro/protocol";
 
@@ -29,7 +30,7 @@ export class E2eClient {
   async connect(offer: PairingOffer, token = offer.token): Promise<void> {
     const endpoint =
       offer.endpoints.find((value) => value.startsWith("127.0.0.1:")) ?? offer.endpoints[0]!;
-    this.ws = new WebSocket(`ws://${endpoint}/ws`);
+    this.ws = new WebSocket(pairingWebSocketUrl(endpoint, token));
     const handshake = new ClientHandshake(b64ToBytes(offer.pub));
     await new Promise<void>((resolve, reject) => {
       let settled = false;

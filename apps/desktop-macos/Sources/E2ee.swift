@@ -36,6 +36,14 @@ struct PairingOffer: Codable {
     }
 }
 
+func pairingAdmissionId(_ token: String) -> String {
+    SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
+}
+
+func pairingWebSocketURL(endpoint: String, token: String) -> URL? {
+    URL(string: "ws://\(endpoint)/ws?grant=\(pairingAdmissionId(token))")
+}
+
 private final class DirectionCipher {
     private let key: SymmetricKey
     private var counter: UInt64 = 0

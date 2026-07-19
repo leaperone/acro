@@ -3,6 +3,7 @@
 // token 与服务端公钥由用户带外(复制粘贴/扫码)传输,不走明文网络。
 
 import { z } from "zod";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { b64ToBytes, bytesToB64 } from "./e2ee.ts";
 
 export const PAIRING_VERSION = 1;
@@ -48,6 +49,19 @@ export function offerServerPub(offer: PairingOffer): Uint8Array {
   const pub = b64ToBytes(offer.pub);
   if (pub.length !== 32) throw new Error("bad server public key in pairing offer");
   return pub;
+}
+
+// 非认证性的升级提示：只用于在分配 WebSocket 状态前找到授权池；真正认证仍在 E2EE 内完成。
+export function pairingAdmissionId(token: string): string {
+  let hex = "";
+  for (const byte of sha256(new TextEncoder().encode(token))) {
+    hex += byte.toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+export function pairingWebSocketUrl(endpoint: string, token: string): string {
+  return `ws://${endpoint}/ws?grant=${pairingAdmissionId(token)}`;
 }
 
 export { bytesToB64 as pubToB64 };

@@ -6,7 +6,13 @@ import {
   generateKeyPair,
   bytesToB64,
 } from "./e2ee.ts";
-import { decodePairingOffer, encodePairingOffer, offerServerPub } from "./pairing.ts";
+import {
+  decodePairingOffer,
+  encodePairingOffer,
+  offerServerPub,
+  pairingAdmissionId,
+  pairingWebSocketUrl,
+} from "./pairing.ts";
 
 function handshakePair() {
   const serverKeys = generateKeyPair();
@@ -79,4 +85,15 @@ test("配对码编解码往返", () => {
   // 裸负载(去掉 URL 前缀)也能解
   assert.deepEqual(decodePairingOffer(encoded.slice("acro://pair?c=".length)), offer);
   assert.equal(offerServerPub(offer).length, 32);
+});
+
+test("WebSocket 升级提示只暴露 token 哈希", () => {
+  const token = "abc";
+  const admissionId = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  assert.equal(pairingAdmissionId(token), admissionId);
+  assert.equal(
+    pairingWebSocketUrl("runtime.example:8790", token),
+    `ws://runtime.example:8790/ws?grant=${admissionId}`,
+  );
+  assert.doesNotMatch(pairingWebSocketUrl("runtime.example:8790", token), /abc/);
 });

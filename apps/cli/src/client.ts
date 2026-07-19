@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
-import type { MethodName, MethodParams, MethodResult, Session } from "@acro/protocol";
+import {
+  pairingWebSocketUrl,
+  type MethodName,
+  type MethodParams,
+  type MethodResult,
+  type Session,
+} from "@acro/protocol";
 import { decodeFrame, type Frame } from "@acro/protocol/frames";
 // e2ee 不引 zod:attach 冷启动路径保持轻量
 import { b64ToBytes, ClientHandshake, type E2eeSession } from "@acro/protocol/e2ee";
@@ -90,7 +96,7 @@ interface Channel {
 // 单个入口:WS 连接 + E2EE 握手 + 信道内认证
 function connectEndpoint(endpoint: string, server: ServerEntry): Promise<Channel> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://${endpoint}/ws`);
+    const ws = new WebSocket(pairingWebSocketUrl(endpoint, server.token));
     const handshake = new ClientHandshake(b64ToBytes(server.pub));
     let session: E2eeSession | null = null;
     const timer = setTimeout(() => {
