@@ -11,6 +11,7 @@ import {
   FRAME_IN,
   type HelloMessage,
   methods,
+  pairingAdmissionId,
   RpcRequest,
   ServerHandshake,
 } from "@acro/protocol";
@@ -32,6 +33,8 @@ export interface Conn {
   // E2EE 握手完成后建立;认证前只允许 auth 消息
   session: E2eeSession | null;
   device: Device | null;
+  // 升级前识别到的授权提示；不是认证凭据，认证后必须与信道内 token 对上。
+  admissionId: string | null;
   // channel(=daemon handle) -> 附着状态。attachSeq 之前的输出已包含在快照里。
   attached: Map<number, { sessionId: string; attachSeq: number }>;
   // 已附着的画面 channel -> surface id，用于按连接释放最后一个订阅者。
@@ -49,12 +52,40 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 // 握手 + 认证必须在此时限内完成(取自 orca 的 PRE_AUTH_TIMEOUT)
 const PRE_AUTH_TIMEOUT_MS = 10_000;
 // 未认证连接也会占用 socket、握手状态和定时器；在升级前拒绝，避免公开入口被耗尽。
-const MAX_WS_CONNECTIONS = 128;
+export const MAX_WS_CONNECTIONS = 128;
+// 旧客户端或随机请求只能占少量兼容席位；已知授权各自有独立握手池。
+export const MAX_UNKNOWN_PREAUTH_CONNECTIONS = 8;
+export const MAX_PREAUTH_CONNECTIONS_PER_ADMISSION = 16;
 // 布局控制消息上限 256KB,终端输入通常远小于 1MB;更大的单帧只会放大内存攻击面。
 const MAX_INBOUND_BYTES = 1024 * 1024;
 // 慢客户端不能让 ws 内部发送队列无限增长。画面可以丢帧;终端必须断线后靠快照恢复。
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const SEALED_OVERHEAD_BYTES = 17;
+
+export type WebSocketAdmissionFailure = "total" | "unknown" | "grant" | null;
+
+export function websocketAdmissionFailure(
+  conns: Iterable<{ device: Device | null; admissionId: string | null }>,
+  admissionId: string | null,
+): WebSocketAdmissionFailure {
+  let total = 0;
+  let matchingPreAuth = 0;
+  for (const conn of conns) {
+    total += 1;
+    if (conn.device) continue;
+    if (conn.admissionId === admissionId) matchingPreAuth += 1;
+  }
+  if (total >= MAX_WS_CONNECTIONS) return "total";
+  if (admissionId === null && matchingPreAuth >= MAX_UNKNOWN_PREAUTH_CONNECTIONS) return "unknown";
+  if (admissionId !== null && matchingPreAuth >= MAX_PREAUTH_CONNECTIONS_PER_ADMISSION) {
+    return "grant";
+  }
+  return null;
+}
+
+export function admissionMatchesToken(admissionId: string | null, token: string): boolean {
+  return admissionId === null || pairingAdmissionId(token) === admissionId;
+}
 
 export type Handlers = {
   [M in keyof typeof methods]: (
@@ -110,7 +141,12 @@ export class Gateway {
       socket.destroy();
       return;
     }
-    if (this.conns.size >= MAX_WS_CONNECTIONS) {
+    const requestedAdmissionId = url.searchParams.get("grant");
+    const admissionId =
+      requestedAdmissionId && this.registry.hasAdmissionId(requestedAdmissionId)
+        ? requestedAdmissionId
+        : null;
+    if (websocketAdmissionFailure(this.conns, admissionId)) {
       socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
@@ -121,6 +157,7 @@ export class Gateway {
         abortController: new AbortController(),
         session: null,
         device: null,
+        admissionId,
         attached: new Map(),
         browserChannels: new Map(),
         simChannels: new Map(),
@@ -263,6 +300,7 @@ export class Gateway {
         // 认证前只接受 auth
         if (opened.kind !== "text") throw new Error("expected auth");
         const auth = E2eeAuth.parse(JSON.parse(opened.text));
+        if (!admissionMatchesToken(conn.admissionId, auth.token)) throw new Error("unauthorized");
         const device = this.registry.auth(auth.token);
         if (!device) throw new Error("unauthorized");
         conn.device = device;

@@ -75,6 +75,14 @@ final class E2eeInteropTests: XCTestCase {
         XCTAssertEqual(offer.endpoints, ["例子.test:8790"])
         XCTAssertEqual(Data(base64Encoded: offer.pub), expectedServerPub)
     }
+
+    func testPairingAdmissionHintDoesNotExposeToken() throws {
+        let admissionId = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        XCTAssertEqual(pairingAdmissionId("abc"), admissionId)
+        let url = try XCTUnwrap(pairingWebSocketURL(endpoint: "runtime.example:8790", token: "abc"))
+        XCTAssertEqual(url.absoluteString, "ws://runtime.example:8790/ws?grant=\(admissionId)")
+        XCTAssertFalse(url.absoluteString.contains("abc"))
+    }
 }
 
 private extension Data {

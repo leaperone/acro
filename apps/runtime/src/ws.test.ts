@@ -3,8 +3,18 @@ import test from "node:test";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket } from "ws";
+import { pairingAdmissionId } from "@acro/protocol";
 import type { DeviceRegistry } from "./devices.ts";
-import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.ts";
+import {
+  admissionMatchesToken,
+  Gateway,
+  MAX_PREAUTH_CONNECTIONS_PER_ADMISSION,
+  MAX_UNKNOWN_PREAUTH_CONNECTIONS,
+  removeSurfaceChannels,
+  websocketAdmissionFailure,
+  type Conn,
+  type Handlers,
+} from "./ws.ts";
 
 function fixture(bufferedAmount: number) {
   let sealed = 0;
@@ -31,6 +41,7 @@ function fixture(bufferedAmount: number) {
       },
     },
     device: { id: "device", name: "Device", createdAt: "", lastSeenAt: null },
+    admissionId: null,
     attached: new Map(),
     browserChannels: new Map(),
     simChannels: new Map(),
@@ -128,6 +139,33 @@ test("websocket upgrades are rejected before allocating beyond the connection ca
   } finally {
     close();
   }
+});
+
+test("unknown pre-auth sockets cannot consume known grant capacity", () => {
+  const unknown = Array.from({ length: MAX_UNKNOWN_PREAUTH_CONNECTIONS }, () => ({
+    device: null,
+    admissionId: null,
+  }));
+  assert.equal(websocketAdmissionFailure(unknown, null), "unknown");
+  assert.equal(websocketAdmissionFailure(unknown, "a".repeat(64)), null);
+});
+
+test("each known grant has an independent pre-auth connection cap", () => {
+  const admissionId = "a".repeat(64);
+  const conns = Array.from({ length: MAX_PREAUTH_CONNECTIONS_PER_ADMISSION }, () => ({
+    device: null,
+    admissionId,
+  }));
+  assert.equal(websocketAdmissionFailure(conns, admissionId), "grant");
+  assert.equal(websocketAdmissionFailure(conns, "b".repeat(64)), null);
+});
+
+test("known admission hints must match the encrypted auth token", () => {
+  const token = "t".repeat(64);
+  const admissionId = pairingAdmissionId(token);
+  assert.equal(admissionMatchesToken(admissionId, token), true);
+  assert.equal(admissionMatchesToken(admissionId, "x".repeat(64)), false);
+  assert.equal(admissionMatchesToken(null, token), true);
 });
 
 test("surface detach removes only the requested surface", () => {

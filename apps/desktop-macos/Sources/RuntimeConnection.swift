@@ -250,7 +250,7 @@ final class RuntimeConnection: ObservableObject {
         guard let server, !server.endpoints.isEmpty else { return }
         let ordered = server.orderedEndpoints
         let endpoint = ordered[endpointIndex % ordered.count]
-        guard let url = URL(string: "ws://\(endpoint)/ws"),
+        guard let url = pairingWebSocketURL(endpoint: endpoint, token: server.token),
               let handshake = try? E2eeClientHandshake(expectedServerPubB64: server.pub)
         else { return }
         generation += 1

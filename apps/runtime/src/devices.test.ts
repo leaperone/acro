@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pairingAdmissionId } from "@acro/protocol";
 import { DeviceRegistry } from "./devices.ts";
 
 test("device mutations replace memory only after state persists", () => {
@@ -66,6 +67,20 @@ test("legacy device state without a local marker remains readable", () => {
       },
     ]);
     assert.deepEqual(registry.removeLocalGrants(), []);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("device admission ids recognize only persisted grants", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-devices-admission-"));
+  const file = path.join(directory, "devices.json");
+  try {
+    const registry = new DeviceRegistry(file);
+    const grant = registry.createGrant("test");
+    assert.equal(registry.hasAdmissionId(pairingAdmissionId(grant.token)), true);
+    assert.equal(registry.hasAdmissionId("0".repeat(64)), false);
+    assert.equal(registry.hasAdmissionId("not-a-hash"), false);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

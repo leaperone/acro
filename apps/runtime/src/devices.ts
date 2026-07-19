@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Device as DeviceSchema, type Device } from "@acro/protocol";
+import { Device as DeviceSchema, pairingAdmissionId, type Device } from "@acro/protocol";
 import { z } from "zod";
 import { paths } from "./paths.ts";
 import { readJson, writeJsonAtomic } from "./store.ts";
@@ -15,10 +15,6 @@ const StoredDevices = z.array(
     local: z.boolean().default(false),
   }),
 );
-
-function sha256(s: string): string {
-  return crypto.createHash("sha256").update(s).digest("hex");
-}
 
 // 访问授权模型(取自 orca 的 runtime access grant):
 // 每个授权 = 一个设备条目 + 一个 token。token 由配对码带外分发,服务端只存哈希。
@@ -57,7 +53,7 @@ export class DeviceRegistry {
       name: name ?? `Runtime ${new Date().toISOString().slice(0, 10)}`,
       createdAt: new Date().toISOString(),
       lastSeenAt: null,
-      tokenHash: sha256(token),
+      tokenHash: pairingAdmissionId(token),
       local,
     };
     const next = [...this.devices, device];
@@ -94,6 +90,13 @@ export class DeviceRegistry {
   findByToken(token: string): Device | null {
     const index = this.findTokenIndex(token);
     return index < 0 ? null : this.publicView(this.devices[index]!);
+  }
+
+  hasAdmissionId(admissionId: string): boolean {
+    return (
+      /^[0-9a-f]{64}$/.test(admissionId) &&
+      this.devices.some((device) => device.tokenHash === admissionId)
+    );
   }
 
   markLocal(deviceId: string): void {
@@ -146,7 +149,7 @@ export class DeviceRegistry {
   }
 
   private findTokenIndex(token: string): number {
-    const hash = Buffer.from(sha256(token), "hex");
+    const hash = Buffer.from(pairingAdmissionId(token), "hex");
     return this.devices.findIndex((device) =>
       crypto.timingSafeEqual(hash, Buffer.from(device.tokenHash, "hex")),
     );

@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import WebSocket from "ws";
 import {
   decodePairingOffer,
   type Session,
@@ -76,6 +77,7 @@ async function main(): Promise<void> {
   fs.mkdirSync(path.join(stateDir, "sessions"), { mode: 0o755 });
   const fixtureRepo = makeFixtureRepo();
   let runtime = startRuntime();
+  const unauthenticatedSockets: WebSocket[] = [];
 
   try {
     await waitHealthy();
@@ -102,6 +104,32 @@ async function main(): Promise<void> {
     assert.ok(offer.endpoints.includes(`127.0.0.1:${PORT}`));
     log("bootstrap offer ok");
 
+    // 公网随机请求只能占兼容池；即使池已满，携带已知授权提示的客户端仍能认证。
+    for (let index = 0; index < 8; index += 1) {
+      unauthenticatedSockets.push(
+        await new Promise<WebSocket>((resolve, reject) => {
+          const socket = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+          socket.once("open", () => resolve(socket));
+          socket.once("error", reject);
+        }),
+      );
+    }
+    await new Promise<void>((resolve, reject) => {
+      const overflow = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+      overflow.once("unexpected-response", (_request, response) => {
+        const status = response.statusCode;
+        response.resume();
+        overflow.terminate();
+        if (status === 503) resolve();
+        else reject(new Error(`unexpected pre-auth overflow status: ${status}`));
+      });
+      overflow.once("open", () => {
+        overflow.terminate();
+        reject(new Error("ninth unknown pre-auth socket was accepted"));
+      });
+      overflow.once("error", reject);
+    });
+
     // 错误 token 必须被断开
     await assert.rejects(
       new Client().connect(offer, "0".repeat(64)),
@@ -111,7 +139,8 @@ async function main(): Promise<void> {
     let client = new Client();
     await client.connect(offer);
     assert.ok(client.deviceId.length > 0);
-    log("e2ee ws connected");
+    for (const socket of unauthenticatedSockets.splice(0)) socket.terminate();
+    log("pre-auth isolation + e2ee ws connected");
 
     // 首个设备认证后 bootstrap 配对码文件必须被清理
     await sleep(200);
@@ -661,6 +690,7 @@ async function main(): Promise<void> {
 
     console.log("\nE2E PASS ✅  配对/Workspace/项目/会话/断线重连/Runtime重启存活 全部通过");
   } finally {
+    for (const socket of unauthenticatedSockets) socket.terminate();
     runtime.kill("SIGTERM");
     // 杀掉测试 daemon
     try {
