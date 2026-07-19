@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type net from "node:net";
 import test from "node:test";
 import { encodeOutFrame } from "@acro/protocol";
 import { DaemonClient } from "./client.ts";
@@ -21,6 +22,7 @@ test("daemon response hooks run before following frames in the same chunk", asyn
             resolve: (value: unknown) => void;
             reject: (error: Error) => void;
             beforeResolve: (value: unknown) => void;
+            timer: NodeJS.Timeout;
           }
         >;
       }
@@ -30,6 +32,7 @@ test("daemon response hooks run before following frames in the same chunk", asyn
       beforeResolve: () => {
         attached = true;
       },
+      timer: setTimeout(() => {}, 1000),
     });
   });
   const response = packJson({ t: "res", id: 1, ok: true, result: { handle: 7, seq: 3 } });
@@ -39,4 +42,26 @@ test("daemon response hooks run before following frames in the same chunk", asyn
 
   assert.deepEqual(await result, { handle: 7, seq: 3 });
   assert.equal(frameSeen, true);
+});
+
+test("daemon requests time out and cannot exceed the pending budget", async () => {
+  const client = new DaemonClient(20, 1);
+  (
+    client as unknown as {
+      socket: net.Socket;
+    }
+  ).socket = {
+    write: (_data: Buffer, callback?: (error?: Error | null) => void) => {
+      callback?.();
+      return true;
+    },
+  } as unknown as net.Socket;
+
+  const blocked = client.request("blocked");
+  await assert.rejects(client.request("overflow"), /queue full/);
+  await assert.rejects(blocked, /daemon timeout: blocked/);
+  assert.equal(
+    (client as unknown as { pending: Map<number, unknown> }).pending.size,
+    0,
+  );
 });

@@ -14,7 +14,11 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   beforeResolve?: ((value: unknown) => void) | undefined;
+  timer: NodeJS.Timeout;
 }
+
+export const DAEMON_REQUEST_TIMEOUT_MS = 15_000;
+export const MAX_PENDING_DAEMON_REQUESTS = 256;
 
 export interface DaemonEvent {
   seq: number;
@@ -29,6 +33,17 @@ export class DaemonClient extends EventEmitter {
   private nextId = 1;
   private pending = new Map<number, Pending>();
   private closed = false;
+  private readonly requestTimeoutMs: number;
+  private readonly maxPending: number;
+
+  constructor(
+    requestTimeoutMs = DAEMON_REQUEST_TIMEOUT_MS,
+    maxPending = MAX_PENDING_DAEMON_REQUESTS,
+  ) {
+    super();
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.maxPending = maxPending;
+  }
 
   static async connect(): Promise<DaemonClient> {
     const client = new DaemonClient();
@@ -70,7 +85,10 @@ export class DaemonClient extends EventEmitter {
     if (this.socket !== socket) return;
     this.socket = null;
     this.reader.reset();
-    for (const p of this.pending.values()) p.reject(new Error("daemon connection lost"));
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error("daemon connection lost"));
+    }
     this.pending.clear();
     this.emit("down");
     if (this.closed) return;
@@ -93,6 +111,7 @@ export class DaemonClient extends EventEmitter {
         const p = this.pending.get(parsed.id);
         if (!p) continue;
         this.pending.delete(parsed.id);
+        clearTimeout(p.timer);
         if (parsed.ok) {
           try {
             p.beforeResolve?.(parsed.result);
@@ -113,20 +132,31 @@ export class DaemonClient extends EventEmitter {
     beforeResolve?: (result: T) => void,
   ): Promise<T> {
     if (!this.socket) return Promise.reject(new Error("daemon not connected"));
+    if (this.pending.size >= this.maxPending) {
+      return Promise.reject(new Error("daemon request queue full"));
+    }
     const id = this.nextId++;
     const socket = this.socket;
     return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        pending.reject(new Error(`daemon timeout: ${method}`));
+      }, this.requestTimeoutMs);
       this.pending.set(id, {
         resolve: resolve as (v: unknown) => void,
         reject,
         beforeResolve: beforeResolve as ((value: unknown) => void) | undefined,
+        timer,
       });
       socket.write(packJson({ t: "req", id, method, params }), (error) => {
         if (!error) return;
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        reject(error);
+        clearTimeout(pending.timer);
+        pending.reject(error);
       });
     });
   }
