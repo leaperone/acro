@@ -284,6 +284,14 @@ async function main(): Promise<void> {
       /workspace has active sessions/,
     );
 
+    await assert.rejects(
+      client.rpc("session.resize", { sessionId: "forged-session", cols: 80, rows: 24 }),
+      /session not attached/,
+    );
+    await assert.rejects(
+      client.rpc("session.resize", { sessionId: session.id, cols: 81, rows: 25 }),
+      /session not attached/,
+    );
     const attach1 = await client.rpc<{ channel: number; snapshot: string; seq: number }>(
       "session.attach",
       { sessionId: session.id },
@@ -423,6 +431,25 @@ async function main(): Promise<void> {
     const regrown = (await client.rpc<Session[]>("session.list")).find((s) => s.id === session.id);
     assert.equal(regrown?.cols, 200, "pty must regrow after the smaller client leaves");
     assert.equal(regrown?.rows, 50, "pty must regrow after the smaller client leaves");
+
+    const deadResize = await client.rpc<Session>("session.create", {
+      command: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    await client.rpc("session.attach", { sessionId: deadResize.id });
+    await client.rpc("session.kill", { sessionId: deadResize.id });
+    const deadResizeDeadline = Date.now() + 5000;
+    while (
+      (await client.rpc<Session[]>("session.list")).find((item) => item.id === deadResize.id)?.alive
+    ) {
+      if (Date.now() > deadResizeDeadline) throw new Error("resize test session did not exit");
+      await sleep(50);
+    }
+    await assert.rejects(
+      client.rpc("session.resize", { sessionId: deadResize.id, cols: 90, rows: 30 }),
+      /session not alive/,
+    );
     log("resize arbitration ok");
 
     // 断开重连:会话必须还在,快照必须包含断开前的输出,且不重发旧帧

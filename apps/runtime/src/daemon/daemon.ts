@@ -604,7 +604,9 @@ const handlers: Record<string, Handler> = {
     };
   },
   "session.resize": (params: { sessionId: string; cols: number; rows: number }) => {
-    live.get(params.sessionId)?.resize(params.cols, params.rows);
+    const session = live.get(params.sessionId);
+    if (!session) throw new Error("session not alive");
+    session.resize(params.cols, params.rows);
     return {};
   },
   "session.kill": (params: { sessionId: string }) => {
