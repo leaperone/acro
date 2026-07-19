@@ -703,7 +703,7 @@ private struct ShortcutSettingsPane: View {
             feedback = "快捷键至少需要 ⌘、⌥ 或 ⌃ 修饰键"
             return
         }
-        if let reserved = ShortcutSettings.reservedNumberedShortcutDescription(shortcut) {
+        if let reserved = ShortcutSettings.reservedShortcutDescription(shortcut) {
             feedback = reserved
             return
         }

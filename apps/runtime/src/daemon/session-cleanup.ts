@@ -1,4 +1,6 @@
 import type { Session } from "@acro/protocol";
+import { paths } from "../paths.ts";
+import { readJson } from "../store.ts";
 
 const SESSION_REMOVAL_BATCH_SIZE = 16;
 
@@ -49,15 +51,28 @@ export async function removeDaemonSessions(
 export async function restartTerminalDaemon(
   daemon: DaemonRequester,
   signal: (pid: number, signal: NodeJS.Signals) => unknown = process.kill,
+  readIdentity: () => unknown = () => readJson<unknown>(paths.daemonMeta, null),
 ): Promise<void> {
+  try {
+    await daemon.request("daemon.restart");
+    return;
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "unknown method daemon.restart") {
+      throw error;
+    }
+  }
+
   const info = (await daemon.request("daemon.info")) as { pid?: unknown; boot?: unknown };
+  const persisted = readIdentity() as { pid?: unknown; boot?: unknown } | null;
   if (
     typeof info.pid !== "number" ||
     !Number.isSafeInteger(info.pid) ||
     info.pid <= 1 ||
     info.pid === process.pid ||
     typeof info.boot !== "string" ||
-    info.boot.length === 0
+    info.boot.length === 0 ||
+    persisted?.pid !== info.pid ||
+    persisted?.boot !== info.boot
   ) {
     throw new Error("invalid terminal daemon identity");
   }

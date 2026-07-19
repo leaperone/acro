@@ -1213,6 +1213,10 @@ final class WorkbenchModel: ObservableObject {
         syncSelectionFromLayout()
     }
 
+    func resetStartupWorkspaceSelection() {
+        startupWorkspaceReconciled = false
+    }
+
     // ---- 布局多端同步(服务端为真相源;orca 式 rev 单调门 + last-writer-wins) ----
 
     private static func encodeLayout(_ layout: WorkspaceTerminalLayout) -> String? {

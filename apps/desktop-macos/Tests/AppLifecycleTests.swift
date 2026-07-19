@@ -21,6 +21,10 @@ struct AppLifecycleTests {
 
         #expect(ShortcutSettings.isAppShortcut(event))
         #expect(ShortcutSettings.action(for: event) == nil)
+        #expect(
+            ShortcutSettings.reservedShortcutDescription(StoredShortcut.from(event))
+                == "⌘Q 固定用于退出 Acro"
+        )
     }
 
     @MainActor
@@ -61,6 +65,12 @@ struct AppLifecycleTests {
 
         #expect(model.selectedWorkspaceId == live.id)
         #expect(model.selectedSessionId == "session")
+
+        model.selectedWorkspaceId = empty.id
+        model.resetStartupWorkspaceSelection()
+        model.selectLiveWorkspaceOnStartupIfNeeded()
+
+        #expect(model.selectedWorkspaceId == live.id)
     }
 
     private func workspace(id: String, sessionIds: [String]) -> Workspace {

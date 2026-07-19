@@ -273,7 +273,10 @@ enum ShortcutSettings {
         numberedDigit(event, modifiers: .control)
     }
 
-    static func reservedNumberedShortcutDescription(_ shortcut: StoredShortcut) -> String? {
+    static func reservedShortcutDescription(_ shortcut: StoredShortcut) -> String? {
+        if shortcut == StoredShortcut(key: "q", command: true) {
+            return "⌘Q 固定用于退出 Acro"
+        }
         guard let digit = Int(shortcut.key), (1...9).contains(digit),
               !shortcut.shift, !shortcut.option else { return nil }
         if shortcut.command && !shortcut.control { return "⌘1-9 固定用于切换工作区" }
@@ -283,14 +286,19 @@ enum ShortcutSettings {
 
     // 终端 NSView 用它判断哪些按键属于应用而不能被终端吃掉
     static func isAppShortcut(_ event: NSEvent) -> Bool {
-        if StoredShortcut(key: "q", command: true).matches(event) { return true }
+        if isSystemShortcut(event) { return true }
         if workspaceDigit(event) != nil || tabDigit(event) != nil { return true }
         return ShortcutAction.allCases.contains { stored($0).matches(event) }
     }
 
     // 事件 → 命中的 action(cmux AppDelegate 路由模式的 acro 版)
     static func action(for event: NSEvent) -> ShortcutAction? {
-        ShortcutAction.allCases.first { stored($0).matches(event) }
+        if isSystemShortcut(event) { return nil }
+        return ShortcutAction.allCases.first { stored($0).matches(event) }
+    }
+
+    private static func isSystemShortcut(_ event: NSEvent) -> Bool {
+        StoredShortcut(key: "q", command: true).matches(event)
     }
 
     private static func numberedDigit(

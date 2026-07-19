@@ -67,6 +67,9 @@ struct WorkbenchView: View {
             guard runtime.snapshotLoaded, model.layoutWasRestored else { return }
             model.scheduleReconcile()
         }
+        .onChange(of: runtime.state) { _, state in
+            if state != .connected { model.resetStartupWorkspaceSelection() }
+        }
         .onChange(of: model.hub.entries.map(\.id), initial: true) { _, _ in
             model.scheduleReconcile()
         }
