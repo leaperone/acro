@@ -48,6 +48,13 @@ export const BrowserControl = z.object({
 });
 export type BrowserControl = z.infer<typeof BrowserControl>;
 
+// Computer Use 控制权:画面和窗口信息可共享,输入与应用激活只允许一个设备
+export const ComputerControl = z.object({
+  deviceId: z.string(),
+  deviceName: z.string(),
+});
+export type ComputerControl = z.infer<typeof ComputerControl>;
+
 export const Session = z.object({
   id: z.string(),
   // cwd 是创建时目录;daemon 查询实时目录成功后会回写此字段

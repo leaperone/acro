@@ -107,23 +107,28 @@ async function main(): Promise<void> {
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
   // 浏览器画面可被多个设备查看,控制权按设备互斥;runtime 重启会连同页面一起关闭。
   const browserControlOwners = new Map<string, { deviceId: string; deviceName: string }>();
-  const browserControlTails = new Map<string, Promise<void>>();
-  const runBrowserControl = async <T>(browserId: string, task: () => T | Promise<T>): Promise<T> => {
-    const previous = browserControlTails.get(browserId) ?? Promise.resolve();
+  let computerControlOwner: { deviceId: string; deviceName: string } | null = null;
+  const controlTails = new Map<string, Promise<void>>();
+  const runExclusiveControl = async <T>(key: string, task: () => T | Promise<T>): Promise<T> => {
+    const previous = controlTails.get(key) ?? Promise.resolve();
     let unlock!: () => void;
     const current = new Promise<void>((resolve) => {
       unlock = resolve;
     });
     const tail = previous.then(() => current);
-    browserControlTails.set(browserId, tail);
+    controlTails.set(key, tail);
     await previous;
     try {
       return await task();
     } finally {
       unlock();
-      if (browserControlTails.get(browserId) === tail) browserControlTails.delete(browserId);
+      if (controlTails.get(key) === tail) controlTails.delete(key);
     }
   };
+  const runBrowserControl = <T>(browserId: string, task: () => T | Promise<T>): Promise<T> =>
+    runExclusiveControl(`browser:${browserId}`, task);
+  const runComputerControl = <T>(task: () => T | Promise<T>): Promise<T> =>
+    runExclusiveControl("computer", task);
   const requireActiveDevice = (conn: Conn): NonNullable<Conn["device"]> => {
     if (!conn.device || !gateway.hasConnection(conn)) throw new Error("connection closed");
     return conn.device;
@@ -143,6 +148,20 @@ async function main(): Promise<void> {
       deviceId: null,
       deviceName: null,
     });
+  };
+  const setComputerControl = (owner: { deviceId: string; deviceName: string } | null): void => {
+    computerControlOwner = owner;
+    emitRuntimeEvent("computer.controlChanged", {
+      deviceId: owner?.deviceId ?? null,
+      deviceName: owner?.deviceName ?? null,
+    });
+  };
+  const requireComputerControl = (conn: Conn): void => {
+    const device = requireActiveDevice(conn);
+    if (!computerControlOwner) throw new Error("computer control is not claimed");
+    if (computerControlOwner.deviceId !== device.id) {
+      throw new Error("computer controlled by another device");
+    }
   };
   // 终端尺寸仲裁(tmux 模型):PTY 尺寸 = 各在挂客户端报告尺寸的最小值,
   // 谁都能看全;单靠 last-writer-wins 会让多端互相顶掉对方的尺寸。
@@ -454,7 +473,17 @@ async function main(): Promise<void> {
       if (!gateway.hasSimInterest(udid)) simulators.detach(udid);
       return { detached: true };
     },
-    // ponytail: computer.* 目前全量转发,项目级安全策略(哪些 app/区域可操作)接入时再收紧
+    "computer.claimControl": (conn, { force }) =>
+      runComputerControl(() => {
+        const device = requireActiveDevice(conn);
+        if (computerControlOwner && computerControlOwner.deviceId !== device.id && !force) {
+          return { claimed: false };
+        }
+        setComputerControl({ deviceId: device.id, deviceName: device.name });
+        return { claimed: true };
+      }),
+    "computer.controlOwner": () => computerControlOwner,
+    // 只读查询允许多个设备共享;输入和应用激活在同一全局控制队列内执行。
     "computer.permissions": (conn) =>
       helper.request<{ accessibility: boolean; screenRecording: boolean }>(
         "permissions.check",
@@ -469,18 +498,30 @@ async function main(): Promise<void> {
       ),
     "computer.windows": (conn) =>
       helper.request<{ windows: unknown[] }>("window.list", {}, conn.abortController.signal),
-    "computer.click": async (conn, params) =>
-      helper.request("input.click", params, conn.abortController.signal),
-    "computer.type": async (conn, params) =>
-      helper.request("input.type", params, conn.abortController.signal),
-    "computer.key": async (conn, params) =>
-      helper.request("input.key", params, conn.abortController.signal),
+    "computer.click": (conn, params) =>
+      runComputerControl(async () => {
+        requireComputerControl(conn);
+        return helper.request("input.click", params, conn.abortController.signal);
+      }),
+    "computer.type": (conn, params) =>
+      runComputerControl(async () => {
+        requireComputerControl(conn);
+        return helper.request("input.type", params, conn.abortController.signal);
+      }),
+    "computer.key": (conn, params) =>
+      runComputerControl(async () => {
+        requireComputerControl(conn);
+        return helper.request("input.key", params, conn.abortController.signal);
+      }),
     "computer.activate": (conn, params) =>
-      helper.request<{ activated: boolean }>(
-        "app.activate",
-        params,
-        conn.abortController.signal,
-      ),
+      runComputerControl(async () => {
+        requireComputerControl(conn);
+        return helper.request<{ activated: boolean }>(
+          "app.activate",
+          params,
+          conn.abortController.signal,
+        );
+      }),
   };
 
   const gateway = new Gateway(registry, identity.priv, handlers, (handle, data) =>
@@ -551,6 +592,11 @@ async function main(): Promise<void> {
         if (browserControlOwners.get(browserId)?.deviceId === deviceId) {
           releaseBrowserControl(browserId);
         }
+      });
+    }
+    if (computerControlOwner?.deviceId === deviceId) {
+      void runComputerControl(() => {
+        if (computerControlOwner?.deviceId === deviceId) setComputerControl(null);
       });
     }
   };

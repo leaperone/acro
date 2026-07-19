@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   BrowserControl,
+  ComputerControl,
   Device,
   Session,
   SessionFocus,
@@ -21,6 +22,7 @@ const models: Record<string, z.ZodType> = {
   Session,
   SessionFocus,
   BrowserControl,
+  ComputerControl,
 };
 
 type JsonSchema = {
