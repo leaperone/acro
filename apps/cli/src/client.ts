@@ -34,7 +34,7 @@ export function loadClientConfig(): ClientConfig {
   } catch {
     // 未配对或旧版格式
   }
-  console.error("尚未配对;先运行: acro pair <配对码>");
+  console.error("尚未配对;远程运行: pbpaste | acro pair");
   process.exit(1);
 }
 
@@ -57,7 +57,7 @@ export function pickServer(config: ClientConfig, ref?: string): ServerEntry {
   const resolved = server ?? (ref ? undefined : config.servers[0]);
   if (!resolved) {
     console.error(
-      ref ? `找不到服务器: ${ref}` : "没有已配对的服务器;先运行: acro pair <配对码>",
+      ref ? `找不到服务器: ${ref}` : "没有已配对的服务器;远程运行: pbpaste | acro pair",
     );
     process.exit(1);
   }

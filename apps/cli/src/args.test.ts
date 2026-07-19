@@ -46,10 +46,9 @@ test("missing or duplicate CLI option values fail closed", () => {
   assert.throws(() => parseRunArgs(["--cwd"], null), /requires a value/);
   assert.throws(() => parseCommandLine(["run", "--server", "--cwd", "/repo"]), /requires a value/);
   assert.throws(() => parseRunArgs(["--cwd", "--cwd", "/repo"], null), /requires a value/);
-  assert.deepEqual(parsePairArgs(["offer", "--name", "MacBook"]), {
-    offer: "offer",
-    name: "MacBook",
-  });
+  assert.deepEqual(parsePairArgs(["--name", "MacBook"]), { name: "MacBook" });
+  assert.throws(() => parsePairArgs(["offer"]), /provided on stdin/);
+  assert.throws(() => parsePairArgs(["--offer", "secret"]), /unknown pair option/);
 });
 
 test("double-dash command tokens survive shell parsing exactly", () => {

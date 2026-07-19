@@ -69,18 +69,18 @@ export function parseRunArgs(args: string[], passthrough: string[] | null): Pars
   };
 }
 
-export function parsePairArgs(args: string[]): { offer: string | undefined; name: string | undefined } {
-  const positional: string[] = [];
+export function parsePairArgs(args: string[]): { name: string | undefined } {
   let name: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--name") {
       if (name !== undefined) throw new Error("--name may only be specified once");
       name = optionValue(args, i, "--name");
       i += 1;
+    } else if (args[i]!.startsWith("--")) {
+      throw new Error(`unknown pair option: ${args[i]}`);
     } else {
-      positional.push(args[i]!);
+      throw new Error("pairing offer must be provided on stdin");
     }
   }
-  if (positional.length > 1) throw new Error("pair accepts only one pairing offer");
-  return { offer: positional[0], name };
+  return { name };
 }

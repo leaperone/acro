@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // acro CLI:MacBook 上的最小客户端,也是未来 libghostty surface command 的桥。
 // 用法:
-//   acro pair [配对码] [--name <label>]   无参数时读本机 bootstrap 配对码
+//   pbpaste | acro pair [--name <label>]  远程配对;空 stdin 时读本机 bootstrap
 //   acro endpoints [add|rm <host:port>]
 //   acro sessions
 //   acro run [--cwd <dir>] [--] [command...]
@@ -32,6 +32,7 @@ import {
 const DETACH_KEY = 0x1d; // Ctrl-]
 const INPUT_HIGH_WATER_BYTES = 1024 * 1024;
 const INPUT_LOW_WATER_BYTES = 256 * 1024;
+const MAX_PAIRING_OFFER_BYTES = 64 * 1024;
 
 function fail(msg: string): never {
   console.error(msg);
@@ -57,7 +58,18 @@ async function cmdPair(args: string[]): Promise<void> {
   // zod 只在 pair 路径加载
   const { decodePairingOffer } = await import("@acro/protocol");
   const parsed = parsePairArgs(args);
-  let raw = parsed.offer;
+  let raw = "";
+  if (process.stdin.isTTY !== true) {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of process.stdin) {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += data.length;
+      if (size > MAX_PAIRING_OFFER_BYTES) fail("配对码超过 64 KiB");
+      chunks.push(data);
+    }
+    raw = Buffer.concat(chunks).toString("utf8").trim();
+  }
   if (!raw) {
     // 本机引导:runtime 首启把配对码写在 state 目录
     const bootstrapFile = path.join(
@@ -67,7 +79,7 @@ async function cmdPair(args: string[]): Promise<void> {
     try {
       raw = fs.readFileSync(bootstrapFile, "utf8").trim();
     } catch {
-      fail("usage: acro pair <配对码>(或在 runtime 本机直接运行 acro pair)");
+      fail("未找到配对码;远程运行: pbpaste | acro pair;Runtime 本机可直接运行 acro pair");
     }
   }
   const offer = decodePairingOffer(raw);
@@ -342,7 +354,8 @@ async function main(): Promise<void> {
   if (!cmd || cmd === "help" || cmd === "--help") {
     console.log(
       [
-        "acro pair [配对码] [--name <label>]",
+        "pbpaste | acro pair [--name <label>]  从 stdin 安全读取远程配对码",
+        "acro pair [--name <label>]            Runtime 本机读取 bootstrap 配对码",
         "acro --server <名称|deviceId> <命令>  指定目标服务器",
         "acro endpoints [add|rm <host:port>]",
         "acro sessions",
