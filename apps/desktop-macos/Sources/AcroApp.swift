@@ -185,7 +185,10 @@ struct AcroApp: App {
 
 // 解析 attach 命令:node + acro CLI 的绝对路径(GUI 进程没有用户 PATH)
 enum AttachCommand {
-    static func resolve(sessionId: String, serverId: String?) -> String {
+    // node + cli 路径只依赖进程环境(env、bundle、LaunchAgent plist),与会话无关。
+    // resolve 会在每次 pane 重绘、每个会话被急切求值,这里读 plist + fileExists 是同步文件 IO。
+    // ponytail: 进程内缓存一次;runtime 升级替换的是同一路径的文件,重启 App 才需要重解析。
+    private static let resolvedProgram: (node: String, cli: String) = {
         let env = ProcessInfo.processInfo.environment
         let runtimeArguments = runtimeProgramArguments()
         let node = NodeExecutable.resolve(runtimeNode: runtimeArguments?.first) ?? "node"
@@ -195,7 +198,12 @@ enum AttachCommand {
             ?? bundledCli.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
             ?? runtimeCliPath(from: runtimeArguments)
             ?? "\(NSHomeDirectory())/project/acro/apps/cli/src/cli.ts"
-        var arguments = [node, cli, "attach", sessionId]
+        return (node, cli)
+    }()
+
+    static func resolve(sessionId: String, serverId: String?) -> String {
+        let program = resolvedProgram
+        var arguments = [program.node, program.cli, "attach", sessionId]
         // 多主机:attach 指定目标服务器,不依赖 client.json 的默认项
         if let serverId, !serverId.isEmpty {
             arguments += ["--server", serverId]

@@ -97,6 +97,9 @@ final class WorkbenchModel: ObservableObject {
     // 否则旧客户端每次启动都会把旧 schema 布局推回去,把新客户端打回原形
     private var layoutPushFrozen: Set<ScopedResourceID> = []
     private var layoutSyncTask: Task<Void, Never>?
+    // 本地布局落盘去抖:拖分隔线时 workspaceLayouts 每帧变更,逐帧全量 JSON 编码 + 写盘
+    // 会在主线程堆积。合并到一个短窗口,拖动过程只在停手后落一次盘。
+    private var layoutPersistTask: Task<Void, Never>?
 
     // ---- 拖拽与快捷键提示 ----
     @Published var draggingTab: TabDragPayload?
@@ -1181,6 +1184,16 @@ final class WorkbenchModel: ObservableObject {
     }
 
     private func persistLayout() {
+        guard layoutRestored else { return }
+        layoutPersistTask?.cancel()
+        layoutPersistTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            self?.writeLayoutSnapshot()
+        }
+    }
+
+    private func writeLayoutSnapshot() {
         guard layoutRestored else { return }
         let snapshot = WorkbenchLayoutSnapshot(
             selectedServerId: selectedServerId,

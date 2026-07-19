@@ -49,6 +49,19 @@ function b64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0]!;
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
 type Route =
   | { name: "home" }
   | { name: "terminal"; session: Session }
@@ -374,9 +387,21 @@ function TerminalScreen({
   );
 
   useEffect(() => {
+    // 合帧:PTY 刷屏时每秒可上百个小 OUT 帧,逐帧跨桥 injectJavaScript 会堆积。
+    // 一个 rAF 窗口内的帧拼成一次 write:跨桥次数和 base64 次数都压到每帧渲染一次。
+    let pending: Uint8Array[] = [];
+    let rafId: number | null = null;
+    const flushFrames = () => {
+      rafId = null;
+      if (pending.length === 0) return;
+      const merged = concatBytes(pending);
+      pending = [];
+      inject(`${bridgeExpression}?.write("${bytesToB64(merged)}")`);
+    };
     const unsubscribeFrame = client.subscribeFrame((frame) => {
       if (frame.type === FRAME_OUT && frame.channel === channelRef.current) {
-        inject(`${bridgeExpression}?.write("${bytesToB64(frame.data)}")`);
+        pending.push(frame.data);
+        if (rafId === null) rafId = requestAnimationFrame(flushFrames);
       }
     });
     // 占用变化实时反映:他人接管 → 遮罩;释放/自己 → 解除
@@ -391,6 +416,7 @@ function TerminalScreen({
     // 打开即认领:无主则静默拿下;被占用则先遮罩,等用户显式接管
     void claimFocus(false).catch(() => {});
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       unsubscribeFrame();
       unsubscribeEvent();
       void client.rpc("session.detach", { sessionId: session.id }).catch(() => {});
@@ -499,13 +525,27 @@ function SurfaceScreen({
   const layoutRef = useRef<{ w: number; h: number }>({ w: 1, h: 1 });
 
   useEffect(() => {
+    // 丢帧只渲染最新:base64 + setState + 原生图像解码远慢于截流帧率,
+    // 逐帧渲染只会让延迟单调堆积。一个 rAF 窗口内只保留并渲染最后一帧。
+    let latest: { mime: string; data: Uint8Array } | null = null;
+    let rafId: number | null = null;
+    const flushFrame = () => {
+      rafId = null;
+      if (!latest) return;
+      const { mime, data } = latest;
+      latest = null;
+      setFrameUri(`data:${mime};base64,${bytesToB64(data)}`);
+    };
     const unsubscribeFrame = client.subscribeFrame((frame) => {
       if (
         (frame.type === FRAME_BROWSER || frame.type === FRAME_SIM) &&
         frame.channel === channelRef.current
       ) {
-        const mime = frame.type === FRAME_BROWSER ? "image/jpeg" : "image/png";
-        setFrameUri(`data:${mime};base64,${bytesToB64(frame.data)}`);
+        latest = {
+          mime: frame.type === FRAME_BROWSER ? "image/jpeg" : "image/png",
+          data: frame.data,
+        };
+        if (rafId === null) rafId = requestAnimationFrame(flushFrame);
       }
     });
     void (async () => {
@@ -519,6 +559,7 @@ function SurfaceScreen({
       }
     })().catch(() => {});
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       unsubscribeFrame();
       if (kind === "browser") {
         void client.rpc("browser.detach", { browserId: refId }).catch(() => {});

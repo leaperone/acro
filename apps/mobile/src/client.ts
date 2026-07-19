@@ -59,7 +59,11 @@ export function parseServerConfig(raw: string | null): ServerConfig | null {
 const CONNECT_TIMEOUT_MS = 4000;
 const RETRY_DELAY_MS = 1500;
 
-type PendingEntry = { resolve: (v: unknown) => void; reject: (e: Error) => void };
+type PendingEntry = {
+  resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
 
 interface Channel {
   ws: WebSocket;
@@ -182,7 +186,10 @@ export class MobileClient {
     channel.ws.onclose = () => {
       this.ws = null;
       this.session = null;
-      for (const p of this.pending.values()) p.reject(new Error("连接断开"));
+      for (const p of this.pending.values()) {
+        clearTimeout(p.timer);
+        p.reject(new Error("连接断开"));
+      }
       this.pending.clear();
       for (const listener of this.stateListeners) listener(false);
       if (!this.closed) setTimeout(() => void this.connect().catch(() => {}), RETRY_DELAY_MS);
@@ -208,6 +215,7 @@ export class MobileClient {
         const p = this.pending.get(msg.id);
         if (!p) return;
         this.pending.delete(msg.id);
+        clearTimeout(p.timer);
         if (msg.ok) p.resolve(msg.result);
         else p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
       } else if (msg.t === "evt") {
@@ -238,10 +246,10 @@ export class MobileClient {
     const id = this.nextId++;
     ws.send(session.sealText(JSON.stringify({ t: "req", id, method, params })).buffer as ArrayBuffer);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pending.delete(id)) reject(new Error(`超时: ${method}`));
       }, 20000);
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
     });
   }
 
