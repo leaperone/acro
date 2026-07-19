@@ -33,6 +33,7 @@ import { acquireProcessLock } from "../process-lock.ts";
 import { readJson, writeJsonAtomic } from "../store.ts";
 import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 import { utf8SafeCut } from "./utf8.ts";
+import { buildSessionEnv } from "./env.ts";
 import {
   daemonClientBufferExceeded,
   daemonRequestCapacityExceeded,
@@ -170,10 +171,7 @@ class DaemonSession {
       cols: opts.cols,
       rows: opts.rows,
       cwd,
-      env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<
-        string,
-        string
-      >,
+      env: buildSessionEnv(),
     });
     this.ptyProc.onData((data) => {
       this.seq += 1;
