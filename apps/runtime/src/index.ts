@@ -5,7 +5,11 @@ import type { Session } from "@acro/protocol";
 import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
-import { removeDaemonSessions } from "./daemon/session-cleanup.ts";
+import {
+  removeDaemonSession,
+  removeDaemonSessions,
+  untrackedDeadSessionIds,
+} from "./daemon/session-cleanup.ts";
 import { BrowserManager } from "./browser.ts";
 import { SimulatorManager } from "./simulator.ts";
 import { HelperClient } from "./computer.ts";
@@ -30,6 +34,10 @@ interface SnapshotResult {
   cols: number;
   rows: number;
 }
+
+const UNTRACKED_SESSION_CLEANUP_GRACE_MS = Number(
+  process.env.ACRO_TEST_SESSION_CLEANUP_GRACE_MS ?? 120_000,
+);
 
 function daemonMayHaveCreatedSession(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -61,6 +69,26 @@ async function main(): Promise<void> {
     workspaces.remove(workspace.id);
   }
   const creatingSessionIds = new Set<string>();
+  const sessionCleanupTimers = new Map<string, NodeJS.Timeout>();
+  const sessionIsTracked = (sessionId: string): boolean =>
+    workspaces.list().some((workspace) => workspace.sessionIds.includes(sessionId));
+  const cancelScheduledSessionCleanup = (sessionId: string): void => {
+    const timer = sessionCleanupTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    sessionCleanupTimers.delete(sessionId);
+  };
+  const scheduleUntrackedSessionCleanup = (sessionId: string): void => {
+    if (sessionCleanupTimers.has(sessionId) || sessionIsTracked(sessionId)) return;
+    const timer = setTimeout(() => {
+      sessionCleanupTimers.delete(sessionId);
+      if (sessionIsTracked(sessionId)) return;
+      void removeDaemonSession(daemon, sessionId).catch((error) => {
+        console.warn(`[runtime] failed to remove untracked session ${sessionId}: ${error.message}`);
+      });
+    }, UNTRACKED_SESSION_CLEANUP_GRACE_MS);
+    timer.unref();
+    sessionCleanupTimers.set(sessionId, timer);
+  };
   const reconcileWorkspaceSessions = async (): Promise<Session[]> => {
     const tracked = new Set(workspaces.list().flatMap((workspace) => workspace.sessionIds));
     const sessions = await daemon.request<Session[]>("session.list");
@@ -69,6 +97,9 @@ async function main(): Promise<void> {
       [...tracked].filter((id) => !known.has(id) && !creatingSessionIds.has(id)),
     );
     workspaces.removeSessions(missing);
+    for (const sessionId of untrackedDeadSessionIds(sessions, tracked)) {
+      scheduleUntrackedSessionCleanup(sessionId);
+    }
     return sessions;
   };
   const daemonSessions = await reconcileWorkspaceSessions();
@@ -393,6 +424,12 @@ async function main(): Promise<void> {
       await daemon.request("session.kill", { sessionId });
       return { killed: true };
     },
+    "session.remove": async (_conn, { sessionId }) => {
+      const removed = await removeDaemonSession(daemon, sessionId);
+      cancelScheduledSessionCleanup(sessionId);
+      workspaces.removeSessions(new Set([sessionId]));
+      return { removed };
+    },
     "browser.open": async (conn, params) => {
       requireActiveDevice(conn);
       const browserId = await browsers.open(params);
@@ -603,6 +640,13 @@ async function main(): Promise<void> {
       }
     }
     gateway.broadcastEvent(evt);
+    if (evt.event === "session.exit") {
+      const sessionId = (evt.payload as { sessionId?: string }).sessionId;
+      if (sessionId) scheduleUntrackedSessionCleanup(sessionId);
+    } else if (evt.event === "session.removed") {
+      const sessionId = (evt.payload as { sessionId?: string }).sessionId;
+      if (sessionId) cancelScheduledSessionCleanup(sessionId);
+    }
   });
   gateway.inputGate = (conn, sessionId) => {
     const owner = focusOwners.get(sessionId);

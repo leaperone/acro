@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { removeDaemonSessions, type DaemonRequester } from "./session-cleanup.ts";
+import {
+  removeDaemonSessions,
+  type DaemonRequester,
+  untrackedDeadSessionIds,
+} from "./session-cleanup.ts";
+
+test("untracked dead session cleanup preserves live and workspace sessions", () => {
+  const sessions = [
+    { id: "live-untracked", alive: true },
+    { id: "dead-tracked", alive: false },
+    { id: "dead-untracked", alive: false },
+  ];
+
+  assert.deepEqual(untrackedDeadSessionIds(sessions, new Set(["dead-tracked"])), [
+    "dead-untracked",
+  ]);
+});
 
 test("workspace cleanup bounds daemon requests for large session histories", async () => {
   let active = 0;

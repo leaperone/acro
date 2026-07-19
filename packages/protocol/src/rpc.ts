@@ -46,6 +46,7 @@ export const RpcMessage = z.union([RpcRequest, RpcResponse, RpcEvent]);
 export type RpcMessage = z.infer<typeof RpcMessage>;
 
 const SimulatorUdid = z.string().regex(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+export const SessionId = z.string().uuid();
 
 // 方法表:唯一真源。服务端按它校验入参,客户端按它推导类型,Swift 端按它 codegen。
 export const methods = {
@@ -187,6 +188,10 @@ export const methods = {
   "session.kill": {
     params: z.object({ sessionId: z.string() }),
     result: z.object({ killed: z.boolean() }),
+  },
+  "session.remove": {
+    params: z.object({ sessionId: SessionId }),
+    result: z.object({ removed: z.boolean() }),
   },
   "browser.open": {
     params: z.object({

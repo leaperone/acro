@@ -62,3 +62,12 @@ test("simulator methods accept only fixed-size UDID values", () => {
     false,
   );
 });
+
+test("session removal accepts only UUID session ids", () => {
+  const params = methods["session.remove"].params;
+  assert.equal(
+    params.safeParse({ sessionId: "00000000-0000-4000-8000-000000000000" }).success,
+    true,
+  );
+  assert.equal(params.safeParse({ sessionId: "../workspace-state.json" }).success, false);
+});
