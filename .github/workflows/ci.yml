@@ -9,9 +9,9 @@ jobs:
   typescript:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -25,9 +25,9 @@ jobs:
   desktop-macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -36,8 +36,8 @@ jobs:
         run: pnpm -C apps/runtime e2e
       - name: cli e2e
         run: pnpm -C apps/cli e2e
-      - name: test appcast generation
-        run: python3 apps/desktop-macos/scripts/test_update_appcast.py
+      - name: test desktop release scripts
+        run: python3 -m unittest discover -s apps/desktop-macos/scripts -p 'test_*.py'
       - name: setup ghostty assets
         env:
           GH_TOKEN: ${{ github.token }}
