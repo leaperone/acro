@@ -24,6 +24,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function waitForPidExit(pid: number, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await sleep(50);
+  }
+  throw new Error(`process ${pid} did not exit`);
+}
+
 async function main(): Promise<void> {
   const runtime: ChildProcess = spawn(process.execPath, [runtimeEntry], {
     env,
@@ -87,12 +100,21 @@ async function main(): Promise<void> {
     console.log("\nE2E-SIMULATOR PASS ✅  list/boot/画面流/shutdown 全部通过");
   } finally {
     runtime.kill("SIGTERM");
-    await sleep(500);
+    if (runtime.pid) await waitForPidExit(runtime.pid);
+    let daemonPid: number | null = null;
     try {
       const meta = JSON.parse(fs.readFileSync(path.join(stateDir, "daemon.meta.json"), "utf8"));
-      process.kill(meta.pid, "SIGTERM");
+      daemonPid = meta.pid;
     } catch {
       // daemon 未启动
+    }
+    if (daemonPid) {
+      try {
+        process.kill(daemonPid, "SIGTERM");
+        await waitForPidExit(daemonPid);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
     }
     fs.rmSync(stateDir, { recursive: true, force: true });
   }
