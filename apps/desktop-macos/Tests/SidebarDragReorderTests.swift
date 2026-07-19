@@ -10,6 +10,14 @@ final class SidebarDragReorderTests: XCTestCase {
     func testPlannerInsertsBeforeAndAfterTarget() {
         let ids = ["a", "b", "c"]
 
+        XCTAssertNil(
+            SidebarWorkspaceDropPlanner.insertionIndex(
+                draggedWorkspaceId: "a",
+                targetWorkspaceId: "b",
+                orderedWorkspaceIds: ids,
+                edge: .top
+            )
+        )
         XCTAssertEqual(
             SidebarWorkspaceDropPlanner.insertionIndex(
                 draggedWorkspaceId: "a",

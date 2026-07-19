@@ -433,7 +433,7 @@ private struct SidebarWorkspaceRowDropDelegate: DropDelegate {
     let perform: (SidebarWorkspaceDropEdge) -> Bool
 
     func validateDrop(info: DropInfo) -> Bool {
-        canAccept(resolvedEdge(info))
+        canAccept(.top) || canAccept(.bottom)
     }
 
     func dropEntered(info: DropInfo) {
