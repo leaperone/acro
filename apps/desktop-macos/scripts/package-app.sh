@@ -13,10 +13,12 @@ BUILD_VERSION="${2:-0}"
 SIGN_IDENTITY="${ACRO_SIGN_IDENTITY:--}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_ENTITLEMENTS="$DIR/Node.entitlements"
+APP_ICON="$DIR/Assets/Acro.icns"
 cd "$DIR"
 
 [[ "$BUILD_VERSION" =~ ^[0-9]+$ ]] || { echo "build_version must be an integer"; exit 1; }
 [[ -f "$NODE_ENTITLEMENTS" ]] || { echo "missing Node.entitlements" >&2; exit 1; }
+[[ -f "$APP_ICON" ]] || { echo "missing Acro.icns" >&2; exit 1; }
 
 swift build -c release
 
@@ -24,6 +26,7 @@ APP="dist/Acro.app"
 rm -rf dist
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp .build/release/AcroDesktop "$APP/Contents/MacOS/AcroDesktop"
+cp "$APP_ICON" "$APP/Contents/Resources/Acro.icns"
 cp -RL Resources/ghostty "$APP/Contents/Resources/ghostty"
 cp -RL Resources/terminfo "$APP/Contents/Resources/terminfo"
 
@@ -73,6 +76,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleIdentifier</key><string>one.leaper.acro.desktop</string>
     <key>CFBundleName</key><string>Acro</string>
     <key>CFBundleDisplayName</key><string>Acro</string>
+    <key>CFBundleIconFile</key><string>Acro</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key><string>${BUILD_VERSION}</string>
