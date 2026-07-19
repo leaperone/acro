@@ -147,9 +147,14 @@ final class AcroTerminalNSView: NSView {
     }
 
     private func focusTerminal() {
-        NSApp.activate()
         guard let window else { return }
-        window.makeKeyAndOrderFront(nil)
+        // 只在 app 已在前台时才前置窗口。后台触发的自动聚焦(会话退出导致标签自动关闭、
+        // 重连首帧等)不该把 app 从后台/最小化拽到最前——那是焦点抢占。此时只设第一响应者,
+        // 用户切回来时焦点已就位。
+        if NSApp.isActive {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+        }
         if window.firstResponder !== self {
             window.makeFirstResponder(self)
         }
