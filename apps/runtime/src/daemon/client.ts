@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { OutFrame } from "@acro/protocol";
 import { decodeFrame, encodeInFrame, FRAME_OUT } from "@acro/protocol";
 import { paths } from "../paths.ts";
+import { daemonClientBufferExceeded } from "./backpressure.ts";
 import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 
 interface Pending {
@@ -199,7 +200,18 @@ export class DaemonClient extends EventEmitter {
   }
 
   sendInput(handle: number, data: Uint8Array): void {
-    this.socket?.write(packBin(encodeInFrame(handle, data)));
+    const socket = this.socket;
+    if (!socket) return;
+    const frame = packBin(encodeInFrame(handle, data));
+    if (socket.destroyed || daemonClientBufferExceeded(socket.writableLength, frame.byteLength)) {
+      socket.destroy();
+      return;
+    }
+    try {
+      socket.write(frame);
+    } catch {
+      socket.destroy();
+    }
   }
 
   close(): void {
