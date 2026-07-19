@@ -293,6 +293,111 @@ async function main(): Promise<void> {
     assert.equal(fs.readFileSync(workspacesPath, "utf8"), workspaceStateBefore);
     log("workspace session rollback ok");
 
+    // 删除工作区期间不能并发关联新终端，否则删除快照之外的 PTY 会变成不可见孤儿。
+    const raceWorkspace = await client.rpc<Workspace>("workspace.create", {
+      name: "Workspace Delete Race",
+    });
+    const raceReadyPath = path.join(stateDir, "workspace-delete-race.ready");
+    const raceSession = await client.rpc<Session>("session.create", {
+      workspaceId: raceWorkspace.id,
+      command: `trap '' HUP TERM INT; touch ${JSON.stringify(raceReadyPath)}; while true; do sleep 1; done`,
+      cols: 80,
+      rows: 24,
+    });
+    const raceReadyDeadline = Date.now() + 5000;
+    while (!fs.existsSync(raceReadyPath)) {
+      if (Date.now() > raceReadyDeadline) throw new Error("workspace delete race shell not ready");
+      await sleep(20);
+    }
+    const removingRaceWorkspace = client.rpc("workspace.remove", {
+      workspaceId: raceWorkspace.id,
+      force: true,
+    });
+    assert.equal(
+      await Promise.race([
+        removingRaceWorkspace.then(() => "removed" as const),
+        sleep(100).then(() => "pending" as const),
+      ]),
+      "pending",
+      "race fixture must keep workspace removal in flight",
+    );
+    await assert.rejects(
+      client.rpc("session.create", {
+        workspaceId: raceWorkspace.id,
+        command: "/bin/sh",
+        cols: 80,
+        rows: 24,
+      }),
+      /workspace not found/,
+    );
+    await removingRaceWorkspace;
+    assert.equal(
+      (await client.rpc<Workspace[]>("workspace.list")).some(
+        (item) => item.id === raceWorkspace.id,
+      ),
+      false,
+    );
+    assert.equal(
+      (await client.rpc<Session[]>("session.list")).some((item) => item.id === raceSession.id),
+      false,
+    );
+    log("workspace deletion serializes session creation");
+
+    // 删除意图先落盘；最终 workspace 写失败时，重启必须继续清理而不是留下半删状态。
+    const recoveryWorkspace = await client.rpc<Workspace>("workspace.create", {
+      name: "Workspace Delete Recovery",
+    });
+    const recoveryReadyPath = path.join(stateDir, "workspace-delete-recovery.ready");
+    const recoverySession = await client.rpc<Session>("session.create", {
+      workspaceId: recoveryWorkspace.id,
+      command: `trap '' HUP TERM INT; touch ${JSON.stringify(recoveryReadyPath)}; while true; do sleep 1; done`,
+      cols: 80,
+      rows: 24,
+    });
+    const recoveryReadyDeadline = Date.now() + 5000;
+    while (!fs.existsSync(recoveryReadyPath)) {
+      if (Date.now() > recoveryReadyDeadline) {
+        throw new Error("workspace delete recovery shell not ready");
+      }
+      await sleep(20);
+    }
+    const removingRecoveryWorkspace = client.rpc("workspace.remove", {
+      workspaceId: recoveryWorkspace.id,
+      force: true,
+    });
+    const removalIntentDeadline = Date.now() + 5000;
+    for (;;) {
+      const state = JSON.parse(fs.readFileSync(workspacesPath, "utf8")) as {
+        deletingWorkspaceIds?: string[];
+      };
+      if (state.deletingWorkspaceIds?.includes(recoveryWorkspace.id)) break;
+      if (Date.now() > removalIntentDeadline) throw new Error("workspace removal intent missing");
+      await sleep(20);
+    }
+    fs.mkdirSync(workspaceStateTmp);
+    await assert.rejects(removingRecoveryWorkspace);
+    fs.rmSync(workspaceStateTmp, { recursive: true, force: true });
+    client.close();
+    runtime.kill("SIGTERM");
+    await sleep(800);
+    runtime = startRuntime();
+    await waitHealthy();
+    client = new Client();
+    await client.connect(offer);
+    assert.equal(
+      (await client.rpc<Workspace[]>("workspace.list")).some(
+        (item) => item.id === recoveryWorkspace.id,
+      ),
+      false,
+    );
+    assert.equal(
+      (await client.rpc<Session[]>("session.list")).some(
+        (item) => item.id === recoverySession.id,
+      ),
+      false,
+    );
+    log("workspace deletion recovers after persistence failure");
+
     // 会话:显式 cwd 指到 fixture 仓库,跑 /bin/sh(避免用户 shell 配置噪音)
     const session = await client.rpc<Session>("session.create", {
       workspaceId: updatedWorkspace.id,
