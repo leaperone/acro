@@ -371,13 +371,8 @@ final class AcroTerminalNSView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        var x = event.scrollingDeltaX
-        var y = event.scrollingDeltaY
-        if event.hasPreciseScrollingDeltas {
-            x *= 2
-            y *= 2
-        }
-        ghostty_surface_mouse_scroll(surface, x, y, ghostty_input_scroll_mods_t(0))
+        let mods = ghostty_input_scroll_mods_t(event.hasPreciseScrollingDeltas ? 1 : 0)
+        ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
     }
 
     override func updateTrackingAreas() {
