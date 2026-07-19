@@ -37,6 +37,13 @@ struct TabDragPayload: Equatable {
     let token = UUID()
 }
 
+struct WorkspaceDragPayload: Equatable {
+    let workspaceId: String
+    let serverId: String
+    // provider 可能晚于下一轮拖拽释放;token 防止旧回调清掉新状态
+    let token = UUID()
+}
+
 @MainActor
 final class WorkbenchModel: ObservableObject {
     // 多主机:hub 为每台已配对服务器维持一条常驻连接;
@@ -93,9 +100,7 @@ final class WorkbenchModel: ObservableObject {
 
     // ---- 拖拽与快捷键提示 ----
     @Published var draggingTab: TabDragPayload?
-    @Published var draggingWorkspaceId: String?
-    // 工作区拖拽的来源服务器:禁止拖进另一台服务器的分组
-    @Published var draggingWorkspaceServerId: String?
+    @Published var draggingWorkspace: WorkspaceDragPayload?
     @Published private(set) var cmdHeld = false
     @Published private(set) var controlHeld = false
 
@@ -586,6 +591,10 @@ final class WorkbenchModel: ObservableObject {
     // 拖拽会话结束(drop/取消/拖出窗口)后的兜底清理
     func endTabDrag(_ payload: TabDragPayload) {
         if draggingTab == payload { draggingTab = nil }
+    }
+
+    func endWorkspaceDrag(_ payload: WorkspaceDragPayload) {
+        if draggingWorkspace == payload { draggingWorkspace = nil }
     }
 
     func moveTab(_ payload: TabDragPayload, toPane paneId: String, at index: Int?) {
