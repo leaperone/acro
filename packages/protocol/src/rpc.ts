@@ -45,6 +45,8 @@ export type RpcEvent = z.infer<typeof RpcEvent>;
 export const RpcMessage = z.union([RpcRequest, RpcResponse, RpcEvent]);
 export type RpcMessage = z.infer<typeof RpcMessage>;
 
+const SimulatorUdid = z.string().regex(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+
 // 方法表:唯一真源。服务端按它校验入参,客户端按它推导类型,Swift 端按它 codegen。
 export const methods = {
   "device.list": {
@@ -253,7 +255,7 @@ export const methods = {
     params: z.object({}),
     result: z.array(
       z.object({
-        udid: z.string(),
+        udid: SimulatorUdid,
         name: z.string(),
         state: z.string(),
         runtime: z.string(),
@@ -261,20 +263,20 @@ export const methods = {
     ),
   },
   "simulator.boot": {
-    params: z.object({ udid: z.string() }),
+    params: z.object({ udid: SimulatorUdid }),
     result: z.object({ state: z.string() }),
   },
   "simulator.shutdown": {
-    params: z.object({ udid: z.string() }),
+    params: z.object({ udid: SimulatorUdid }),
     result: z.object({ state: z.string() }),
   },
   // 画面走 FRAME_SIM 帧(PNG,低帧率轮询;ScreenCaptureKit helper 接管后提频)
   "simulator.attach": {
-    params: z.object({ udid: z.string() }),
+    params: z.object({ udid: SimulatorUdid }),
     result: z.object({ channel: z.number().int() }),
   },
   "simulator.detach": {
-    params: z.object({ udid: z.string() }),
+    params: z.object({ udid: SimulatorUdid }),
     result: z.object({ detached: z.boolean() }),
   },
   // Computer Use:由 acro-helper(Swift)执行,runtime 只做转发与校验

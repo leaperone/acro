@@ -476,16 +476,18 @@ async function main(): Promise<void> {
         releaseBrowserControl(browserId);
         return { closed: true };
       }),
-    "simulator.list": () => simulators.list(),
-    "simulator.boot": async (_conn, { udid }) => ({ state: await simulators.boot(udid) }),
-    "simulator.shutdown": async (_conn, { udid }) => ({
-      state: await simulators.shutdown(udid),
+    "simulator.list": (conn) => simulators.list(conn.abortController.signal),
+    "simulator.boot": async (conn, { udid }) => ({
+      state: await simulators.boot(udid, conn.abortController.signal),
+    }),
+    "simulator.shutdown": async (conn, { udid }) => ({
+      state: await simulators.shutdown(udid, conn.abortController.signal),
     }),
     "simulator.attach": async (conn, { udid }) => {
       const intent = Symbol(udid);
       conn.pendingSimAttaches.set(udid, intent);
       try {
-        const result = await simulators.attach(udid);
+        const result = await simulators.attach(udid, conn.abortController.signal);
         if (!gateway.hasConnection(conn) || conn.pendingSimAttaches.get(udid) !== intent) {
           throw new Error("simulator attach cancelled");
         }
@@ -680,8 +682,9 @@ async function main(): Promise<void> {
       gateway.close();
       server.close();
       daemon.close(); // 只断开连接,daemon 和会话继续活着
-      simulators.shutdownManager();
-      void browsers.shutdown().finally(() => process.exit(0));
+      void Promise.allSettled([browsers.shutdown(), simulators.shutdownManager()]).finally(() =>
+        process.exit(0),
+      );
     });
   }
 }

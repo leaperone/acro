@@ -36,3 +36,29 @@ test("browser input parameters stay within bounded control payloads", () => {
     false,
   );
 });
+
+test("simulator methods accept only fixed-size UDID values", () => {
+  const valid = "00000000-0000-0000-0000-000000000000";
+  for (const method of [
+    "simulator.boot",
+    "simulator.shutdown",
+    "simulator.attach",
+    "simulator.detach",
+  ] as const) {
+    assert.equal(methods[method].params.safeParse({ udid: valid }).success, true);
+    assert.equal(methods[method].params.safeParse({ udid: "x".repeat(36) }).success, false);
+    assert.equal(methods[method].params.safeParse({ udid: "x".repeat(900_000) }).success, false);
+  }
+  assert.equal(
+    methods["simulator.list"].result.safeParse([
+      { udid: valid, name: "iPhone", state: "Booted", runtime: "iOS" },
+    ]).success,
+    true,
+  );
+  assert.equal(
+    methods["simulator.list"].result.safeParse([
+      { udid: "not-a-udid", name: "iPhone", state: "Booted", runtime: "iOS" },
+    ]).success,
+    false,
+  );
+});
