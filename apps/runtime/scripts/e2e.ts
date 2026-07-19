@@ -448,7 +448,7 @@ async function main(): Promise<void> {
     }
     await assert.rejects(
       client.rpc("session.resize", { sessionId: deadResize.id, cols: 90, rows: 30 }),
-      /session not alive/,
+      /session not attached|session not alive/,
     );
     log("resize arbitration ok");
 

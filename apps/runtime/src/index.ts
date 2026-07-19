@@ -594,6 +594,7 @@ async function main(): Promise<void> {
     if (evt.event === "session.exit" || evt.event === "session.removed") {
       const sessionId = (evt.payload as { sessionId?: string }).sessionId;
       if (sessionId) {
+        gateway.dropSession(sessionId);
         pendingFocusClaims.delete(sessionId);
         focusOwners.delete(sessionId);
         void runSessionSize(sessionId, () => {
