@@ -37,6 +37,8 @@ export interface Conn {
   // 已附着的画面 channel -> surface id，用于按连接释放最后一个订阅者。
   browserChannels: Map<number, string>;
   simChannels: Map<number, string>;
+  // udid -> 当前 attach RPC 的意图 token；detach/断线可在 channel 产生前取消。
+  pendingSimAttaches: Map<string, symbol>;
   // 心跳:上一轮 ping 后是否收到 pong(取自 orca ws-transport 的半开连接回收)
   alive: boolean;
 }
@@ -115,6 +117,7 @@ export class Gateway {
         attached: new Map(),
         browserChannels: new Map(),
         simChannels: new Map(),
+        pendingSimAttaches: new Map(),
         alive: true,
       };
       this.conns.add(conn);
@@ -158,9 +161,12 @@ export class Gateway {
     return false;
   }
 
-  hasSimChannel(channel: number): boolean {
+  hasSimInterest(udid: string): boolean {
     for (const conn of this.conns) {
-      if (conn.simChannels.has(channel)) return true;
+      if (conn.pendingSimAttaches.has(udid)) return true;
+      for (const attachedUdid of conn.simChannels.values()) {
+        if (attachedUdid === udid) return true;
+      }
     }
     return false;
   }

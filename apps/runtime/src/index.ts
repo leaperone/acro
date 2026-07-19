@@ -344,16 +344,29 @@ async function main(): Promise<void> {
     "simulator.shutdown": async (_conn, { udid }) => ({
       state: await simulators.shutdown(udid),
     }),
-    "simulator.attach": (conn, { udid }) => {
-      const result = simulators.attach(udid);
-      conn.simChannels.set(result.channel, udid);
-      return result;
+    "simulator.attach": async (conn, { udid }) => {
+      const intent = Symbol(udid);
+      conn.pendingSimAttaches.set(udid, intent);
+      try {
+        const result = await simulators.attach(udid);
+        if (!gateway.hasConnection(conn) || conn.pendingSimAttaches.get(udid) !== intent) {
+          throw new Error("simulator attach cancelled");
+        }
+        conn.simChannels.set(result.channel, udid);
+        conn.pendingSimAttaches.delete(udid);
+        return result;
+      } catch (error) {
+        if (conn.pendingSimAttaches.get(udid) === intent) {
+          conn.pendingSimAttaches.delete(udid);
+        }
+        if (!gateway.hasSimInterest(udid)) simulators.detach(udid);
+        throw error;
+      }
     },
     "simulator.detach": (conn, { udid }) => {
-      const channels = removeSurfaceChannels(conn.simChannels, udid);
-      if (channels.length > 0 && channels.every((channel) => !gateway.hasSimChannel(channel))) {
-        simulators.detach(udid);
-      }
+      conn.pendingSimAttaches.delete(udid);
+      removeSurfaceChannels(conn.simChannels, udid);
+      if (!gateway.hasSimInterest(udid)) simulators.detach(udid);
       return { detached: true };
     },
     // ponytail: computer.* 目前全量转发,项目级安全策略(哪些 app/区域可操作)接入时再收紧
@@ -426,14 +439,15 @@ async function main(): Promise<void> {
   };
   // 占用设备的连接全部断开后自动释放,其他设备无需手动接管
   gateway.onConnClosed = (conn) => {
+    conn.pendingSimAttaches.clear();
     for (const sessionId of [...sessionSizes.keys()]) dropSizeVote(conn, sessionId);
     for (const [channel, browserId] of conn.browserChannels) {
       void browsers
         .detach(browserId, () => !gateway.hasBrowserChannel(channel))
         .catch(() => {});
     }
-    for (const [channel, udid] of conn.simChannels) {
-      if (!gateway.hasSimChannel(channel)) simulators.detach(udid);
+    for (const udid of conn.simChannels.values()) {
+      if (!gateway.hasSimInterest(udid)) simulators.detach(udid);
     }
     const deviceId = conn.device?.id;
     if (!deviceId || gateway.hasDeviceConnection(deviceId)) return;

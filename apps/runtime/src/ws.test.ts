@@ -32,6 +32,7 @@ function fixture(bufferedAmount: number) {
     attached: new Map(),
     browserChannels: new Map(),
     simChannels: new Map(),
+    pendingSimAttaches: new Map(),
     alive: true,
   } as unknown as Conn;
   const gateway = new Gateway({} as DeviceRegistry, new Uint8Array(32), {} as Handlers, () => {});
@@ -117,6 +118,7 @@ test("surface capture remains active until the last connection leaves", () => {
     ...conn,
     browserChannels: new Map<number, string>(),
     simChannels: new Map<number, string>(),
+    pendingSimAttaches: new Map<string, symbol>(),
   };
   try {
     conn.browserChannels.set(7, "browser");
@@ -128,6 +130,21 @@ test("surface capture remains active until the last connection leaves", () => {
     gateway.dropBrowserChannel(7);
     assert.equal(gateway.hasBrowserChannel(7), false);
     assert.equal(second.browserChannels.size, 0);
+  } finally {
+    close();
+  }
+});
+
+test("simulator interest includes pending and attached subscribers", () => {
+  const { gateway, conn, close } = fixture(0);
+  try {
+    conn.pendingSimAttaches.set("sim", Symbol("pending"));
+    assert.equal(gateway.hasSimInterest("sim"), true);
+    conn.pendingSimAttaches.clear();
+    conn.simChannels.set(9, "sim");
+    assert.equal(gateway.hasSimInterest("sim"), true);
+    conn.simChannels.clear();
+    assert.equal(gateway.hasSimInterest("sim"), false);
   } finally {
     close();
   }
