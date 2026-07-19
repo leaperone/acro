@@ -221,8 +221,11 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
       }
     };
     c.onEvent = (event, payload) => {
-      if (event === "session.exit" && (payload as { sessionId: string }).sessionId === session.id) {
-        done((payload as { exitCode: number | null }).exitCode ?? 0);
+      if (
+        (event === "session.exit" || event === "session.removed") &&
+        (payload as { sessionId: string }).sessionId === session.id
+      ) {
+        done((payload as { exitCode?: number | null }).exitCode ?? 0);
       }
     };
     // close 和 error 都会触发;reconnecting 去重,断线自动重挂载而不是退出

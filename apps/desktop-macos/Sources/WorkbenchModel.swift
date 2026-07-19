@@ -725,7 +725,11 @@ final class WorkbenchModel: ObservableObject {
         let targetServerId = serverId(for: connection)
         do {
             let workspaceId = connection.workspaces.first { $0.sessionIds.contains(session.id) }?.id
-            _ = try await connection.rpc("session.kill", ["sessionId": session.id])
+            do {
+                _ = try await connection.rpc("session.remove", ["sessionId": session.id])
+            } catch where error.localizedDescription == "session.remove" {
+                _ = try await connection.rpc("session.kill", ["sessionId": session.id])
+            }
             pendingSessionTermination = nil
             if let targetServerId {
                 TerminalSurfaceCache.shared.evict(serverId: targetServerId, sessionId: session.id)

@@ -22,7 +22,11 @@ const { Terminal } = xtermHeadless;
 const { SerializeAddon } = xtermSerialize;
 type Terminal = InstanceType<typeof Terminal>;
 type SerializeAddon = InstanceType<typeof SerializeAddon>;
-import { Session as SessionSchema, type Session } from "@acro/protocol";
+import {
+  Session as SessionSchema,
+  SessionId as SessionIdSchema,
+  type Session,
+} from "@acro/protocol";
 import { encodeOutFrame, decodeFrame, FRAME_IN } from "@acro/protocol";
 import { paths, ensureStateDirs } from "../paths.ts";
 import { acquireProcessLock } from "../process-lock.ts";
@@ -624,10 +628,25 @@ const handlers: Record<string, Handler> = {
     return {};
   },
   "session.remove": async (params: { sessionId: string }) => {
-    await live.get(params.sessionId)?.remove();
-    dead.delete(params.sessionId);
+    SessionIdSchema.parse(params.sessionId);
+    const session = live.get(params.sessionId);
+    const removedDead = dead.has(params.sessionId);
+    if (session) await session.remove(false);
     fs.rmSync(path.join(paths.sessions, params.sessionId), { recursive: true, force: true });
-    return {};
+    if (removedDead) dead.delete(params.sessionId);
+    const removed = session !== undefined || removedDead;
+    if (removed) {
+      setImmediate(() => {
+        if (session) {
+          emitEvent("session.exit", {
+            sessionId: params.sessionId,
+            exitCode: session.meta.exitCode,
+          });
+        }
+        emitEvent("session.removed", { sessionId: params.sessionId });
+      });
+    }
+    return { removed };
   },
 };
 

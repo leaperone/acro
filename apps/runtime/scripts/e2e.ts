@@ -26,6 +26,7 @@ const env = {
   ...process.env,
   ACRO_STATE_DIR: stateDir,
   ACRO_PORT: String(PORT),
+  ACRO_TEST_SESSION_CLEANUP_GRACE_MS: "50",
 };
 
 function log(msg: string): void {
@@ -202,6 +203,64 @@ async function main(): Promise<void> {
       [updatedWorkspace.id],
     );
     log("workspace updated");
+
+    const workspaceStateBeforeTraversal = fs.readFileSync(
+      path.join(stateDir, "workspace-state.json"),
+      "utf8",
+    );
+    await assert.rejects(
+      client.rpc("session.remove", { sessionId: "../workspace-state.json" }),
+    );
+    assert.equal(
+      fs.readFileSync(path.join(stateDir, "workspace-state.json"), "utf8"),
+      workspaceStateBeforeTraversal,
+    );
+    log("session removal rejects path traversal");
+
+    const untrackedSession = await client.rpc<Session>("session.create", {
+      command: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    await client.rpc("session.kill", { sessionId: untrackedSession.id });
+    const untrackedCleanupDeadline = Date.now() + 5000;
+    while (
+      (await client.rpc<Session[]>("session.list")).some(
+        (item) => item.id === untrackedSession.id,
+      )
+    ) {
+      if (Date.now() > untrackedCleanupDeadline) {
+        throw new Error("untracked dead session was not removed");
+      }
+      await sleep(50);
+    }
+    assert.equal(
+      fs.existsSync(path.join(stateDir, "sessions", untrackedSession.id)),
+      false,
+    );
+    log("untracked dead session removed");
+
+    const removedSession = await client.rpc<Session>("session.create", {
+      workspaceId: updatedWorkspace.id,
+      command: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    await client.rpc("session.remove", { sessionId: removedSession.id });
+    assert.equal(
+      (await client.rpc<Session[]>("session.list")).some(
+        (item) => item.id === removedSession.id,
+      ),
+      false,
+    );
+    assert.equal(
+      (await client.rpc<Workspace[]>("workspace.list"))
+        .find((item) => item.id === updatedWorkspace.id)
+        ?.sessionIds.includes(removedSession.id),
+      false,
+    );
+    assert.equal(fs.existsSync(path.join(stateDir, "sessions", removedSession.id)), false);
+    log("explicit session removal updates workspace");
 
     // 首次快照异步写失败也必须回滚 PTY、映射、checkpoint 和未发布事件。
     process.env.ACRO_STATE_DIR = stateDir;
