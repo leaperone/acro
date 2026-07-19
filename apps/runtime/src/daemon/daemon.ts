@@ -29,7 +29,11 @@ import { acquireProcessLock } from "../process-lock.ts";
 import { readJson, writeJsonAtomic } from "../store.ts";
 import { FrameReader, KIND_BIN, KIND_JSON, packBin, packJson } from "./wire.ts";
 import { utf8SafeCut } from "./utf8.ts";
-import { daemonClientBufferExceeded, shouldPausePty } from "./backpressure.ts";
+import {
+  daemonClientBufferExceeded,
+  daemonSessionCapacityExceeded,
+  shouldPausePty,
+} from "./backpressure.ts";
 
 const SCROLLBACK = 5000;
 const CHECKPOINT_INTERVAL_MS = 20_000;
@@ -543,6 +547,7 @@ async function createSession(params: CreateSessionParams, id: string): Promise<u
   const existing = live.get(id);
   if (existing) return { session: existing.meta, handle: existing.handle };
   if (dead.has(id)) throw new Error("session id already exists");
+  if (daemonSessionCapacityExceeded(live.size)) throw new Error("live session limit reached");
   const session = new DaemonSession({ ...params, id }, handleOutput, handleExit, handleTitle);
   live.set(session.meta.id, session);
   liveByHandle.set(session.handle, session);

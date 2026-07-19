@@ -20,6 +20,8 @@ async function loadChromium(): Promise<typeof import("playwright-core").chromium
 
 const DEFAULT_WIDTH = 1280;
 const DEFAULT_HEIGHT = 800;
+// 每个页面都可能持有 renderer；并发 open 也必须占用名额，不能靠竞态越过上限。
+export const MAX_BROWSER_SURFACES = 32;
 
 function findChromium(): string {
   const cache = path.join(os.homedir(), "Library", "Caches", "ms-playwright");
@@ -56,6 +58,7 @@ export class BrowserManager extends EventEmitter {
   private context: BrowserContext | null = null;
   private contextStarting: Promise<BrowserContext> | null = null;
   private surfaces = new Map<string, BrowserSurface>();
+  private openingSurfaces = 0;
   private nextHandle = 1;
 
   private ensureContext(): Promise<BrowserContext> {
@@ -89,38 +92,50 @@ export class BrowserManager extends EventEmitter {
     width?: number | undefined;
     height?: number | undefined;
   }): Promise<string> {
-    const context = await this.ensureContext();
-    const page = await context.newPage();
-    const width = opts.width ?? DEFAULT_WIDTH;
-    const height = opts.height ?? DEFAULT_HEIGHT;
-    await page.setViewportSize({ width, height });
-    const cdp = await context.newCDPSession(page);
-    const surface: BrowserSurface = {
-      id: crypto.randomUUID(),
-      handle: this.nextHandle++,
-      page,
-      cdp,
-      width,
-      height,
-      seq: 0,
-      casting: false,
-      castStarting: null,
-    };
-    this.surfaces.set(surface.id, surface);
-    page.on("close", () => {
-      this.surfaces.delete(surface.id);
-      this.emit("closed", surface.id, surface.handle);
-    });
-    cdp.on("Page.screencastFrame", (frame: { data: string; sessionId: number }) => {
-      surface.seq += 1;
-      this.emit("frame", surface.handle, surface.seq, Buffer.from(frame.data, "base64"));
-      void cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId }).catch(() => {});
-    });
-    await page.goto(opts.url).catch(() => {}); // 目标可能还没起,页面留在错误页即可
-    if (!this.surfaces.has(surface.id)) {
-      throw new Error("browser surface closed during open");
+    if (this.surfaces.size + this.openingSurfaces >= MAX_BROWSER_SURFACES) {
+      throw new Error("browser surface limit reached");
     }
-    return surface.id;
+    this.openingSurfaces += 1;
+    let page: Page | null = null;
+    try {
+      const context = await this.ensureContext();
+      page = await context.newPage();
+      const width = opts.width ?? DEFAULT_WIDTH;
+      const height = opts.height ?? DEFAULT_HEIGHT;
+      await page.setViewportSize({ width, height });
+      const cdp = await context.newCDPSession(page);
+      const surface: BrowserSurface = {
+        id: crypto.randomUUID(),
+        handle: this.nextHandle++,
+        page,
+        cdp,
+        width,
+        height,
+        seq: 0,
+        casting: false,
+        castStarting: null,
+      };
+      this.surfaces.set(surface.id, surface);
+      page.on("close", () => {
+        this.surfaces.delete(surface.id);
+        this.emit("closed", surface.id, surface.handle);
+      });
+      cdp.on("Page.screencastFrame", (frame: { data: string; sessionId: number }) => {
+        surface.seq += 1;
+        this.emit("frame", surface.handle, surface.seq, Buffer.from(frame.data, "base64"));
+        void cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId }).catch(() => {});
+      });
+      await page.goto(opts.url).catch(() => {}); // 目标可能还没起,页面留在错误页即可
+      if (!this.surfaces.has(surface.id)) {
+        throw new Error("browser surface closed during open");
+      }
+      return surface.id;
+    } catch (error) {
+      await page?.close().catch(() => {});
+      throw error;
+    } finally {
+      this.openingSurfaces -= 1;
+    }
   }
 
   private get(browserId: string): BrowserSurface {

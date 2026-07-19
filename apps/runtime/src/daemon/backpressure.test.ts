@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   daemonClientBufferExceeded,
+  daemonSessionCapacityExceeded,
   MAX_DAEMON_CLIENT_BUFFER_BYTES,
+  MAX_LIVE_SESSIONS,
   PARSE_BACKLOG_HIGH_CHARS,
   PARSE_BACKLOG_LOW_CHARS,
   shouldPausePty,
@@ -18,4 +20,9 @@ test("pty flow control uses high and low watermarks", () => {
 test("daemon clients are dropped before their write queue exceeds the limit", () => {
   assert.equal(daemonClientBufferExceeded(0, MAX_DAEMON_CLIENT_BUFFER_BYTES), false);
   assert.equal(daemonClientBufferExceeded(1, MAX_DAEMON_CLIENT_BUFFER_BYTES), true);
+});
+
+test("daemon rejects new PTYs after reaching the live session limit", () => {
+  assert.equal(daemonSessionCapacityExceeded(MAX_LIVE_SESSIONS - 1), false);
+  assert.equal(daemonSessionCapacityExceeded(MAX_LIVE_SESSIONS), true);
 });
