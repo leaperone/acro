@@ -283,6 +283,7 @@ enum ShortcutSettings {
 
     // 终端 NSView 用它判断哪些按键属于应用而不能被终端吃掉
     static func isAppShortcut(_ event: NSEvent) -> Bool {
+        if StoredShortcut(key: "q", command: true).matches(event) { return true }
         if workspaceDigit(event) != nil || tabDigit(event) != nil { return true }
         return ShortcutAction.allCases.contains { stored($0).matches(event) }
     }

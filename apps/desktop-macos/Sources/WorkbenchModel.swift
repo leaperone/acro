@@ -154,6 +154,7 @@ final class WorkbenchModel: ObservableObject {
     // 合并式延迟对账:视图更新事务内不能同步改 @Published,否则触发
     // "Publishing changes from within view updates" 未定义行为。挪到下一个 main-actor turn。
     private var reconcileScheduled = false
+    private var startupWorkspaceReconciled = false
     private var flagsMonitor: Any?
     private static let layoutKey = "acro.desktop.workbench.layout.v2"
     private static let sidebarModeKey = "acro.desktop.sidebar.view-mode"
@@ -1065,6 +1066,7 @@ final class WorkbenchModel: ObservableObject {
         Task { @MainActor in
             reconcileScheduled = false
             reconcileLayoutState()
+            selectLiveWorkspaceOnStartupIfNeeded()
         }
     }
 
@@ -1075,6 +1077,7 @@ final class WorkbenchModel: ObservableObject {
             let shouldFocusTerminal = !layoutRestored
             restoreLayoutIfNeeded()
             reconcileLayoutState()
+            selectLiveWorkspaceOnStartupIfNeeded()
             if shouldFocusTerminal { requestTerminalFocus() }
         }
     }
@@ -1192,6 +1195,21 @@ final class WorkbenchModel: ObservableObject {
             if let key = scopedID(selectedWorkspaceId) { expandedWorkspaceIds.insert(key) }
             expandGroupContaining(selectedWorkspaceId)
         }
+        syncSelectionFromLayout()
+    }
+
+    func selectLiveWorkspaceOnStartupIfNeeded() {
+        guard !startupWorkspaceReconciled else { return }
+        if !currentWorkspaceSessions.isEmpty {
+            startupWorkspaceReconciled = true
+            return
+        }
+        guard let workspace = runtime.workspaces.first(where: { !sessions(in: $0).isEmpty })
+        else { return }
+        startupWorkspaceReconciled = true
+        selectedWorkspaceId = workspace.id
+        expandGroupContaining(workspace.id)
+        if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
         syncSelectionFromLayout()
     }
 
