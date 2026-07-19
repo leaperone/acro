@@ -44,8 +44,12 @@ test("daemon response hooks run before following frames in the same chunk", asyn
   assert.equal(frameSeen, true);
 });
 
-test("daemon requests time out and cannot exceed the pending budget", async () => {
+test("daemon requests time out, stall new work, and recover after late responses", async () => {
   const client = new DaemonClient(20, 1);
+  let drainedMethods: string[] = [];
+  client.on("lateResponsesDrained", (methods: string[]) => {
+    drainedMethods = methods;
+  });
   (
     client as unknown as {
       socket: net.Socket;
@@ -60,6 +64,43 @@ test("daemon requests time out and cannot exceed the pending budget", async () =
   const blocked = client.request("blocked");
   await assert.rejects(client.request("overflow"), /queue full/);
   await assert.rejects(blocked, /daemon timeout: blocked/);
+  await assert.rejects(client.request("stalled"), /daemon stalled/);
+  assert.equal(
+    (client as unknown as { pending: Map<number, unknown> }).pending.size,
+    0,
+  );
+
+  (client as unknown as { onData(chunk: Buffer): void }).onData(
+    packJson({ t: "res", id: 1, ok: true, result: {} }),
+  );
+  assert.deepEqual(drainedMethods, ["blocked"]);
+  const recovered = client.request("recovered");
+  (client as unknown as { onData(chunk: Buffer): void }).onData(
+    packJson({ t: "res", id: 2, ok: true, result: { ok: true } }),
+  );
+  assert.deepEqual(await recovered, { ok: true });
+});
+
+test("daemon write failures close the broken socket and release pending work", async () => {
+  const client = new DaemonClient(1000, 1);
+  let destroyed = false;
+  (
+    client as unknown as {
+      socket: net.Socket;
+    }
+  ).socket = {
+    write: (_data: Buffer, callback?: (error?: Error | null) => void) => {
+      callback?.(new Error("write failed"));
+      return false;
+    },
+    destroy: () => {
+      destroyed = true;
+      return undefined as unknown as net.Socket;
+    },
+  } as unknown as net.Socket;
+
+  await assert.rejects(client.request("write"), /write failed/);
+  assert.equal(destroyed, true);
   assert.equal(
     (client as unknown as { pending: Map<number, unknown> }).pending.size,
     0,
