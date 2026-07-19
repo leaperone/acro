@@ -193,7 +193,13 @@ final class RuntimeConnection: ObservableObject {
 
     private struct RefreshJob {
         let id: Int
+        let generation: Int
         let task: Task<Bool, Never>
+    }
+
+    private enum InitialRefreshResult {
+        case complete
+        case retry(after: TimeInterval)
     }
 
     private var pending: [Int: PendingRpc] = [:]
@@ -204,20 +210,37 @@ final class RuntimeConnection: ObservableObject {
     private var probeTimer: Timer?
     private var probeOutstanding = false
     private var reconnectTask: Task<Void, Never>?
+    private var initialRefreshTask: Task<Void, Never>?
+    private let initialRefreshDelays: [TimeInterval]
     var onTerminalFrame: ((UInt32, UInt32, Data) -> Void)?
 
     // orca RECONNECT_DELAYS_MS 的等价物,尾项为稳态重试间隔
     private static let reconnectDelays: [TimeInterval] = [0.5, 1, 2, 3, 5, 8]
 
     init(
-        refreshSnapshotProvider: (@MainActor () async throws -> RefreshSnapshot)? = nil
+        refreshSnapshotProvider: (@MainActor () async throws -> RefreshSnapshot)? = nil,
+        initialRefreshDelays: [TimeInterval]? = nil
     ) {
         self.refreshSnapshotProvider = refreshSnapshotProvider
+        self.initialRefreshDelays = initialRefreshDelays ?? Self.reconnectDelays
     }
 
     func connect(server: ServerEntry) {
+        cancelInitialRefresh()
+        cancelRefreshJobs()
         reconnectTask?.cancel()
         reconnectTask = nil
+        generation += 1
+        failPending(RpcError(message: "reconnecting"))
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        session = nil
+        handshake = nil
+        state = .disconnected
+        connectedEndpoint = nil
+        probeTimer?.invalidate()
+        probeTimer = nil
+        probeOutstanding = false
         self.server = server
         endpointIndex = 0
         reconnectAttempt = 0
@@ -225,6 +248,7 @@ final class RuntimeConnection: ObservableObject {
     }
 
     func disconnect() {
+        cancelInitialRefresh()
         reconnectTask?.cancel()
         reconnectTask = nil
         server = nil
@@ -239,10 +263,7 @@ final class RuntimeConnection: ObservableObject {
         probeTimer?.invalidate()
         probeTimer = nil
         probeOutstanding = false
-        currentRefreshJob?.task.cancel()
-        nextRefreshJob?.task.cancel()
-        currentRefreshJob = nil
-        nextRefreshJob = nil
+        cancelRefreshJobs()
         failPending(RpcError(message: "disconnected"))
     }
 
@@ -305,6 +326,9 @@ final class RuntimeConnection: ObservableObject {
 
     private func handleDisconnect(generation: Int) {
         guard self.generation == generation, state != .disconnected else { return }
+        cancelInitialRefresh()
+        cancelRefreshJobs()
+        self.generation += 1
         state = .disconnected
         connectedEndpoint = nil
         session = nil
@@ -430,7 +454,7 @@ final class RuntimeConnection: ObservableObject {
                 self.server = server
             }
             connectedEndpoint = server.map { $0.orderedEndpoints[endpointIndex % $0.orderedEndpoints.count] }
-            Task { await refresh() }
+            startInitialRefresh()
         case "res":
             guard let id = obj["id"] as? Int else { return }
             if obj["ok"] as? Bool == true {
@@ -485,38 +509,99 @@ final class RuntimeConnection: ObservableObject {
 
     @discardableResult
     func refresh() async -> Bool {
-        await enqueueRefresh().task.value
+        await refresh(generation: generation)
+    }
+
+    func startInitialRefresh() {
+        cancelInitialRefresh()
+        let connectionGeneration = generation
+        initialRefreshTask = Task { [weak self] in
+            var attempt = 0
+            while !Task.isCancelled {
+                guard let result = await self?.runInitialRefreshAttempt(
+                    generation: connectionGeneration,
+                    attempt: attempt
+                ) else { return }
+                guard case .retry(let delay) = result else { return }
+                attempt += 1
+                try? await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    private func cancelInitialRefresh() {
+        initialRefreshTask?.cancel()
+        initialRefreshTask = nil
+    }
+
+    private func runInitialRefreshAttempt(
+        generation: Int,
+        attempt: Int
+    ) async -> InitialRefreshResult {
+        guard !Task.isCancelled,
+              self.generation == generation,
+              server != nil,
+              state != .connected
+        else { return .complete }
+        if await refresh(generation: generation) { return .complete }
+        guard !Task.isCancelled,
+              self.generation == generation,
+              server != nil,
+              state != .connected
+        else { return .complete }
+        let delay = initialRefreshDelays.isEmpty
+            ? 0.5
+            : initialRefreshDelays[min(attempt, initialRefreshDelays.count - 1)]
+        return .retry(after: delay)
+    }
+
+    private func cancelRefreshJobs() {
+        currentRefreshJob?.task.cancel()
+        nextRefreshJob?.task.cancel()
+        currentRefreshJob = nil
+        nextRefreshJob = nil
     }
 
     private func scheduleRefresh() {
-        _ = enqueueRefresh()
+        _ = enqueueRefresh(generation: generation)
     }
 
-    private func enqueueRefresh() -> RefreshJob {
+    private func refresh(generation: Int) async -> Bool {
+        await enqueueRefresh(generation: generation).task.value
+    }
+
+    private func enqueueRefresh(generation: Int) -> RefreshJob {
         if let currentRefreshJob {
+            if currentRefreshJob.generation != generation {
+                cancelRefreshJobs()
+                return enqueueRefresh(generation: generation)
+            }
             if let nextRefreshJob { return nextRefreshJob }
-            let job = makeRefreshJob(after: currentRefreshJob.task)
+            let job = makeRefreshJob(after: currentRefreshJob.task, generation: generation)
             nextRefreshJob = job
             return job
         }
-        let job = makeRefreshJob(after: nil)
+        let job = makeRefreshJob(after: nil, generation: generation)
         currentRefreshJob = job
         return job
     }
 
-    private func makeRefreshJob(after predecessor: Task<Bool, Never>?) -> RefreshJob {
+    private func makeRefreshJob(
+        after predecessor: Task<Bool, Never>?,
+        generation: Int
+    ) -> RefreshJob {
         nextRefreshJobId &+= 1
         let id = nextRefreshJobId
         let task = Task { [weak self] in
             if let predecessor { _ = await predecessor.value }
             guard !Task.isCancelled else { return false }
             guard let self else { return false }
-            let connectionGeneration = generation
-            let result = await performRefresh(connectionGeneration: connectionGeneration)
+            guard self.generation == generation else { return false }
+            let result = await performRefresh(connectionGeneration: generation)
             completeRefreshJob(id: id)
             return result
         }
-        return RefreshJob(id: id, task: task)
+        return RefreshJob(id: id, generation: generation, task: task)
     }
 
     private func completeRefreshJob(id: Int) {
