@@ -75,8 +75,15 @@ export class SimulatorManager extends EventEmitter {
     return "Shutdown";
   }
 
-  attach(udid: string): { channel: number } {
-    const existing = this.attached.get(udid);
+  async attach(udid: string): Promise<{ channel: number }> {
+    let existing = this.attached.get(udid);
+    if (existing) return { channel: existing.handle };
+    const devices = await this.list();
+    if (!devices.some((device) => device.udid === udid)) {
+      throw new Error("simulator not found");
+    }
+    // list() 等待期间另一个连接可能已经完成 attach。
+    existing = this.attached.get(udid);
     if (existing) return { channel: existing.handle };
     const handle = this.nextHandle++;
     const state = { handle, seq: 0, timer: setInterval(() => void this.capture(udid), POLL_MS) };

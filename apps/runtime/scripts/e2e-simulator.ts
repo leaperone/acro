@@ -49,6 +49,12 @@ async function main(): Promise<void> {
     const rpc = <T = any>(method: string, params: unknown = {}) =>
       client.rpc<T>(method, params, 180000);
 
+    await assert.rejects(
+      rpc("simulator.attach", { udid: "00000000-0000-0000-0000-000000000000" }),
+      /simulator not found/,
+    );
+    console.log("[e2e] forged UDID rejected");
+
     const devices = await rpc<Array<{ udid: string; name: string; state: string }>>(
       "simulator.list",
     );

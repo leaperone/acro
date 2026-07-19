@@ -16,3 +16,16 @@ test("simulator detach announces the channel that stopped polling", () => {
 
   assert.deepEqual(detached, ["sim", 7]);
 });
+
+test("simulator attach rejects unknown UDIDs before polling", async () => {
+  const manager = new SimulatorManager();
+  manager.list = async () => [
+    { udid: "real-simulator", name: "iPhone", state: "Shutdown", runtime: "iOS" },
+  ];
+
+  await assert.rejects(manager.attach("forged-simulator"), /simulator not found/);
+  assert.equal(
+    (manager as unknown as { attached: Map<string, unknown> }).attached.size,
+    0,
+  );
+});
