@@ -5,12 +5,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private extension UTType {
+extension UTType {
     static let acroTabTransfer = UTType(
         exportedAs: "one.leaper.acro.tab-transfer",
         conformingTo: .data
     )
 }
+
+// AppKit 拖拽层与 SwiftUI 共用同一个标签拖拽类型
+let acroTabTransferPasteboardType = NSPasteboard.PasteboardType(UTType.acroTabTransfer.identifier)
 
 // 拖到窗格身上的落点区域:沿用 Bonsplit 的 25% / 最少 80pt 边缘分屏区。
 enum PaneDropZone: Equatable {
@@ -240,39 +243,36 @@ private struct PaneView: View {
                         ContentUnavailableView("终端已结束", systemImage: "terminal")
                     }
 
-                    // 常驻 drop layer:内嵌 AppKit 终端会抢走容器级拖拽目标。
-                    // Bonsplit 同样把透明 drop layer 放在内容最上层。
-                    Color.clear
-                        .onDrop(
-                            of: [.acroTabTransfer],
-                            delegate: PaneBodyDropDelegate(
-                                size: { geometry.size },
-                                zone: Binding(get: { dropZone }, set: { dropZone = $0 }),
-                                canAccept: {
-                                    guard let payload = model.draggingTab,
-                                          model.validDrag(payload) else {
-                                        return false
-                                    }
-                                    return !(payload.sourcePaneId == pane.id
-                                        && pane.sessionIds == [payload.sessionId])
-                                },
-                                perform: { zone in
-                                    guard let payload = model.draggingTab else { return false }
-                                    model.draggingTab = nil
-                                    if let direction = zone.direction {
-                                        model.moveTabToSplit(
-                                            payload,
-                                            ofPane: pane.id,
-                                            direction: direction,
-                                            newPaneFirst: zone.newPaneFirst
-                                        )
-                                    } else {
-                                        model.moveTab(payload, toPane: pane.id, at: nil)
-                                    }
-                                    return true
-                                }
-                            )
-                        )
+                    // Drop 落点层:内嵌 ghostty 终端是 AppKit NSView,SwiftUI 的 .onDrop 叠在其上
+                    // 收不到拖拽(命中树里终端 NSView 常抢先),分屏"没反应"。改用真正的 AppKit
+                    // NSDraggingDestination 视图,只在拖拽进行中接管命中、平时穿透。做法取自 cmux。
+                    PaneDropTargetLayer(
+                        isDragActive: model.draggingTab != nil,
+                        canAccept: {
+                            guard let payload = model.draggingTab,
+                                  model.validDrag(payload) else {
+                                return false
+                            }
+                            return !(payload.sourcePaneId == pane.id
+                                && pane.sessionIds == [payload.sessionId])
+                        },
+                        onZone: { dropZone = $0 },
+                        perform: { zone in
+                            guard let payload = model.draggingTab else { return false }
+                            model.draggingTab = nil
+                            if let direction = zone.direction {
+                                model.moveTabToSplit(
+                                    payload,
+                                    ofPane: pane.id,
+                                    direction: direction,
+                                    newPaneFirst: zone.newPaneFirst
+                                )
+                            } else {
+                                model.moveTab(payload, toPane: pane.id, at: nil)
+                            }
+                            return true
+                        }
+                    )
 
                     if let dropZone {
                         RoundedRectangle(cornerRadius: 8)
@@ -447,6 +447,11 @@ private struct PaneTabBar: View {
                     completion(data, nil)
                     return nil
                 }
+                // 把类型镜像到 drag 剪贴板:AppKit 落点层靠 registerForDraggedTypes 匹配才会收到
+                // 拖拽回调,而 SwiftUI 对自定义 UTType 的 drag-pasteboard 桥接不可靠(cmux 同款兜底)。
+                let dragPasteboard = NSPasteboard(name: .drag)
+                dragPasteboard.addTypes([acroTabTransferPasteboardType], owner: nil)
+                dragPasteboard.setData(data, forType: acroTabTransferPasteboardType)
                 provider.onEnd = { Task { @MainActor in model.endTabDrag(payload) } }
                 return provider
             },
@@ -631,34 +636,4 @@ private struct TabBarDropDelegate: DropDelegate {
 
     func validateDrop(info: DropInfo) -> Bool { canAccept() }
     func performDrop(info: DropInfo) -> Bool { perform() }
-}
-
-private struct PaneBodyDropDelegate: DropDelegate {
-    let size: () -> CGSize
-    let zone: Binding<PaneDropZone?>
-    let canAccept: () -> Bool
-    let perform: (PaneDropZone) -> Bool
-
-    func validateDrop(info: DropInfo) -> Bool { canAccept() }
-
-    func dropEntered(info: DropInfo) {
-        guard canAccept() else { return }
-        zone.wrappedValue = PaneDropZone.zone(at: info.location, in: size())
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard canAccept() else { return DropProposal(operation: .forbidden) }
-        zone.wrappedValue = PaneDropZone.zone(at: info.location, in: size())
-        return DropProposal(operation: .move)
-    }
-
-    func dropExited(info: DropInfo) {
-        zone.wrappedValue = nil
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        let target = zone.wrappedValue ?? PaneDropZone.zone(at: info.location, in: size())
-        zone.wrappedValue = nil
-        return perform(target)
-    }
 }
