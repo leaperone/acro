@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type net from "node:net";
 import test from "node:test";
 import { encodeOutFrame } from "@acro/protocol";
+import { MAX_DAEMON_CLIENT_BUFFER_BYTES } from "./backpressure.ts";
 import { DaemonClient } from "./client.ts";
 import { packBin, packJson } from "./wire.ts";
 
@@ -105,4 +106,31 @@ test("daemon write failures close the broken socket and release pending work", a
     (client as unknown as { pending: Map<number, unknown> }).pending.size,
     0,
   );
+});
+
+test("terminal input drops a stalled daemon socket before its queue exceeds the limit", () => {
+  const client = new DaemonClient();
+  let writes = 0;
+  let destroyed = false;
+  (
+    client as unknown as {
+      socket: net.Socket;
+    }
+  ).socket = {
+    destroyed: false,
+    writableLength: MAX_DAEMON_CLIENT_BUFFER_BYTES,
+    write: () => {
+      writes += 1;
+      return false;
+    },
+    destroy: () => {
+      destroyed = true;
+      return undefined as unknown as net.Socket;
+    },
+  } as unknown as net.Socket;
+
+  client.sendInput(1, Uint8Array.of(1));
+
+  assert.equal(writes, 0);
+  assert.equal(destroyed, true);
 });
