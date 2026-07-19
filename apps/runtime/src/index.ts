@@ -20,6 +20,7 @@ import {
 import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.ts";
 import { ensureStateDirs, paths } from "./paths.ts";
 import { acquireProcessLock } from "./process-lock.ts";
+import { ExclusiveRunner } from "./exclusive.ts";
 
 interface SnapshotResult {
   handle: number;
@@ -65,6 +66,12 @@ async function main(): Promise<void> {
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
   const workspaces = new WorkspaceRegistry();
+  for (const workspace of workspaces.listPendingRemovals()) {
+    await Promise.all(
+      workspace.sessionIds.map((sessionId) => removeDaemonSession(daemon, sessionId)),
+    );
+    workspaces.remove(workspace.id);
+  }
   const creatingSessionIds = new Set<string>();
   const reconcileWorkspaceSessions = async (): Promise<Session[]> => {
     const tracked = new Set(workspaces.list().flatMap((workspace) => workspace.sessionIds));
@@ -109,33 +116,20 @@ async function main(): Promise<void> {
   // 浏览器画面可被多个设备查看,控制权按设备互斥;runtime 重启会连同页面一起关闭。
   const browserControlOwners = new Map<string, { deviceId: string; deviceName: string }>();
   let computerControlOwner: { deviceId: string; deviceName: string } | null = null;
-  const controlTails = new Map<string, Promise<void>>();
-  const runExclusiveControl = async <T>(key: string, task: () => T | Promise<T>): Promise<T> => {
-    const previous = controlTails.get(key) ?? Promise.resolve();
-    let unlock!: () => void;
-    const current = new Promise<void>((resolve) => {
-      unlock = resolve;
-    });
-    const tail = previous.then(() => current);
-    controlTails.set(key, tail);
-    await previous;
-    try {
-      return await task();
-    } finally {
-      unlock();
-      if (controlTails.get(key) === tail) controlTails.delete(key);
-    }
-  };
+  const exclusive = new ExclusiveRunner();
   const runBrowserControl = <T>(browserId: string, task: () => T | Promise<T>): Promise<T> =>
-    runExclusiveControl(`browser:${browserId}`, task);
+    exclusive.run(`browser:${browserId}`, task);
   const runSessionControl = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
-    runExclusiveControl(`session:${sessionId}`, task);
+    exclusive.run(`session:${sessionId}`, task);
   const runSessionSize = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
-    runExclusiveControl(`size:${sessionId}`, task);
-  const runWorkspaceMutation = <T>(workspaceId: string, task: () => T | Promise<T>): Promise<T> =>
-    runExclusiveControl(`workspace:${workspaceId}`, task);
+    exclusive.run(`size:${sessionId}`, task);
+  const runWorkspaceMutation = <T>(
+    conn: Conn,
+    workspaceId: string,
+    task: () => T | Promise<T>,
+  ): Promise<T> => exclusive.run(`workspace:${workspaceId}`, task, conn.abortController.signal);
   const runComputerControl = <T>(task: () => T | Promise<T>): Promise<T> =>
-    runExclusiveControl("computer", task);
+    exclusive.run("computer", task);
   const requireActiveDevice = (conn: Conn): NonNullable<Conn["device"]> => {
     if (!conn.device || !gateway.hasConnection(conn)) throw new Error("connection closed");
     return conn.device;
@@ -236,16 +230,21 @@ async function main(): Promise<void> {
       emitRuntimeEvent("workspace.layoutChanged", { workspaceId, rev });
       return { rev };
     },
-    "workspace.remove": (_conn, { workspaceId, force }) =>
-      runWorkspaceMutation(workspaceId, async () => {
+    "workspace.remove": (conn, { workspaceId, force }) =>
+      runWorkspaceMutation(conn, workspaceId, async () => {
         const workspace = workspaces.get(workspaceId);
         if (!workspace) throw new Error("workspace not found");
+        const removalPending = workspaces.isRemovalPending(workspaceId);
         const sessions = await daemon.request<Session[]>("session.list");
         const hasActiveSessions = sessions.some(
           (session) => session.alive && workspace.sessionIds.includes(session.id),
         );
-        if (hasActiveSessions && !force) {
+        if (hasActiveSessions && !force && !removalPending) {
           throw new Error("workspace has active sessions");
+        }
+        if (!removalPending) {
+          conn.abortController.signal.throwIfAborted();
+          workspaces.beginRemoval(workspaceId);
         }
         await Promise.all(
           workspace.sessionIds.map((sessionId) =>
@@ -263,7 +262,7 @@ async function main(): Promise<void> {
         emitRuntimeEvent("workspace.removed", { workspaceId });
         return { removed: true };
       }),
-    "session.create": async (_conn, params) => {
+    "session.create": async (conn, params) => {
       const create = async (): Promise<Session> => {
         const workspace = params.workspaceId ? workspaces.get(params.workspaceId) : null;
         if (params.workspaceId && !workspace) throw new Error("workspace not found");
@@ -318,7 +317,7 @@ async function main(): Promise<void> {
         }
       };
       return params.workspaceId
-        ? runWorkspaceMutation(params.workspaceId, create)
+        ? runWorkspaceMutation(conn, params.workspaceId, create)
         : create();
     },
     "session.list": () => daemon.request<Session[]>("session.list"),

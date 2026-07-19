@@ -13,6 +13,10 @@ const WorkspaceStateSchema = z.object({
   v: z.literal(1),
   workspaces: z.array(WorkspaceSchema),
   workspaceGroups: z.array(WorkspaceGroupSchema),
+  deletingWorkspaceIds: z
+    .array(z.string())
+    .refine((ids) => new Set(ids).size === ids.length, "duplicate deleting workspace id")
+    .default([]),
 });
 const WorkspaceStateMarkerSchema = z.object({ v: z.literal(1) });
 const MISSING = Symbol("missing workspace state");
@@ -28,6 +32,7 @@ export class WorkspaceRegistry {
   private storage: WorkspaceStorage;
   private workspaces: Workspace[];
   private workspaceGroups: WorkspaceGroup[];
+  private deletingWorkspaceIds = new Set<string>();
 
   constructor(storage: WorkspaceStorage = paths) {
     this.storage = storage;
@@ -37,6 +42,7 @@ export class WorkspaceRegistry {
         const state = WorkspaceStateSchema.parse(stored);
         this.workspaces = state.workspaces;
         this.workspaceGroups = state.workspaceGroups;
+        this.deletingWorkspaceIds = new Set(state.deletingWorkspaceIds);
         this.ensureStateMarker();
       } else {
         const marker = readJson<unknown | typeof MISSING>(storage.workspaceStateMarker, MISSING);
@@ -49,13 +55,14 @@ export class WorkspaceRegistry {
           .array(WorkspaceGroupSchema)
           .parse(readJson<unknown>(storage.workspaceGroups, []));
         this.validateGroups(this.workspaces, this.workspaceGroups);
-        this.persist(this.workspaces, this.workspaceGroups);
+        this.persist(this.workspaces, this.workspaceGroups, this.deletingWorkspaceIds);
         this.ensureStateMarker();
       }
     } catch (error) {
       throw new Error(`invalid workspace state: ${(error as Error).message}`, { cause: error });
     }
     this.validateGroups(this.workspaces, this.workspaceGroups);
+    this.validateDeletingWorkspaces(this.workspaces, this.deletingWorkspaceIds);
   }
 
   list(): Workspace[] {
@@ -74,6 +81,26 @@ export class WorkspaceRegistry {
   getGroup(workspaceGroupId: string): WorkspaceGroup | null {
     const group = this.workspaceGroups.find((item) => item.id === workspaceGroupId);
     return group ? cloneWorkspaceGroup(group) : null;
+  }
+
+  listPendingRemovals(): Workspace[] {
+    return this.workspaces
+      .filter((workspace) => this.deletingWorkspaceIds.has(workspace.id))
+      .map(cloneWorkspace);
+  }
+
+  isRemovalPending(workspaceId: string): boolean {
+    return this.deletingWorkspaceIds.has(workspaceId);
+  }
+
+  beginRemoval(workspaceId: string): Workspace {
+    const current = this.get(workspaceId);
+    if (!current) throw new Error("workspace not found");
+    if (this.deletingWorkspaceIds.has(workspaceId)) return current;
+    this.commit((_workspaces, _groups, deletingWorkspaceIds) => {
+      deletingWorkspaceIds.add(workspaceId);
+    });
+    return current;
   }
 
   create(name?: string, workspaceGroupId?: string): Workspace {
@@ -194,6 +221,9 @@ export class WorkspaceRegistry {
   addSession(workspaceId: string, sessionId: string): void {
     const current = this.get(workspaceId);
     if (!current) throw new Error("workspace not found");
+    if (this.deletingWorkspaceIds.has(workspaceId)) {
+      throw new Error("workspace removal in progress");
+    }
     if (current.sessionIds.includes(sessionId)) return;
     this.commit((workspaces) => {
       this.getMutable(workspaces, workspaceId).sessionIds.push(sessionId);
@@ -225,31 +255,46 @@ export class WorkspaceRegistry {
   }
 
   remove(workspaceId: string): void {
-    this.commit((workspaces, groups) => {
+    this.commit((workspaces, groups, deletingWorkspaceIds) => {
       const index = workspaces.findIndex((workspace) => workspace.id === workspaceId);
       if (index === -1) throw new Error("workspace not found");
       workspaces.splice(index, 1);
+      deletingWorkspaceIds.delete(workspaceId);
       for (const group of groups) {
         group.workspaceIds = group.workspaceIds.filter((id) => id !== workspaceId);
       }
     });
   }
 
-  private commit(mutate: (workspaces: Workspace[], groups: WorkspaceGroup[]) => void): void {
+  private commit(
+    mutate: (
+      workspaces: Workspace[],
+      groups: WorkspaceGroup[],
+      deletingWorkspaceIds: Set<string>,
+    ) => void,
+  ): void {
     const workspaces = this.workspaces.map(cloneWorkspace);
     const groups = this.workspaceGroups.map(cloneWorkspaceGroup);
-    mutate(workspaces, groups);
+    const deletingWorkspaceIds = new Set(this.deletingWorkspaceIds);
+    mutate(workspaces, groups, deletingWorkspaceIds);
     this.validateGroups(workspaces, groups);
-    this.persist(workspaces, groups);
+    this.validateDeletingWorkspaces(workspaces, deletingWorkspaceIds);
+    this.persist(workspaces, groups, deletingWorkspaceIds);
     this.workspaces = workspaces;
     this.workspaceGroups = groups;
+    this.deletingWorkspaceIds = deletingWorkspaceIds;
   }
 
-  private persist(workspaces: Workspace[], workspaceGroups: WorkspaceGroup[]): void {
+  private persist(
+    workspaces: Workspace[],
+    workspaceGroups: WorkspaceGroup[],
+    deletingWorkspaceIds: ReadonlySet<string>,
+  ): void {
     writeJsonAtomic(this.storage.workspaceState, {
       v: 1,
       workspaces,
       workspaceGroups,
+      deletingWorkspaceIds: [...deletingWorkspaceIds],
     });
   }
 
@@ -293,6 +338,18 @@ export class WorkspaceRegistry {
           throw new Error(`workspace ${id} belongs to more than one workspace group`);
         }
         claimed.add(id);
+      }
+    }
+  }
+
+  private validateDeletingWorkspaces(
+    workspaces: Workspace[],
+    deletingWorkspaceIds: ReadonlySet<string>,
+  ): void {
+    const workspaceIds = new Set(workspaces.map((workspace) => workspace.id));
+    for (const workspaceId of deletingWorkspaceIds) {
+      if (!workspaceIds.has(workspaceId)) {
+        throw new Error(`deleting workspace does not exist: ${workspaceId}`);
       }
     }
   }

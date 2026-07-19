@@ -224,6 +224,38 @@ test("failed aggregate commit leaves memory and disk on the previous state", () 
   }
 });
 
+test("workspace removal intent survives failed cleanup commits", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-removal-intent-"));
+  const storage = workspaceStorage(directory);
+
+  try {
+    const registry = new WorkspaceRegistry(storage);
+    const workspace = registry.create("Acro");
+    registry.addSession(workspace.id, "session-id");
+    registry.beginRemoval(workspace.id);
+
+    assert.equal(registry.isRemovalPending(workspace.id), true);
+    assert.throws(() => registry.addSession(workspace.id, "late-session"), /removal in progress/);
+    assert.deepEqual(new WorkspaceRegistry(storage).listPendingRemovals().map((item) => item.id), [
+      workspace.id,
+    ]);
+
+    const tmp = path.join(directory, ".workspace-state.json.tmp");
+    fs.mkdirSync(tmp);
+    assert.throws(() => registry.remove(workspace.id));
+    assert.equal(registry.isRemovalPending(workspace.id), true);
+    assert.equal(registry.get(workspace.id)?.sessionIds[0], "session-id");
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+    const restored = new WorkspaceRegistry(storage);
+    restored.remove(workspace.id);
+    assert.equal(restored.get(workspace.id), null);
+    assert.deepEqual(restored.listPendingRemovals(), []);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("workspace state rejects corruption without normalizing or rewriting it", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-invalid-"));
   const storage = workspaceStorage(directory);
