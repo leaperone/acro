@@ -234,6 +234,7 @@ jobs:
   publish:
     needs: [verify, package]
     runs-on: ubuntu-latest
+    environment: desktop-release
     permissions:
       contents: write
     env:
@@ -270,6 +271,13 @@ jobs:
           ZIP="release-artifact/Acro-v${VERSION}-macos.zip"
           [[ -f "$DMG" && -f "$ZIP" && -f release-artifact/appcast.xml ]] \
             || { echo "release artifact is incomplete" >&2; exit 1; }
+      - name: verify publish credentials
+        if: ${{ steps.artifact.outputs.appcast_published != 'true' }}
+        env:
+          HAS_RELEASE_PUSH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN != '' }}
+        run: |
+          [[ "$HAS_RELEASE_PUSH_TOKEN" == true ]] \
+            || { echo "protected main push token is missing" >&2; exit 1; }
       - name: create or verify GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -340,7 +348,7 @@ jobs:
       - name: publish appcast
         if: ${{ steps.artifact.outputs.appcast_published != 'true' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_PUSH_TOKEN }}
         run: |
           cp release-artifact/appcast.xml apps/desktop-macos/appcast.xml
           git config user.name "github-actions[bot]"

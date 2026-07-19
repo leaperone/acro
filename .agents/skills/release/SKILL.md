@@ -43,9 +43,9 @@ gh api --method POST "repos/{owner}/{repo}/dispatches" \
 
 ## CI 管线(release.yml,repository_dispatch 触发)
 
-自动执行三段管线。`verify` 在默认分支、无密钥、只读 token 下确认 tag 只使用稳定版或小写 `alpha.N`/`beta.N`/`rc.N`,tag commit 等于当前 main HEAD,版本高于全部历史 desktop Release。`package` 进入只允许 main 的 `desktop-release` environment,等待发布审批后用只读 token 完成 swift build、Developer ID 签名、notarytool 公证、staple、EdDSA 签名、delta 验证和本地 appcast,然后上传完整 Actions artifact。`publish` 才获得 `contents: write`,创建 GitHub Release 并提交 appcast。publish 可重跑:已有 Release 时必须核对 tag 状态、通道和全部资产 SHA-256;完全一致才继续 appcast,draft 只补缺失资产,任何不一致都失败且绝不覆盖。Actions 固定完整 commit SHA,Ghostty 与 Sparkle 下载先校验 SHA-256。旧包先复制并清除代码签名扩展属性用于生成 delta,再用未经修改的原包执行 apply + codesign 验证。delta 失败时保留完整 zip 回退,不阻断发布。
+自动执行三段管线。`verify` 在默认分支、无密钥、只读 token 下确认 tag 只使用稳定版或小写 `alpha.N`/`beta.N`/`rc.N`,tag commit 等于当前 main HEAD,版本高于全部历史 desktop Release。`package` 进入只允许 main 的 `desktop-release` environment,等待发布审批后用只读 token 完成 swift build、Developer ID 签名、notarytool 公证、staple、EdDSA 签名、delta 验证和本地 appcast,然后上传完整 Actions artifact。`publish` 同样受 `desktop-release` environment 保护,用默认 token 创建 GitHub Release,仅在提交 appcast 时使用可绕过 main 保护的专用 token。publish 可重跑:已有 Release 时必须核对 tag 状态、通道和全部资产 SHA-256;完全一致才继续 appcast,draft 只补缺失资产,任何不一致都失败且绝不覆盖。Actions 固定完整 commit SHA,Ghostty 与 Sparkle 下载先校验 SHA-256。旧包先复制并清除代码签名扩展属性用于生成 delta,再用未经修改的原包执行 apply + codesign 验证。delta 失败时保留完整 zip 回退,不阻断发布。
 
-依赖 `desktop-release` environment 中的 7 个 GitHub Secrets(Apple 证书/公证 6 个 + SPARKLE_PRIVATE_KEY)。缺任一则发布立即失败,禁止产出 ad-hoc 或缺 appcast 的不完整 Release。
+依赖 `desktop-release` environment 中的 8 个 GitHub Secrets(Apple 证书/公证 6 个 + `SPARKLE_PRIVATE_KEY` + `RELEASE_PUSH_TOKEN`)。`RELEASE_PUSH_TOKEN` 只需对本仓库有内容写权限并能绕过 main 保护。缺任一则对应阶段立即失败,禁止产出 ad-hoc 或缺 appcast 的不完整 Release。
 
 ## 发布后验证
 
