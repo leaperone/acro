@@ -247,8 +247,13 @@ async function main(): Promise<void> {
     await interruptedOpenRequest;
     seat.close();
     await assert.rejects(interruptedOpen, /connection closed/);
-    await sleep(500);
-    assert.equal((await rpc<any[]>("browser.list")).length, 2);
+    const cleanupDeadline = Date.now() + 5000;
+    let remainingBrowsers = await rpc<any[]>("browser.list");
+    while (remainingBrowsers.length !== 2 && Date.now() < cleanupDeadline) {
+      await sleep(50);
+      remainingBrowsers = await rpc<any[]>("browser.list");
+    }
+    assert.equal(remainingBrowsers.length, 2, "interrupted browser.open must roll back its page");
     assert.ok(
       client.events.some(
         (event) =>

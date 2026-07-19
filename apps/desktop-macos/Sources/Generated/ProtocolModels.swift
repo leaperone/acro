@@ -49,3 +49,8 @@ struct BrowserControl: Codable, Equatable, Hashable, Sendable {
     let deviceId: String
     let deviceName: String
 }
+
+struct ComputerControl: Codable, Equatable, Hashable, Sendable {
+    let deviceId: String
+    let deviceName: String
+}

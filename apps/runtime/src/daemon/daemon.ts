@@ -66,6 +66,7 @@ function ensureSpawnHelperExecutable(): void {
 }
 
 const boot = crypto.randomUUID();
+const daemonTesting = process.env.ACRO_DAEMON_TESTING === "1";
 let eventSeq = 0;
 let nextHandle = 1;
 
@@ -566,6 +567,11 @@ interface DaemonRequest {
 
 const handlers: Record<string, Handler> = {
   "daemon.info": () => ({ boot, pid: process.pid }),
+  "daemon.shutdown": (params: { boot: string }) => {
+    if (!daemonTesting || params.boot !== boot) throw new Error("daemon shutdown unavailable");
+    setImmediate(() => process.kill(process.pid, "SIGTERM"));
+    return { shuttingDown: true };
+  },
   "session.create": (params: CreateSessionParams) => createSession(params, crypto.randomUUID()),
   // 新方法名是版本边界：旧 daemon 会在启动 PTY 前返回 unknown method，不能静默忽略 id。
   "session.createOwned": (params: CreateSessionParams & { id: string }) =>

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   BrowserControl,
+  ComputerControl,
   Device,
   Session,
   SessionFocus,
@@ -277,6 +278,15 @@ export const methods = {
     result: z.object({ detached: z.boolean() }),
   },
   // Computer Use:由 acro-helper(Swift)执行,runtime 只做转发与校验
+  // 写操作必须先认领;force 只用于用户明确接管其他设备当前持有的控制权。
+  "computer.claimControl": {
+    params: z.object({ force: z.boolean().optional() }),
+    result: z.object({ claimed: z.boolean() }),
+  },
+  "computer.controlOwner": {
+    params: z.object({}),
+    result: ComputerControl.nullable(),
+  },
   "computer.permissions": {
     params: z.object({}),
     result: z.object({ accessibility: z.boolean(), screenRecording: z.boolean() }),
@@ -330,6 +340,10 @@ export const events = {
   }),
   "browser.controlChanged": z.object({
     browserId: z.string(),
+    deviceId: z.string().nullable(),
+    deviceName: z.string().nullable(),
+  }),
+  "computer.controlChanged": z.object({
     deviceId: z.string().nullable(),
     deviceName: z.string().nullable(),
   }),
