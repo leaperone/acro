@@ -231,7 +231,6 @@ struct WorkspaceGroupRow: View, Equatable {
 struct WorkspaceRow: View, Equatable {
     let snapshot: WorkspaceRowSnapshot
     let actions: WorkspaceRowActions
-    @State private var hovered = false
     @State private var dropEdge: SidebarWorkspaceDropEdge?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -289,16 +288,6 @@ struct WorkspaceRow: View, Equatable {
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(snapshot.name)
-
-            Button(action: actions.newTerminal) {
-                Image(systemName: "plus")
-            }
-            .frame(width: 24, height: 24)
-            .buttonStyle(.plain)
-            .opacity(hovered ? 1 : 0)
-            .allowsHitTesting(hovered)
-            .help("新建终端")
-            .accessibilityLabel("在 \(snapshot.name) 新建终端")
         }
         .padding(.horizontal, 6)
         .modifier(SidebarRowSurface(selected: snapshot.isSelected))
@@ -319,7 +308,6 @@ struct WorkspaceRow: View, Equatable {
                     .transition(.opacity)
             }
         }
-        .onHover { hovered = $0 }
         .contextMenu {
             Button("新建终端", action: actions.newTerminal)
             Divider()
