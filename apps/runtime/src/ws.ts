@@ -42,6 +42,7 @@ export interface Conn {
   simChannels: Map<number, string>;
   // udid -> 当前 attach RPC 的意图 token；detach/断线可在 channel 产生前取消。
   pendingSimAttaches: Map<string, symbol>;
+  inFlightRpc: number;
   // 心跳:上一轮 ping 后是否收到 pong(取自 orca ws-transport 的半开连接回收)
   alive: boolean;
 }
@@ -56,6 +57,9 @@ export const MAX_WS_CONNECTIONS = 128;
 // 旧客户端或随机请求只能占少量兼容席位；已知授权各自有独立握手池。
 export const MAX_UNKNOWN_PREAUTH_CONNECTIONS = 8;
 export const MAX_PREAUTH_CONNECTIONS_PER_ADMISSION = 16;
+// 正常客户端并发很低；预算封在 RPC 入口，避免快照、simctl 和控制队列各自被放大。
+export const MAX_IN_FLIGHT_RPC_PER_CONNECTION = 8;
+export const MAX_IN_FLIGHT_RPC_TOTAL = 32;
 // 布局控制消息上限 256KB,终端输入通常远小于 1MB;更大的单帧只会放大内存攻击面。
 const MAX_INBOUND_BYTES = 1024 * 1024;
 // 慢客户端不能让 ws 内部发送队列无限增长。画面可以丢帧;终端必须断线后靠快照恢复。
@@ -87,6 +91,17 @@ export function admissionMatchesToken(admissionId: string | null, token: string)
   return admissionId === null || pairingAdmissionId(token) === admissionId;
 }
 
+export type RpcAdmissionFailure = "connection" | "total" | null;
+
+export function rpcAdmissionFailure(
+  connectionInFlight: number,
+  totalInFlight: number,
+): RpcAdmissionFailure {
+  if (connectionInFlight >= MAX_IN_FLIGHT_RPC_PER_CONNECTION) return "connection";
+  if (totalInFlight >= MAX_IN_FLIGHT_RPC_TOTAL) return "total";
+  return null;
+}
+
 export type Handlers = {
   [M in keyof typeof methods]: (
     conn: Conn,
@@ -97,6 +112,7 @@ export type Handlers = {
 export class Gateway {
   private wss = new WebSocketServer({ noServer: true, maxPayload: MAX_INBOUND_BYTES });
   private conns = new Set<Conn>();
+  private inFlightRpc = 0;
   private heartbeat: NodeJS.Timeout;
 
   private registry: DeviceRegistry;
@@ -162,6 +178,7 @@ export class Gateway {
         browserChannels: new Map(),
         simChannels: new Map(),
         pendingSimAttaches: new Map(),
+        inFlightRpc: 0,
         alive: true,
       };
       this.conns.add(conn);
@@ -345,6 +362,17 @@ export class Gateway {
       });
       return;
     }
+    if (rpcAdmissionFailure(conn.inFlightRpc, this.inFlightRpc)) {
+      send({
+        t: "res",
+        id: req.id,
+        ok: false,
+        error: { code: "busy", message: "too many concurrent RPC requests" },
+      });
+      return;
+    }
+    conn.inFlightRpc += 1;
+    this.inFlightRpc += 1;
     try {
       const handler = this.handlers[req.method as keyof typeof methods];
       const result = await handler(conn, parsed.data as never);
@@ -356,6 +384,9 @@ export class Gateway {
         ok: false,
         error: { code: "internal", message: (err as Error).message },
       });
+    } finally {
+      conn.inFlightRpc -= 1;
+      this.inFlightRpc -= 1;
     }
   }
 
