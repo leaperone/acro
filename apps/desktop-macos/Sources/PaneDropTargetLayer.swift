@@ -55,6 +55,11 @@ final class AcroPaneDropTargetView: NSView {
         onZone(nil)
     }
 
+    // 兜底:某些取消场景 AppKit 只发 draggingEnded 而不发 draggingExited,清掉残留高亮
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onZone(nil)
+    }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let target = zone(for: sender)
         onZone(nil)
