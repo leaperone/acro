@@ -150,6 +150,9 @@ final class WorkbenchModel: ObservableObject {
     private var layoutRestored = false
     private var workspaceGroupsInitialized = false
     private var workspaceExpansionInitialized = false
+    // 合并式延迟对账:视图更新事务内不能同步改 @Published,否则触发
+    // "Publishing changes from within view updates" 未定义行为。挪到下一个 main-actor turn。
+    private var reconcileScheduled = false
     private var flagsMonitor: Any?
     private static let layoutKey = "acro.desktop.workbench.layout.v2"
     private static let sidebarModeKey = "acro.desktop.sidebar.view-mode"
@@ -1018,6 +1021,29 @@ final class WorkbenchModel: ObservableObject {
     }
 
     var layoutWasRestored: Bool { layoutRestored }
+
+    // 视图 .onChange 驱动的对账入口:延迟到视图更新事务之外执行,并合并同一 turn 内的
+    // 多次触发。直接在 onChange 里同步跑 reconcileLayoutState 会在视图更新期间改 @Published,
+    // 触发未定义行为并让 AttributeGraph 反复失效重算(高 CPU、菜单错位)。
+    func scheduleReconcile() {
+        guard !reconcileScheduled else { return }
+        reconcileScheduled = true
+        Task { @MainActor in
+            reconcileScheduled = false
+            reconcileLayoutState()
+        }
+    }
+
+    // 快照首次加载:恢复布局 + 对账 + (仅首次)聚焦终端,同样挪出视图更新事务。
+    func handleSnapshotLoaded() {
+        Task { @MainActor in
+            reconcileScheduled = false
+            let shouldFocusTerminal = !layoutRestored
+            restoreLayoutIfNeeded()
+            reconcileLayoutState()
+            if shouldFocusTerminal { requestTerminalFocus() }
+        }
+    }
 
     func reconcileLayoutState() {
         // 选中的服务器被删除时回落到第一台,避免 runtime 静默指向与选中态不一致

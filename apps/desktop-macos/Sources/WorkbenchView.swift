@@ -61,19 +61,14 @@ struct WorkbenchView: View {
         .frame(minWidth: 760, minHeight: 620)
         .onChange(of: runtime.snapshotLoaded, initial: true) { _, loaded in
             guard loaded else { return }
-            let shouldFocusTerminal = !model.layoutWasRestored
-            model.restoreLayoutIfNeeded()
-            model.reconcileLayoutState()
-            if shouldFocusTerminal {
-                DispatchQueue.main.async { model.requestTerminalFocus() }
-            }
+            model.handleSnapshotLoaded()
         }
         .onChange(of: runtime.snapshotRevision) { _, _ in
             guard runtime.snapshotLoaded, model.layoutWasRestored else { return }
-            model.reconcileLayoutState()
+            model.scheduleReconcile()
         }
         .onChange(of: model.hub.entries.map(\.id), initial: true) { _, _ in
-            model.reconcileLayoutState()
+            model.scheduleReconcile()
         }
         .alert(
             model.editingWorkspaceGroupId == nil ? "新建分组" : "重命名分组",
