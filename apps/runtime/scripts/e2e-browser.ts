@@ -29,7 +29,43 @@ function sleep(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   // 假 dev server:模拟项目里的 localhost 服务
+  let resolveAbandonedNavigation!: () => void;
+  const abandonedNavigation = new Promise<void>((resolve) => {
+    resolveAbandonedNavigation = resolve;
+  });
+  let resolveTakeoverNavigation!: () => void;
+  const takeoverNavigation = new Promise<void>((resolve) => {
+    resolveTakeoverNavigation = resolve;
+  });
+  let resolveInterruptedOpen!: () => void;
+  const interruptedOpenRequest = new Promise<void>((resolve) => {
+    resolveInterruptedOpen = resolve;
+  });
   const page = http.createServer((req, res) => {
+    if (req.url === "/abandoned-slow") {
+      resolveAbandonedNavigation();
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<h1>ABANDONED SLOW</h1>");
+      }, 300);
+      return;
+    }
+    if (req.url === "/takeover-slow") {
+      resolveTakeoverNavigation();
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<h1>TAKEOVER SLOW</h1>");
+      }, 300);
+      return;
+    }
+    if (req.url === "/open-slow") {
+      resolveInterruptedOpen();
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<h1>OPEN SLOW</h1>");
+      }, 300);
+      return;
+    }
     res.writeHead(200, { "content-type": "text/html" });
     res.end(
       req.url === "/second"
@@ -78,6 +114,14 @@ async function main(): Promise<void> {
     ]);
     console.log("[e2e] concurrent browser open ok");
 
+    const controls = await rpc<Array<{ browserId: string; deviceId: string }>>(
+      "browser.controlList",
+    );
+    assert.equal(
+      controls.find((control) => control.browserId === browserId)?.deviceId,
+      client.deviceId,
+    );
+
     const attach = await rpc<{ channel: number; width: number }>("browser.attach", {
       browserId,
     });
@@ -99,8 +143,94 @@ async function main(): Promise<void> {
     });
     console.log("[e2e] input ok");
 
+    // 多设备可以同时查看,但非控制设备不能输入、导航或关闭;接管必须显式 force。
+    const seatShare = await rpc<{ offer: string }>("device.share", {
+      name: "browser-seat",
+    });
+    let seat = new E2eClient();
+    await seat.connect(decodePairingOffer(seatShare.offer));
+    const seatAttach = await seat.rpc<{ channel: number }>("browser.attach", { browserId });
+    assert.equal(seatAttach.channel, attach.channel);
+    await assert.rejects(
+      seat.rpc("browser.input", {
+        browserId,
+        event: { kind: "click", x: 100, y: 200 },
+      }),
+      /browser controlled by another device/,
+    );
+    await assert.rejects(
+      seat.rpc("browser.navigate", {
+        browserId,
+        url: `http://127.0.0.1:${PAGE_PORT}/second`,
+      }),
+      /browser controlled by another device/,
+    );
+    await assert.rejects(
+      seat.rpc("browser.close", { browserId }),
+      /browser controlled by another device/,
+    );
+    assert.deepEqual(
+      await seat.rpc("browser.claimControl", { browserId }),
+      { claimed: false },
+    );
+
+    // 排队等待的接管请求若设备先断线,执行时必须失败,不能登记脏 owner。
+    const abandonedSlowNavigation = rpc<{ url: string }>("browser.navigate", {
+      browserId,
+      url: `http://127.0.0.1:${PAGE_PORT}/abandoned-slow`,
+    });
+    await abandonedNavigation;
+    const abandonedClaim = seat.rpc("browser.claimControl", { browserId, force: true });
+    await sleep(50);
+    seat.close();
+    await assert.rejects(abandonedClaim, /connection closed/);
+    assert.ok((await abandonedSlowNavigation).url.endsWith("/abandoned-slow"));
+    await sleep(50);
+    assert.equal(
+      (await rpc<Array<{ browserId: string; deviceId: string }>>("browser.controlList")).find(
+        (control) => control.browserId === browserId,
+      )?.deviceId,
+      client.deviceId,
+    );
+
+    seat = new E2eClient();
+    await seat.connect(decodePairingOffer(seatShare.offer));
+    await seat.rpc("browser.attach", { browserId });
+    const slowNavigation = rpc<{ url: string }>("browser.navigate", {
+      browserId,
+      url: `http://127.0.0.1:${PAGE_PORT}/takeover-slow`,
+    });
+    await takeoverNavigation;
+    let takeoverResolved = false;
+    const takeover = seat
+      .rpc<{ claimed: boolean }>("browser.claimControl", { browserId, force: true })
+      .then((result) => {
+        takeoverResolved = true;
+        return result;
+      });
+    await sleep(50);
+    assert.equal(takeoverResolved, false, "takeover must wait for the old owner's operation");
+    assert.ok((await slowNavigation).url.endsWith("/takeover-slow"));
+    assert.deepEqual(await takeover, { claimed: true });
+    assert.ok(
+      client.events.some(
+        (event) =>
+          event.event === "browser.controlChanged" &&
+          event.payload.browserId === browserId &&
+          event.payload.deviceId === seat.deviceId,
+      ),
+      "takeover must broadcast browser.controlChanged",
+    );
+
     // 导航
-    const nav = await rpc<{ url: string }>("browser.navigate", {
+    await assert.rejects(
+      rpc("browser.navigate", {
+        browserId,
+        url: `http://127.0.0.1:${PAGE_PORT}/second`,
+      }),
+      /browser controlled by another device/,
+    );
+    const nav = await seat.rpc<{ url: string }>("browser.navigate", {
       browserId,
       url: `http://127.0.0.1:${PAGE_PORT}/second`,
     });
@@ -110,9 +240,39 @@ async function main(): Promise<void> {
     assert.ok(list.find((item) => item.browserId === browserId)?.url.endsWith("/second"));
     console.log("[e2e] navigate ok");
 
+    // open 尚在导航时断线,新页面必须回滚;已有控制权也要在最后一条连接断开后释放。
+    const interruptedOpen = seat.rpc("browser.open", {
+      url: `http://127.0.0.1:${PAGE_PORT}/open-slow`,
+    });
+    await interruptedOpenRequest;
+    seat.close();
+    await assert.rejects(interruptedOpen, /connection closed/);
+    await sleep(500);
+    assert.equal((await rpc<any[]>("browser.list")).length, 2);
+    assert.ok(
+      client.events.some(
+        (event) =>
+          event.event === "browser.controlChanged" &&
+          event.payload.browserId === browserId &&
+          event.payload.deviceId === null,
+      ),
+      "disconnect must release browser control",
+    );
+    assert.equal(
+      (await rpc<Array<{ browserId: string }>>("browser.controlList")).some(
+        (control) => control.browserId === browserId,
+      ),
+      false,
+    );
+    assert.deepEqual(
+      await rpc("browser.claimControl", { browserId }),
+      { claimed: true },
+    );
+
     await rpc("browser.close", { browserId });
     await rpc("browser.close", { browserId: secondBrowserId });
     assert.equal((await rpc<any[]>("browser.list")).length, 0);
+    assert.equal((await rpc<any[]>("browser.controlList")).length, 0);
     client.close();
     console.log("\nE2E-BROWSER PASS ✅  打开/取流/输入/导航/关闭 全部通过");
   } finally {

@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { Device, Session, SessionFocus, Workspace, WorkspaceGroup } from "./models.ts";
+import {
+  BrowserControl,
+  Device,
+  Session,
+  SessionFocus,
+  Workspace,
+  WorkspaceGroup,
+} from "./models.ts";
 
 // 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
 
@@ -196,6 +203,15 @@ export const methods = {
       }),
     ),
   },
+  // 打开页面的设备自动获得控制权。其他设备可查看,但只有显式 force 才能接管。
+  "browser.claimControl": {
+    params: z.object({ browserId: z.string(), force: z.boolean().optional() }),
+    result: z.object({ claimed: z.boolean() }),
+  },
+  "browser.controlList": {
+    params: z.object({}),
+    result: z.array(BrowserControl),
+  },
   "browser.navigate": {
     params: z.object({ browserId: z.string(), url: z.string() }),
     result: z.object({ url: z.string() }),
@@ -309,6 +325,11 @@ export const events = {
   "workspace.layoutChanged": z.object({ workspaceId: z.string(), rev: z.number().int() }),
   "session.focusChanged": z.object({
     sessionId: z.string(),
+    deviceId: z.string().nullable(),
+    deviceName: z.string().nullable(),
+  }),
+  "browser.controlChanged": z.object({
+    browserId: z.string(),
     deviceId: z.string().nullable(),
     deviceName: z.string().nullable(),
   }),

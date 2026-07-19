@@ -105,6 +105,45 @@ async function main(): Promise<void> {
   }
   // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
+  // 浏览器画面可被多个设备查看,控制权按设备互斥;runtime 重启会连同页面一起关闭。
+  const browserControlOwners = new Map<string, { deviceId: string; deviceName: string }>();
+  const browserControlTails = new Map<string, Promise<void>>();
+  const runBrowserControl = async <T>(browserId: string, task: () => T | Promise<T>): Promise<T> => {
+    const previous = browserControlTails.get(browserId) ?? Promise.resolve();
+    let unlock!: () => void;
+    const current = new Promise<void>((resolve) => {
+      unlock = resolve;
+    });
+    const tail = previous.then(() => current);
+    browserControlTails.set(browserId, tail);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      unlock();
+      if (browserControlTails.get(browserId) === tail) browserControlTails.delete(browserId);
+    }
+  };
+  const requireActiveDevice = (conn: Conn): NonNullable<Conn["device"]> => {
+    if (!conn.device || !gateway.hasConnection(conn)) throw new Error("connection closed");
+    return conn.device;
+  };
+  const requireBrowserControl = (conn: Conn, browserId: string): void => {
+    const device = requireActiveDevice(conn);
+    const owner = browserControlOwners.get(browserId);
+    if (!owner) throw new Error("browser control is not claimed");
+    if (owner.deviceId !== device.id) {
+      throw new Error("browser controlled by another device");
+    }
+  };
+  const releaseBrowserControl = (browserId: string): void => {
+    if (!browserControlOwners.delete(browserId)) return;
+    emitRuntimeEvent("browser.controlChanged", {
+      browserId,
+      deviceId: null,
+      deviceName: null,
+    });
+  };
   // 终端尺寸仲裁(tmux 模型):PTY 尺寸 = 各在挂客户端报告尺寸的最小值,
   // 谁都能看全;单靠 last-writer-wins 会让多端互相顶掉对方的尺寸。
   // 内存态:客户端重连后重新报告(attach 时同步一次 + SIGWINCH)。
@@ -302,11 +341,52 @@ async function main(): Promise<void> {
       await daemon.request("session.kill", { sessionId });
       return { killed: true };
     },
-    "browser.open": async (_conn, params) => ({ browserId: await browsers.open(params) }),
+    "browser.open": async (conn, params) => {
+      requireActiveDevice(conn);
+      const browserId = await browsers.open(params);
+      if (!gateway.hasConnection(conn)) {
+        await browsers.close(browserId);
+        throw new Error("connection closed");
+      }
+      const device = requireActiveDevice(conn);
+      browserControlOwners.set(browserId, {
+        deviceId: device.id,
+        deviceName: device.name,
+      });
+      emitRuntimeEvent("browser.controlChanged", {
+        browserId,
+        deviceId: device.id,
+        deviceName: device.name,
+      });
+      return { browserId };
+    },
     "browser.list": () => browsers.list(),
-    "browser.navigate": async (_conn, { browserId, url }) => ({
-      url: await browsers.navigate(browserId, url),
-    }),
+    "browser.claimControl": (conn, { browserId, force }) =>
+      runBrowserControl(browserId, () => {
+        const device = requireActiveDevice(conn);
+        browsers.attachment(browserId); // 校验页面仍存在
+        const owner = browserControlOwners.get(browserId);
+        if (owner && owner.deviceId !== device.id && !force) {
+          return { claimed: false };
+        }
+        browserControlOwners.set(browserId, {
+          deviceId: device.id,
+          deviceName: device.name,
+        });
+        emitRuntimeEvent("browser.controlChanged", {
+          browserId,
+          deviceId: device.id,
+          deviceName: device.name,
+        });
+        return { claimed: true };
+      }),
+    "browser.controlList": () =>
+      [...browserControlOwners].map(([browserId, owner]) => ({ browserId, ...owner })),
+    "browser.navigate": (conn, { browserId, url }) =>
+      runBrowserControl(browserId, async () => {
+        requireBrowserControl(conn, browserId);
+        return { url: await browsers.navigate(browserId, url) };
+      }),
     "browser.attach": async (conn, { browserId }) => {
       const result = browsers.attachment(browserId);
       conn.browserChannels.set(result.channel, browserId);
@@ -331,14 +411,19 @@ async function main(): Promise<void> {
       }
       return { detached: true };
     },
-    "browser.input": async (_conn, { browserId, event }) => {
-      await browsers.input(browserId, event);
-      return { done: true };
-    },
-    "browser.close": async (_conn, { browserId }) => {
-      await browsers.close(browserId);
-      return { closed: true };
-    },
+    "browser.input": (conn, { browserId, event }) =>
+      runBrowserControl(browserId, async () => {
+        requireBrowserControl(conn, browserId);
+        await browsers.input(browserId, event);
+        return { done: true };
+      }),
+    "browser.close": (conn, { browserId }) =>
+      runBrowserControl(browserId, async () => {
+        requireBrowserControl(conn, browserId);
+        await browsers.close(browserId);
+        releaseBrowserControl(browserId);
+        return { closed: true };
+      }),
     "simulator.list": () => simulators.list(),
     "simulator.boot": async (_conn, { udid }) => ({ state: await simulators.boot(udid) }),
     "simulator.shutdown": async (_conn, { udid }) => ({
@@ -460,6 +545,14 @@ async function main(): Promise<void> {
         deviceName: null,
       });
     }
+    for (const [browserId, owner] of browserControlOwners) {
+      if (owner.deviceId !== deviceId) continue;
+      void runBrowserControl(browserId, () => {
+        if (browserControlOwners.get(browserId)?.deviceId === deviceId) {
+          releaseBrowserControl(browserId);
+        }
+      });
+    }
   };
   daemon.on("down", () => {
     focusOwners.clear();
@@ -470,9 +563,10 @@ async function main(): Promise<void> {
   browsers.on("frame", (handle: number, seq: number, data: Buffer) =>
     gateway.forwardBrowserFrame(handle, seq, data),
   );
-  browsers.on("closed", (_browserId: string, handle: number) =>
-    gateway.dropBrowserChannel(handle),
-  );
+  browsers.on("closed", (browserId: string, handle: number) => {
+    gateway.dropBrowserChannel(handle);
+    void runBrowserControl(browserId, () => releaseBrowserControl(browserId));
+  });
   simulators.on("frame", (handle: number, seq: number, data: Buffer) =>
     gateway.forwardSimFrame(handle, seq, data),
   );

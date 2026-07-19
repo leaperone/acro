@@ -5,7 +5,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { Device, Session, SessionFocus, Workspace, WorkspaceGroup } from "../src/models.ts";
+import {
+  BrowserControl,
+  Device,
+  Session,
+  SessionFocus,
+  Workspace,
+  WorkspaceGroup,
+} from "../src/models.ts";
 
 const models: Record<string, z.ZodType> = {
   Device,
@@ -13,6 +20,7 @@ const models: Record<string, z.ZodType> = {
   WorkspaceGroup,
   Session,
   SessionFocus,
+  BrowserControl,
 };
 
 type JsonSchema = {

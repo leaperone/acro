@@ -40,6 +40,14 @@ export const SessionFocus = z.object({
 });
 export type SessionFocus = z.infer<typeof SessionFocus>;
 
+// 浏览器控制权:多人可查看同一画面,同一时刻只有一个设备可导航、输入或关闭
+export const BrowserControl = z.object({
+  browserId: z.string(),
+  deviceId: z.string(),
+  deviceName: z.string(),
+});
+export type BrowserControl = z.infer<typeof BrowserControl>;
+
 export const Session = z.object({
   id: z.string(),
   // cwd 是创建时目录;daemon 查询实时目录成功后会回写此字段

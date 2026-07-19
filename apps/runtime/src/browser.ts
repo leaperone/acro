@@ -117,6 +117,9 @@ export class BrowserManager extends EventEmitter {
       void cdp.send("Page.screencastFrameAck", { sessionId: frame.sessionId }).catch(() => {});
     });
     await page.goto(opts.url).catch(() => {}); // 目标可能还没起,页面留在错误页即可
+    if (!this.surfaces.has(surface.id)) {
+      throw new Error("browser surface closed during open");
+    }
     return surface.id;
   }
 
@@ -137,6 +140,9 @@ export class BrowserManager extends EventEmitter {
   async navigate(browserId: string, url: string): Promise<string> {
     const surface = this.get(browserId);
     await surface.page.goto(url).catch(() => {});
+    if (!this.surfaces.has(browserId)) {
+      throw new Error("browser surface closed during navigation");
+    }
     return surface.page.url();
   }
 
