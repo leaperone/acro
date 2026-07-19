@@ -5,12 +5,18 @@ import path from "node:path";
 import test from "node:test";
 import { WorkspaceRegistry } from "./workspaces.ts";
 
-test("workspace names are generated when clients omit them", () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-names-"));
-  const storage = {
+function workspaceStorage(directory: string) {
+  return {
+    workspaceState: path.join(directory, "workspace-state.json"),
+    workspaceStateMarker: path.join(directory, "workspace-state.ready.json"),
     workspaces: path.join(directory, "workspaces.json"),
     workspaceGroups: path.join(directory, "workspace-groups.json"),
   };
+}
+
+test("workspace names are generated when clients omit them", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-names-"));
+  const storage = workspaceStorage(directory);
 
   try {
     const registry = new WorkspaceRegistry(storage);
@@ -25,10 +31,7 @@ test("workspace names are generated when clients omit them", () => {
 
 test("workspace reorder moves within groups and the ungrouped list", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-reorder-"));
-  const storage = {
-    workspaces: path.join(directory, "workspaces.json"),
-    workspaceGroups: path.join(directory, "workspace-groups.json"),
-  };
+  const storage = workspaceStorage(directory);
 
   try {
     const registry = new WorkspaceRegistry(storage);
@@ -62,10 +65,7 @@ test("workspace reorder moves within groups and the ungrouped list", () => {
 
 test("workspace groups persist membership and preserve workspaces when removed", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspaces-"));
-  const storage = {
-    workspaces: path.join(directory, "workspaces.json"),
-    workspaceGroups: path.join(directory, "workspace-groups.json"),
-  };
+  const storage = workspaceStorage(directory);
 
   try {
     const registry = new WorkspaceRegistry(storage);
@@ -96,10 +96,7 @@ test("workspace groups persist membership and preserve workspaces when removed",
 
 test("workspace layout persists opaquely with a monotonic revision", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-layout-"));
-  const storage = {
-    workspaces: path.join(directory, "workspaces.json"),
-    workspaceGroups: path.join(directory, "workspace-groups.json"),
-  };
+  const storage = workspaceStorage(directory);
 
   try {
     const registry = new WorkspaceRegistry(storage);
@@ -123,19 +120,18 @@ test("workspace layout persists opaquely with a monotonic revision", () => {
 
 test("failed session persistence leaves workspace memory unchanged", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-session-failure-"));
-  const storage = {
-    workspaces: path.join(directory, "workspaces.json"),
-    workspaceGroups: path.join(directory, "workspace-groups.json"),
-  };
+  const storage = workspaceStorage(directory);
 
   try {
     const registry = new WorkspaceRegistry(storage);
     const workspace = registry.create("Acro");
-    fs.rmSync(storage.workspaces);
-    fs.mkdirSync(storage.workspaces);
+    const before = fs.readFileSync(storage.workspaceState, "utf8");
+    const tmp = path.join(directory, ".workspace-state.json.tmp");
+    fs.mkdirSync(tmp);
 
     assert.throws(() => registry.addSession(workspace.id, "session-id"));
     assert.deepEqual(registry.get(workspace.id)?.sessionIds, []);
+    assert.equal(fs.readFileSync(storage.workspaceState, "utf8"), before);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -143,10 +139,7 @@ test("failed session persistence leaves workspace memory unchanged", () => {
 
 test("workspace session references reconcile against daemon truth", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-session-reconcile-"));
-  const storage = {
-    workspaces: path.join(directory, "workspaces.json"),
-    workspaceGroups: path.join(directory, "workspace-groups.json"),
-  };
+  const storage = workspaceStorage(directory);
 
   try {
     const registry = new WorkspaceRegistry(storage);
@@ -170,18 +163,92 @@ test("workspace session references reconcile against daemon truth", () => {
   }
 });
 
+test("legacy workspace files migrate once into the aggregate state", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-migration-"));
+  const storage = workspaceStorage(directory);
+  const workspace = {
+    id: "workspace",
+    name: "Legacy",
+    sessionIds: [],
+    createdAt: new Date().toISOString(),
+    layout: null,
+    layoutRev: 0,
+  };
+  const group = {
+    id: "group",
+    name: "Legacy group",
+    workspaceIds: [workspace.id],
+    createdAt: new Date().toISOString(),
+  };
+
+  try {
+    fs.writeFileSync(storage.workspaces, JSON.stringify([workspace]));
+    fs.writeFileSync(storage.workspaceGroups, JSON.stringify([group]));
+    const migrated = new WorkspaceRegistry(storage);
+    assert.deepEqual(migrated.getGroup(group.id)?.workspaceIds, [workspace.id]);
+    assert.equal(fs.existsSync(storage.workspaceState), true);
+    assert.equal(fs.existsSync(storage.workspaceStateMarker), true);
+
+    fs.writeFileSync(storage.workspaces, "{");
+    assert.equal(new WorkspaceRegistry(storage).get(workspace.id)?.name, "Legacy");
+    fs.rmSync(storage.workspaceState);
+    assert.throws(() => new WorkspaceRegistry(storage), /missing after migration/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("failed aggregate commit leaves memory and disk on the previous state", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-atomic-failure-"));
+  const storage = workspaceStorage(directory);
+
+  try {
+    const registry = new WorkspaceRegistry(storage);
+    const group = registry.createGroup("Group");
+    const workspace = registry.create("Acro", group.id);
+    const before = fs.readFileSync(storage.workspaceState, "utf8");
+    const tmp = path.join(directory, ".workspace-state.json.tmp");
+    fs.mkdirSync(tmp);
+
+    assert.throws(() => registry.remove(workspace.id));
+    assert.equal(registry.get(workspace.id)?.name, "Acro");
+    assert.deepEqual(registry.getGroup(group.id)?.workspaceIds, [workspace.id]);
+    assert.equal(fs.readFileSync(storage.workspaceState, "utf8"), before);
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+    const restored = new WorkspaceRegistry(storage);
+    assert.equal(restored.get(workspace.id)?.name, "Acro");
+    assert.deepEqual(restored.getGroup(group.id)?.workspaceIds, [workspace.id]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("workspace state rejects corruption without normalizing or rewriting it", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-invalid-"));
-  const storage = {
-    workspaces: path.join(directory, "workspaces.json"),
-    workspaceGroups: path.join(directory, "workspace-groups.json"),
-  };
+  const storage = workspaceStorage(directory);
   const contents = JSON.stringify([{ id: "workspace" }]);
   try {
     fs.writeFileSync(storage.workspaces, contents);
     assert.throws(() => new WorkspaceRegistry(storage));
     assert.equal(fs.readFileSync(storage.workspaces, "utf8"), contents);
     assert.equal(fs.existsSync(storage.workspaceGroups), false);
+    assert.equal(fs.existsSync(storage.workspaceState), false);
+    assert.equal(fs.existsSync(storage.workspaceStateMarker), false);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("aggregate null is corruption, not a legacy migration signal", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-null-state-"));
+  const storage = workspaceStorage(directory);
+
+  try {
+    new WorkspaceRegistry(storage);
+    fs.writeFileSync(storage.workspaceState, "null");
+    assert.throws(() => new WorkspaceRegistry(storage));
+    assert.equal(fs.readFileSync(storage.workspaceState, "utf8"), "null");
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
