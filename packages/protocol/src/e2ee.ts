@@ -29,6 +29,11 @@ const HKDF_INFO = new TextEncoder().encode("acro-e2ee-v1");
 export const PAYLOAD_TEXT = 0x00;
 export const PAYLOAD_BINARY = 0x01;
 
+// TextEncoder/TextDecoder 是无状态的;每条控制消息 / 事件都走 sealText/open,
+// 每次 new 会在三端(含 RN Hermes)持续制造无谓分配,模块级单例复用即可。
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
 // ---- base64(RN Hermes / Node / 浏览器通用,避免 Buffer) ----
 
 export function bytesToB64(bytes: Uint8Array): string {
@@ -90,7 +95,7 @@ export class E2eeSession {
   }
 
   sealText(text: string): Uint8Array {
-    const utf8 = new TextEncoder().encode(text);
+    const utf8 = textEncoder.encode(text);
     const plain = new Uint8Array(1 + utf8.length);
     plain[0] = PAYLOAD_TEXT;
     plain.set(utf8, 1);
@@ -109,7 +114,7 @@ export class E2eeSession {
     const plain = this.rx.open(box);
     const payload = plain.subarray(1);
     if (plain[0] === PAYLOAD_TEXT) {
-      return { kind: "text", text: new TextDecoder().decode(payload) };
+      return { kind: "text", text: textDecoder.decode(payload) };
     }
     return { kind: "binary", data: payload };
   }

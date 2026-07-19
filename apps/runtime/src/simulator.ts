@@ -315,7 +315,9 @@ export class SimulatorManager extends EventEmitter {
         SCREENSHOT_TIMEOUT_MS,
       );
       if (this.attached.get(udid) !== state || state.abortController.signal.aborted) return;
-      const data = fs.readFileSync(tmp);
+      // 异步读:PNG 截图可达数 MB,同步读会卡住转发终端输出的同一个事件循环
+      const data = await fs.promises.readFile(tmp);
+      if (this.attached.get(udid) !== state || state.abortController.signal.aborted) return;
       state.seq += 1;
       this.emit("frame", state.handle, state.seq, data);
     } catch {
