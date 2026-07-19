@@ -3,6 +3,19 @@
   <channel>
     <title>Acro Desktop</title>
     <item>
+      <title>0.0.7-beta.10</title>
+      <pubDate>Sun, 19 Jul 2026 04:42:48 GMT</pubDate>
+      <sparkle:version>25</sparkle:version>
+      <sparkle:shortVersionString>0.0.7-beta.10</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>beta</sparkle:channel>
+      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.7-beta.10/Acro-v0.0.7-beta.10-macos.zip" type="application/octet-stream" length="50035039" sparkle:edSignature="a60smvcRT2qqECAQbge+s1Ge2GAipI/2Rb4s6S/xUI1P9EGrobdgs0A6R2QJ0/atZJcvIPY6rPATQhcHTKeeDQ==" />
+      <sparkle:deltas>
+        <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.7-beta.10/Acro-v0.0.7-beta.10-from-0.0.6.delta" type="application/octet-stream" length="24555522" sparkle:deltaFrom="0.0.6" sparkle:edSignature="KEu33ynnHVYKOdRsGq8A8mujzzVP8VsqFyd1YnE6sHZGHs7lZhAwAhF0C1TGJLqNYH0SZn955boVwE1QS1bLCQ==" />
+        <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.7-beta.10/Acro-v0.0.7-beta.10-from-0.0.7-beta.9.delta" type="application/octet-stream" length="24471918" sparkle:deltaFrom="24" sparkle:edSignature="LVPLt4Kpw74oixLqrICpvUccdp/7WQJExJP4jGjZJWWHltH7F7Lx7iEk769qgvsgYmMU6OUn7XEUIkuPibnmDA==" />
+      </sparkle:deltas>
+    </item>
+    <item>
       <title>0.0.7-beta.9</title>
       <pubDate>Sat, 18 Jul 2026 16:54:11 GMT</pubDate>
       <sparkle:version>24</sparkle:version>
@@ -143,14 +156,6 @@
       <sparkle:shortVersionString>0.0.4</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.4/Acro-v0.0.4-macos.zip" type="application/octet-stream" length="8018640" sparkle:edSignature="jnvRoAd57zL+B3ZMZlJRf+8xSna6THFYfKrWlNezR2nfQhBEjAZ8VZ0vkMi2mQ4bRjIxn01KLC4hS5i0XzPUCA==" />
-    </item>
-    <item>
-      <title>0.0.3</title>
-      <pubDate>Sat, 18 Jul 2026 09:17:32 GMT</pubDate>
-      <sparkle:version>0.0.3</sparkle:version>
-      <sparkle:shortVersionString>0.0.3</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.3/Acro-v0.0.3-macos.zip" type="application/octet-stream" length="7992946" sparkle:edSignature="3WQzI+ahKhG1cF/QCiKV8l1ZGFL1wXM4DAIP3hgTP+letXzLiKSrQxRghRLgegPRv8sh1wiI02ike0k/dBU1Dw==" />
     </item>
   </channel>
 </rss>
