@@ -105,6 +105,7 @@ async function main(): Promise<void> {
   }
   // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
+  const pendingFocusClaims = new Map<string, symbol>();
   // 浏览器画面可被多个设备查看,控制权按设备互斥;runtime 重启会连同页面一起关闭。
   const browserControlOwners = new Map<string, { deviceId: string; deviceName: string }>();
   let computerControlOwner: { deviceId: string; deviceName: string } | null = null;
@@ -127,6 +128,8 @@ async function main(): Promise<void> {
   };
   const runBrowserControl = <T>(browserId: string, task: () => T | Promise<T>): Promise<T> =>
     runExclusiveControl(`browser:${browserId}`, task);
+  const runSessionControl = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
+    runExclusiveControl(`session:${sessionId}`, task);
   const runComputerControl = <T>(task: () => T | Promise<T>): Promise<T> =>
     runExclusiveControl("computer", task);
   const requireActiveDevice = (conn: Conn): NonNullable<Conn["device"]> => {
@@ -239,6 +242,7 @@ async function main(): Promise<void> {
         ),
       );
       for (const sessionId of workspace.sessionIds) {
+        pendingFocusClaims.delete(sessionId);
         focusOwners.delete(sessionId);
         sessionSizes.delete(sessionId);
         appliedSizes.delete(sessionId);
@@ -301,25 +305,41 @@ async function main(): Promise<void> {
       }
     },
     "session.list": () => daemon.request<Session[]>("session.list"),
-    "session.claimFocus": async (conn, { sessionId, force }) => {
-      if (!conn.device) throw new Error("unauthenticated");
-      const owner = focusOwners.get(sessionId);
-      // 静默认领拿不到别人手里的会话:防客户端缓存过期时绕过显式接管语义
-      if (owner && owner.deviceId !== conn.device.id && !force) {
-        return { claimed: false };
-      }
-      const sessions = await daemon.request<Session[]>("session.list");
-      if (!sessions.some((s) => s.id === sessionId && s.alive)) {
-        throw new Error("session not alive");
-      }
-      focusOwners.set(sessionId, { deviceId: conn.device.id, deviceName: conn.device.name });
-      emitRuntimeEvent("session.focusChanged", {
-        sessionId,
-        deviceId: conn.device.id,
-        deviceName: conn.device.name,
-      });
-      return { claimed: true };
-    },
+    "session.claimFocus": (conn, { sessionId, force }) =>
+      runSessionControl(sessionId, async () => {
+        const device = requireActiveDevice(conn);
+        const owner = focusOwners.get(sessionId);
+        // 静默认领拿不到别人手里的会话:防客户端缓存过期时绕过显式接管语义
+        if (owner && owner.deviceId !== device.id && !force) {
+          return { claimed: false };
+        }
+        const intent = Symbol(sessionId);
+        pendingFocusClaims.set(sessionId, intent);
+        try {
+          const sessions = await daemon.request<Session[]>("session.list");
+          if (
+            pendingFocusClaims.get(sessionId) !== intent ||
+            !sessions.some((session) => session.id === sessionId && session.alive)
+          ) {
+            throw new Error("session not alive");
+          }
+          const activeDevice = requireActiveDevice(conn);
+          focusOwners.set(sessionId, {
+            deviceId: activeDevice.id,
+            deviceName: activeDevice.name,
+          });
+          emitRuntimeEvent("session.focusChanged", {
+            sessionId,
+            deviceId: activeDevice.id,
+            deviceName: activeDevice.name,
+          });
+          return { claimed: true };
+        } finally {
+          if (pendingFocusClaims.get(sessionId) === intent) {
+            pendingFocusClaims.delete(sessionId);
+          }
+        }
+      }),
     "session.focusList": () =>
       [...focusOwners].map(([sessionId, owner]) => ({ sessionId, ...owner })),
     "session.attach": async (conn, { sessionId }) => {
@@ -552,6 +572,7 @@ async function main(): Promise<void> {
     if (evt.event === "session.exit" || evt.event === "session.removed") {
       const sessionId = (evt.payload as { sessionId?: string }).sessionId;
       if (sessionId) {
+        pendingFocusClaims.delete(sessionId);
         focusOwners.delete(sessionId);
         sessionSizes.delete(sessionId);
         appliedSizes.delete(sessionId);
@@ -601,6 +622,7 @@ async function main(): Promise<void> {
     }
   };
   daemon.on("down", () => {
+    pendingFocusClaims.clear();
     focusOwners.clear();
     sessionSizes.clear();
     appliedSizes.clear();
