@@ -216,30 +216,50 @@ async function main(): Promise<void> {
   };
   // 终端尺寸与输入权共用 owner:操作端决定 PTY,观察端只记录自己的尺寸。
   // 无 owner 时回退到所有在挂客户端的最小值,保证只读画面不裁切。
-  const sessionSizes = new Map<string, Map<Conn, { cols: number; rows: number }>>();
+  const sessionSizes = new Map<
+    string,
+    Map<Conn, { cols: number; rows: number; order: number }>
+  >();
+  let sessionSizeOrder = 0;
   const appliedSizes = new Map<string, { cols: number; rows: number }>();
   const applySessionSize = async (
     sessionId: string,
     ownerDeviceId = focusOwners.get(sessionId)?.deviceId,
   ): Promise<void> => {
     const entries = [...(sessionSizes.get(sessionId)?.entries() ?? [])];
-    const votes = ownerDeviceId
+    const ownerVotes = ownerDeviceId
       ? entries.filter(([conn]) => conn.device?.id === ownerDeviceId).map(([, size]) => size)
+      : [];
+    const votes = ownerDeviceId
+      ? ownerVotes.length === 0
+        ? []
+        : [ownerVotes.reduce((latest, vote) => (vote.order > latest.order ? vote : latest))]
       : entries.map(([, size]) => size);
     if (votes.length === 0) return;
     const cols = Math.min(...votes.map((v) => v.cols));
     const rows = Math.min(...votes.map((v) => v.rows));
     const applied = appliedSizes.get(sessionId);
     if (applied && applied.cols === cols && applied.rows === rows) return;
-    await daemon.request("session.resize", { sessionId, cols, rows });
-    appliedSizes.set(sessionId, { cols, rows });
+    try {
+      await daemon.request("session.resize", { sessionId, cols, rows });
+      appliedSizes.set(sessionId, { cols, rows });
+    } catch (error) {
+      appliedSizes.delete(sessionId);
+      throw error;
+    }
   };
   const reconcileSessionConnection = (
     conn: Conn,
     sessionId: string,
     shouldReleaseFocus: (deviceId: string) => boolean,
+    detach: boolean,
   ): Promise<void> =>
     runSessionControl(sessionId, async () => {
+      if (detach) {
+        for (const [channel, state] of conn.attached) {
+          if (state.sessionId === sessionId) conn.attached.delete(channel);
+        }
+      }
       const votes = sessionSizes.get(sessionId);
       if (votes?.delete(conn) && votes.size === 0) sessionSizes.delete(sessionId);
 
@@ -441,31 +461,30 @@ async function main(): Promise<void> {
       }),
     "session.focusList": () =>
       [...focusOwners].map(([sessionId, owner]) => ({ sessionId, ...owner })),
-    "session.attach": async (conn, { sessionId }) => {
-      const snap = await daemon.request<SnapshotResult>(
-        "session.snapshot",
-        { sessionId },
-        (result) => {
-          if (!gateway.hasConnection(conn)) throw new Error("connection closed");
-          conn.attached.set(result.handle, { sessionId, attachSeq: result.seq });
-        },
-      );
-      return {
-        channel: snap.handle,
-        snapshot: snap.snapshot,
-        seq: snap.seq,
-        cols: snap.cols,
-        rows: snap.rows,
-      };
-    },
+    "session.attach": (conn, { sessionId }) =>
+      runSessionControl(sessionId, async () => {
+        const snap = await daemon.request<SnapshotResult>(
+          "session.snapshot",
+          { sessionId },
+          (result) => {
+            if (!gateway.hasConnection(conn)) throw new Error("connection closed");
+            conn.attached.set(result.handle, { sessionId, attachSeq: result.seq });
+          },
+        );
+        return {
+          channel: snap.handle,
+          snapshot: snap.snapshot,
+          seq: snap.seq,
+          cols: snap.cols,
+          rows: snap.rows,
+        };
+      }),
     "session.detach": async (conn, { sessionId }) => {
-      for (const [channel, st] of conn.attached) {
-        if (st.sessionId === sessionId) conn.attached.delete(channel);
-      }
       await reconcileSessionConnection(
         conn,
         sessionId,
         (deviceId) => !gateway.hasDeviceSessionAttachment(deviceId, sessionId),
+        true,
       ).catch(() => {});
       return { detached: true };
     },
@@ -481,7 +500,8 @@ async function main(): Promise<void> {
           sessionSizes.set(params.sessionId, votes);
         }
         const previous = votes.get(conn);
-        votes.set(conn, { cols: params.cols, rows: params.rows });
+        sessionSizeOrder += 1;
+        votes.set(conn, { cols: params.cols, rows: params.rows, order: sessionSizeOrder });
         try {
           await applySessionSize(params.sessionId);
           return { resized: true };
@@ -692,10 +712,30 @@ async function main(): Promise<void> {
     });
   });
   daemon.on("lateResponsesDrained", (methods: string[]) => {
-    if (!methods.includes("session.createOwned")) return;
-    void reconcileWorkspaceSessions().catch((error) => {
-      console.warn(`[runtime] failed to reconcile late session creation: ${error.message}`);
-    });
+    if (methods.includes("session.createOwned")) {
+      void reconcileWorkspaceSessions().catch((error) => {
+        console.warn(`[runtime] failed to reconcile late session creation: ${error.message}`);
+      });
+    }
+    if (methods.includes("session.resize")) {
+      for (const sessionId of [...sessionSizes.keys()]) {
+        void runSessionControl(sessionId, async () => {
+          appliedSizes.delete(sessionId);
+          try {
+            await applySessionSize(sessionId);
+          } catch (error) {
+            if ((error as Error).message === "session not alive") {
+              sessionSizes.delete(sessionId);
+              appliedSizes.delete(sessionId);
+              return;
+            }
+            console.warn(
+              `[runtime] failed to reconcile late session resize ${sessionId}: ${(error as Error).message}`,
+            );
+          }
+        });
+      }
+    }
   });
   daemon.on("event", (evt) => {
     // 会话结束或删除即清占用,不留脏条目
@@ -741,6 +781,7 @@ async function main(): Promise<void> {
         conn,
         sessionId,
         (closedDeviceId) => !gateway.hasDeviceConnection(closedDeviceId),
+        false,
       ).catch(() => {});
     }
     for (const [channel, browserId] of conn.browserChannels) {
