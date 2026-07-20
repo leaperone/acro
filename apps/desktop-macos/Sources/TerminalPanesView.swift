@@ -317,6 +317,10 @@ private struct PaneView: View {
                     focusRequest: focused && pane.selectedSessionId == sessionId
                         ? model.terminalFocusRequest
                         : 0,
+                    // 只按选中态门控命中:拖拽时更上层的 PaneDropTargetLayer 会先截获事件,
+                    // 无需再靠 draggingTab 冻结终端——否则拖拽清理链一旦漏掉、draggingTab 卡住,
+                    // 整片终端区会对鼠标彻底失活。
+                    isActive: pane.selectedSessionId == sessionId,
                     onClose: {
                         model.closeTab(
                             sessionId,
@@ -571,9 +575,10 @@ private struct PaneTabItem: View {
         }
         .overlay(alignment: .leading) {
             if dropTargeted {
+                // 落点指示贯穿整条标签条:2pt 短竖线太弱,拖动时看起来像"不能排序"
                 Rectangle()
                     .fill(Color.accentColor)
-                    .frame(width: 2, height: 20)
+                    .frame(width: 3)
             }
         }
         .onHover { hovered = $0 }

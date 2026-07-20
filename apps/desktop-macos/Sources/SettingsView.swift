@@ -768,17 +768,19 @@ enum TerminalAppearance {
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending } ?? []
     }
 
+    // 中文回退链:优先苹方(PingFang SC),再以常驻的 Hiragino Sans GB / STHeiti(黑体)兜底。
+    // 苹方是 macOS 的按需下载字体,无头机等实例上可能未物化;后两项是随系统常驻的无衬线黑体,
+    // 保证任何机器上缺字形的中文码位都落到黑体,不再无控回退到宋体。ghostty 按顺序逐项加入
+    // collection,对缺字形的码位在其中逐级找覆盖。
+    static let cjkFallbackFamilies = ["PingFang SC", "Hiragino Sans GB", "STHeiti"]
+
     static func write(fontFamily: String, fontSize: Int, theme: String) {
         var lines: [String] = ["# 由 Acro 设置窗口生成;重启应用后生效"]
         let family = fontFamily.trimmingCharacters(in: .whitespaces)
         // 西文主字体:用户选的,或常驻的 Menlo。必须是系统能查到的等宽字体,
         // 否则下面的中文回退项会抢渲染西文(ghostty 内置 JetBrains Mono 无法按名引用)。
         lines.append("font-family = \(family.isEmpty ? "Menlo" : family)")
-        // 中文回退链:优先苹方(PingFang SC)。苹方在 macOS 上是按需下载字体,
-        // 无头机等实例上可能未物化,查找失败时自动落到常驻的黑体(Hiragino Sans GB),
-        // 不再无控地回退到宋体。ghostty 按 font-family 顺序对缺字形的码位逐级回退。
-        lines.append("font-family = PingFang SC")
-        lines.append("font-family = Hiragino Sans GB")
+        for cjk in cjkFallbackFamilies { lines.append("font-family = \(cjk)") }
         if fontSize > 0 { lines.append("font-size = \(fontSize)") }
         let trimmedTheme = theme.trimmingCharacters(in: .whitespaces)
         if !trimmedTheme.isEmpty { lines.append("theme = \(trimmedTheme)") }
@@ -786,6 +788,18 @@ enum TerminalAppearance {
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try? lines.joined(separator: "\n").appending("\n")
             .write(toFile: confPath, atomically: true, encoding: .utf8)
+    }
+
+    // 启动时按已存设置重写 conf:新机器从没打开过外观设置也能拿到 CJK 回退链,
+    // 且每次启动按当前字体物化情况重算(苹方后来物化了下次启动会自动纳入)。
+    // key 与 AppearanceSettingsPane 的 @AppStorage 一致。
+    static func regenerateFromStoredSettings() {
+        let defaults = UserDefaults.standard
+        write(
+            fontFamily: defaults.string(forKey: "acro.terminal.font-family") ?? "",
+            fontSize: defaults.integer(forKey: "acro.terminal.font-size"),
+            theme: defaults.string(forKey: "acro.terminal.theme") ?? ""
+        )
     }
 }
 
