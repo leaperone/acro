@@ -326,6 +326,16 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
+    // 设置面板入口:确认在设置窗内自行完成,这里只把当前查看的服务器设为目标并执行重启。
+    func restartTerminalDaemonFromSettings() async {
+        guard runtime.connected, let serverId = serverId(for: runtime) else {
+            errorMessage = "服务器尚未连接"
+            return
+        }
+        pendingServerId = serverId
+        await restartTerminalDaemon()
+    }
+
     var currentWorkspaceSessions: [Session] {
         selectedWorkspace.map { sessions(in: $0) } ?? []
     }

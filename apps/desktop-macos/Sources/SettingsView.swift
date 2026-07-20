@@ -31,6 +31,11 @@ private struct GeneralSettingsPane: View {
     @ObservedObject var hub: RuntimeHub
     @ObservedObject var model: WorkbenchModel
     @AppStorage(WorkbenchModel.confirmCloseTabKey) private var confirmCloseTab = true
+    @State private var showingRestartConfirm = false
+
+    private var liveSessionCount: Int {
+        model.runtime.sessions.count { $0.alive }
+    }
 
     var body: some View {
         Form {
@@ -64,6 +69,21 @@ private struct GeneralSettingsPane: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                Button(role: .destructive) {
+                    showingRestartConfirm = true
+                } label: {
+                    Label("重启终端服务…", systemImage: "arrow.clockwise")
+                }
+                .disabled(!model.runtime.connected)
+            } header: {
+                Text("终端服务")
+            } footer: {
+                Text("重启当前查看服务器的终端进程(daemon)。用于服务卡住、或更新桌面 App 后需要让终端加载新版本时;会结束所有终端里运行的进程,并自动创建一个新终端。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             UpdateSection()
 
             Section("配置文件") {
@@ -79,6 +99,18 @@ private struct GeneralSettingsPane: View {
         }
         .formStyle(.grouped)
         .frame(height: 560)
+        .confirmationDialog("重启终端服务？", isPresented: $showingRestartConfirm) {
+            Button(liveSessionCount > 0 ? "关闭终端并重启" : "重启", role: .destructive) {
+                Task { await model.restartTerminalDaemonFromSettings() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            if liveSessionCount > 0 {
+                Text("当前服务器有 \(liveSessionCount) 个活跃终端。继续会结束其中运行的进程,重启终端服务,并自动创建一个新终端。")
+            } else {
+                Text("将重启当前服务器的终端服务,并自动创建一个新终端。")
+            }
+        }
     }
 
     private var connectedCount: Int {
