@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   removeDaemonSessions,
+  restartTerminalDaemon,
   type DaemonRequester,
   untrackedDeadSessionIds,
 } from "./session-cleanup.ts";
@@ -53,4 +54,51 @@ test("workspace cleanup keeps the legacy daemon fallback", async () => {
   await removeDaemonSessions(daemon, ["session"]);
 
   assert.deepEqual(calls, ["session.remove", "session.kill"]);
+});
+
+test("daemon restart asks the current daemon to stop itself", async () => {
+  const calls: string[] = [];
+  const daemon: DaemonRequester = {
+    request: async (method) => {
+      calls.push(method);
+      return { restarting: true };
+    },
+  };
+
+  await restartTerminalDaemon(daemon);
+
+  assert.deepEqual(calls, ["daemon.restart"]);
+});
+
+test("daemon restart falls back to a matching legacy daemon identity", async () => {
+  const signals: Array<[number, NodeJS.Signals]> = [];
+  const daemon: DaemonRequester = {
+    request: async (method) => {
+      if (method === "daemon.restart") throw new Error("unknown method daemon.restart");
+      assert.equal(method, "daemon.info");
+      return { pid: 4242, boot: "boot-id" };
+    },
+  };
+
+  await restartTerminalDaemon(
+    daemon,
+    (pid, signal) => signals.push([pid, signal]),
+    () => ({ pid: 4242, boot: "boot-id" }),
+  );
+
+  assert.deepEqual(signals, [[4242, "SIGTERM"]]);
+});
+
+test("daemon restart rejects a changed legacy daemon identity", async () => {
+  const daemon: DaemonRequester = {
+    request: async (method) => {
+      if (method === "daemon.restart") throw new Error("unknown method daemon.restart");
+      return { pid: 4242, boot: "boot-id" };
+    },
+  };
+
+  await assert.rejects(
+    restartTerminalDaemon(daemon, () => {}, () => ({ pid: 4242, boot: "other-boot" })),
+    /invalid terminal daemon identity/,
+  );
 });

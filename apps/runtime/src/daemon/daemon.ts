@@ -579,6 +579,10 @@ let daemonRequestsInFlight = 0;
 
 const handlers: Record<string, Handler> = {
   "daemon.info": () => ({ boot, pid: process.pid }),
+  "daemon.restart": () => {
+    setImmediate(() => process.kill(process.pid, "SIGTERM"));
+    return { restarting: true };
+  },
   "daemon.shutdown": (params: { boot: string }) => {
     if (!daemonTesting || params.boot !== boot) throw new Error("daemon shutdown unavailable");
     setImmediate(() => process.kill(process.pid, "SIGTERM"));

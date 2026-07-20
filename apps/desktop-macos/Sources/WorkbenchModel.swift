@@ -124,6 +124,7 @@ final class WorkbenchModel: ObservableObject {
     @Published var pendingSessionTermination: Session? {
         didSet { if pendingSessionTermination != nil { pendingServerId = selectedServerId } }
     }
+    @Published var showingDaemonRestartConfirmation = false
     // 弹框/编辑器打开时的目标服务器:确认动作按它路由,
     // 避免弹框期间切换服务器把破坏性 RPC 发错目标
     private var pendingServerId: String?
@@ -153,6 +154,7 @@ final class WorkbenchModel: ObservableObject {
     // 合并式延迟对账:视图更新事务内不能同步改 @Published,否则触发
     // "Publishing changes from within view updates" 未定义行为。挪到下一个 main-actor turn。
     private var reconcileScheduled = false
+    private var startupWorkspaceReconciled = false
     private var flagsMonitor: Any?
     private static let layoutKey = "acro.desktop.workbench.layout.v2"
     private static let sidebarModeKey = "acro.desktop.sidebar.view-mode"
@@ -211,6 +213,13 @@ final class WorkbenchModel: ObservableObject {
             guard let digit = note.userInfo?["digit"] as? Int else { return }
             MainActor.assumeIsolated {
                 self?.selectTab(number: digit)
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .acroRestartTerminalDaemon, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.requestRestartTerminalDaemon()
             }
         }
     }
@@ -289,6 +298,42 @@ final class WorkbenchModel: ObservableObject {
     var activeSessions: [Session] {
         let workspaceSessionIds = Set(runtime.workspaces.flatMap(\.sessionIds))
         return runtime.sessions.filter { $0.alive && workspaceSessionIds.contains($0.id) }
+    }
+
+    var pendingDaemonRestartSessionCount: Int {
+        pendingRuntime?.sessions.filter(\.alive).count ?? 0
+    }
+
+    func requestRestartTerminalDaemon() {
+        guard runtime.connected, let serverId = serverId(for: runtime) else {
+            errorMessage = "服务器尚未连接"
+            return
+        }
+        pendingServerId = serverId
+        showingDaemonRestartConfirmation = true
+    }
+
+    func restartTerminalDaemon() async {
+        defer {
+            showingDaemonRestartConfirmation = false
+            pendingServerId = nil
+        }
+        guard let connection = requirePendingRuntime() else { return }
+        do {
+            _ = try await connection.rpc("daemon.restart", ["force": true])
+        } catch {
+            if connection.connected { errorMessage = error.localizedDescription }
+        }
+    }
+
+    // 设置面板入口:确认在设置窗内自行完成,这里只把当前查看的服务器设为目标并执行重启。
+    func restartTerminalDaemonFromSettings() async {
+        guard runtime.connected, let serverId = serverId(for: runtime) else {
+            errorMessage = "服务器尚未连接"
+            return
+        }
+        pendingServerId = serverId
+        await restartTerminalDaemon()
     }
 
     var currentWorkspaceSessions: [Session] {
@@ -1031,6 +1076,7 @@ final class WorkbenchModel: ObservableObject {
         Task { @MainActor in
             reconcileScheduled = false
             reconcileLayoutState()
+            selectLiveWorkspaceOnStartupIfNeeded()
         }
     }
 
@@ -1041,6 +1087,7 @@ final class WorkbenchModel: ObservableObject {
             let shouldFocusTerminal = !layoutRestored
             restoreLayoutIfNeeded()
             reconcileLayoutState()
+            selectLiveWorkspaceOnStartupIfNeeded()
             if shouldFocusTerminal { requestTerminalFocus() }
         }
     }
@@ -1159,6 +1206,25 @@ final class WorkbenchModel: ObservableObject {
             expandGroupContaining(selectedWorkspaceId)
         }
         syncSelectionFromLayout()
+    }
+
+    func selectLiveWorkspaceOnStartupIfNeeded() {
+        guard !startupWorkspaceReconciled else { return }
+        if !currentWorkspaceSessions.isEmpty {
+            startupWorkspaceReconciled = true
+            return
+        }
+        guard let workspace = runtime.workspaces.first(where: { !sessions(in: $0).isEmpty })
+        else { return }
+        startupWorkspaceReconciled = true
+        selectedWorkspaceId = workspace.id
+        expandGroupContaining(workspace.id)
+        if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
+        syncSelectionFromLayout()
+    }
+
+    func resetStartupWorkspaceSelection() {
+        startupWorkspaceReconciled = false
     }
 
     // ---- 布局多端同步(服务端为真相源;orca 式 rev 单调门 + last-writer-wins) ----

@@ -54,7 +54,7 @@ final class ShortcutSettingsTests: XCTestCase {
         XCTAssertEqual(NumberedShortcutMapper.digit(forIndex: 9, count: 10), 9)
         XCTAssertNil(NumberedShortcutMapper.digit(forIndex: 8, count: 10))
         XCTAssertEqual(
-            ShortcutSettings.reservedNumberedShortcutDescription(
+            ShortcutSettings.reservedShortcutDescription(
                 StoredShortcut(key: "5", control: true)
             ),
             "⌃1-9 固定用于切换焦点窗格标签"

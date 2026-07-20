@@ -1,13 +1,14 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
-import type { Session } from "@acro/protocol";
+import type { Session, Workspace } from "@acro/protocol";
 import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
 import {
   removeDaemonSession,
   removeDaemonSessions,
+  restartTerminalDaemon,
   untrackedDeadSessionIds,
 } from "./daemon/session-cleanup.ts";
 import { BrowserManager } from "./browser.ts";
@@ -64,6 +65,12 @@ async function main(): Promise<void> {
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
   const workspaces = new WorkspaceRegistry();
+  const exclusive = new ExclusiveRunner();
+  const runWorkspaceExclusive = <T>(
+    workspaceId: string,
+    task: () => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> => exclusive.run(`workspace:${workspaceId}`, task, signal);
   for (const workspace of workspaces.listPendingRemovals()) {
     await removeDaemonSessions(daemon, workspace.sessionIds);
     workspaces.remove(workspace.id);
@@ -102,40 +109,66 @@ async function main(): Promise<void> {
     }
     return sessions;
   };
-  const daemonSessions = await reconcileWorkspaceSessions();
-  const storedWorkspaces = workspaces.list();
-  const liveSessionIds = new Set(
-    daemonSessions.filter((session) => session.alive).map((session) => session.id),
-  );
-  if (!storedWorkspaces.some((workspace) => workspace.sessionIds.some((id) => liveSessionIds.has(id)))) {
-    const workspace = storedWorkspaces[0] ?? workspaces.create();
-    const sessionId = crypto.randomUUID();
-    workspaces.addSession(workspace.id, sessionId);
-    try {
-      await daemon.request<{ session: Session; handle: number }>(
-        "session.createOwned",
-        { id: sessionId, cwd: os.homedir(), cols: 140, rows: 40 },
+  const ensureLiveWorkspaceSession = async (): Promise<void> => {
+    const hasTrackedLiveSession = (
+      daemonSessions: readonly Session[],
+      storedWorkspaces: readonly Workspace[],
+    ): boolean => {
+      const liveSessionIds = new Set(
+        daemonSessions.filter((session) => session.alive).map((session) => session.id),
       );
-    } catch (error) {
-      if (!daemonMayHaveCreatedSession(error)) {
-        workspaces.removeSession(workspace.id, sessionId);
-        if (storedWorkspaces.length === 0) workspaces.remove(workspace.id);
-      }
-      if ((error as Error).message === "unknown method session.createOwned") {
-        throw new Error(
-          "terminal daemon is outdated; close existing terminals, then restart the server Mac",
-        );
-      }
-      throw error;
+      return storedWorkspaces.some((workspace) =>
+        workspace.sessionIds.some((id) => liveSessionIds.has(id)),
+      );
+    };
+    if (hasTrackedLiveSession(await reconcileWorkspaceSessions(), workspaces.list())) return;
+
+    for (;;) {
+      const candidates = workspaces.list().filter(
+        (workspace) => !workspaces.isRemovalPending(workspace.id),
+      );
+      const createdWorkspace = candidates.length === 0;
+      const candidate = candidates[0] ?? workspaces.create();
+      const restored = await runWorkspaceExclusive(candidate.id, async () => {
+        const workspace = workspaces.get(candidate.id);
+        if (!workspace || workspaces.isRemovalPending(candidate.id)) return false;
+        if (hasTrackedLiveSession(await reconcileWorkspaceSessions(), workspaces.list())) {
+          return true;
+        }
+
+        const sessionId = crypto.randomUUID();
+        workspaces.addSession(workspace.id, sessionId);
+        try {
+          await daemon.request<{ session: Session; handle: number }>(
+            "session.createOwned",
+            { id: sessionId, cwd: os.homedir(), cols: 140, rows: 40 },
+          );
+        } catch (error) {
+          if (!daemonMayHaveCreatedSession(error)) {
+            workspaces.removeSession(workspace.id, sessionId);
+            if (createdWorkspace && workspaces.get(workspace.id)?.sessionIds.length === 0) {
+              workspaces.remove(workspace.id);
+            }
+          }
+          if ((error as Error).message === "unknown method session.createOwned") {
+            throw new Error(
+              "terminal daemon is outdated; close existing terminals, then restart the server Mac",
+            );
+          }
+          throw error;
+        }
+        return true;
+      });
+      if (restored) return;
     }
-  }
+  };
+  await ensureLiveWorkspaceSession();
   // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
   const pendingFocusClaims = new Map<string, symbol>();
   // 浏览器画面可被多个设备查看,控制权按设备互斥;runtime 重启会连同页面一起关闭。
   const browserControlOwners = new Map<string, { deviceId: string; deviceName: string }>();
   let computerControlOwner: { deviceId: string; deviceName: string } | null = null;
-  const exclusive = new ExclusiveRunner();
   const runBrowserControl = <T>(browserId: string, task: () => T | Promise<T>): Promise<T> =>
     exclusive.run(`browser:${browserId}`, task);
   const runSessionControl = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
@@ -146,7 +179,7 @@ async function main(): Promise<void> {
     conn: Conn,
     workspaceId: string,
     task: () => T | Promise<T>,
-  ): Promise<T> => exclusive.run(`workspace:${workspaceId}`, task, conn.abortController.signal);
+  ): Promise<T> => runWorkspaceExclusive(workspaceId, task, conn.abortController.signal);
   const runComputerControl = <T>(task: () => T | Promise<T>): Promise<T> =>
     exclusive.run("computer", task);
   const requireActiveDevice = (conn: Conn): NonNullable<Conn["device"]> => {
@@ -224,6 +257,11 @@ async function main(): Promise<void> {
         localOffer = ensureLocalOffer(registry, identity, config.port);
       }
       return { revoked: true };
+    },
+    "daemon.restart": async (conn) => {
+      requireActiveDevice(conn);
+      await restartTerminalDaemon(daemon);
+      return { restarting: true };
     },
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>
@@ -615,8 +653,8 @@ async function main(): Promise<void> {
   };
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
   daemon.on("up", () => {
-    void reconcileWorkspaceSessions().catch((error) => {
-      console.warn(`[runtime] failed to reconcile workspace sessions: ${error.message}`);
+    void ensureLiveWorkspaceSession().catch((error) => {
+      console.warn(`[runtime] failed to restore terminal session: ${error.message}`);
     });
   });
   daemon.on("lateResponsesDrained", (methods: string[]) => {

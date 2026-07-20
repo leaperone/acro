@@ -67,6 +67,9 @@ struct WorkbenchView: View {
             guard runtime.snapshotLoaded, model.layoutWasRestored else { return }
             model.scheduleReconcile()
         }
+        .onChange(of: runtime.state) { _, state in
+            if state != .connected { model.resetStartupWorkspaceSelection() }
+        }
         .onChange(of: model.hub.entries.map(\.id), initial: true) { _, _ in
             model.scheduleReconcile()
         }
@@ -138,6 +141,23 @@ struct WorkbenchView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("终端中的运行进程会被结束。")
+        }
+        .confirmationDialog("重启终端服务？", isPresented: $model.showingDaemonRestartConfirmation) {
+            Button(
+                model.pendingDaemonRestartSessionCount > 0 ? "关闭终端并重启" : "重启",
+                role: .destructive
+            ) {
+                Task { await model.restartTerminalDaemon() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            if model.pendingDaemonRestartSessionCount > 0 {
+                Text(
+                    "当前服务器有 \(model.pendingDaemonRestartSessionCount) 个活跃终端。继续会结束其中运行的进程，重启终端服务，并自动创建一个新终端。"
+                )
+            } else {
+                Text("将重启当前服务器的终端服务，并自动创建一个新终端。")
+            }
         }
         .onChange(of: model.settingsOpenRequest) { _, _ in
             openWindow(id: "settings")
