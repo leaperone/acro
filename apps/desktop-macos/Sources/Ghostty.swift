@@ -22,6 +22,9 @@ final class Ghostty {
             NSLog("ghostty_config_new failed")
             return
         }
+        // 先按已存设置(重)生成 conf:保证新机器也有 CJK 回退链,且按当前字体物化情况
+        // 重算(苹方未物化时不列它,兜到常驻黑体,避免中文落到宋体)。再加载。
+        TerminalAppearance.regenerateFromStoredSettings()
         // 设置窗口写的外观配置(字体/主题);不存在则用 ghostty 默认
         if FileManager.default.fileExists(atPath: TerminalAppearance.confPath) {
             TerminalAppearance.confPath.withCString { ptr in

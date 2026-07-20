@@ -23,6 +23,9 @@ final class AcroTerminalNSView: NSView {
     private var leftMousePressed = false
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?
+    // 是否为所在窗格的选中标签。背景标签的 surface 常驻渲染但不接管鼠标,
+    // 见 hitTest 覆写。
+    var isActive = false
 
     init(serverId: String, sessionId: String, command: String) {
         self.serverId = serverId
@@ -43,6 +46,14 @@ final class AcroTerminalNSView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // 同一窗格的多个标签 surface 叠在 ZStack 里全程常驻(切换零延迟)。非选中标签是
+    // 复用的缓存 NSView,SwiftUI 的 .allowsHitTesting(false) 对内嵌复用视图不可靠——拖拽
+    // 分屏/移动标签后,点击会穿到最顶层(最后一个标签)的 surface,把选中错误切走。
+    // 由 NSView 自身兜底:非选中标签命中测试返回 nil,鼠标落到下面真正选中的 surface。
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        isActive ? super.hitTest(point) : nil
+    }
     // 窗口开了 isMovableByWindowBackground(紧凑模式空白处拖动);
     // 终端内的拖动属于文字选择,不参与窗口拖动
     override var mouseDownCanMoveWindow: Bool { false }
@@ -584,6 +595,7 @@ struct AcroTerminalView: NSViewRepresentable {
     let sessionId: String
     let command: String
     let focusRequest: Int
+    var isActive = false
     var onClose: (() -> Void)? = nil
     var onFocus: (() -> Void)? = nil
 
@@ -595,6 +607,7 @@ struct AcroTerminalView: NSViewRepresentable {
         )
         view.onClose = onClose
         view.onFocus = onFocus
+        view.isActive = isActive
         view.applyFocusRequest(focusRequest)
         return view
     }
@@ -602,6 +615,7 @@ struct AcroTerminalView: NSViewRepresentable {
     func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {
         nsView.onClose = onClose
         nsView.onFocus = onFocus
+        nsView.isActive = isActive
         nsView.applyFocusRequest(focusRequest)
     }
 }
