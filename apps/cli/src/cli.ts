@@ -302,8 +302,8 @@ async function attachLoop(client: AcroClient, session: Session, server: ServerEn
 
   if (isTTY) {
     process.stdin.setRawMode(true);
-    // 无条件报告本端尺寸:runtime 按"各在挂客户端最小值"仲裁 PTY 尺寸,
-    // 与当前 PTY 同尺寸也要投票,否则别端 detach 后无法回涨
+    // 无条件报告本端尺寸:runtime 会记录每个在挂端的最新值,
+    // focus 接管或别端 detach 时才能立即切到正确尺寸
     await syncSize(current);
     process.on("SIGWINCH", () => void syncSize(current));
   }
