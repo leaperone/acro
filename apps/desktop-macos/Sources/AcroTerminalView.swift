@@ -30,6 +30,7 @@ final class AcroTerminalNSView: NSView {
         self.command = command
         super.init(frame: .zero)
         wantsLayer = true
+        registerForDraggedTypes(TerminalFileDrop.pasteboardTypes)
     }
 
     @available(*, unavailable)
@@ -164,6 +165,18 @@ final class AcroTerminalNSView: NSView {
                 window.makeFirstResponder(self)
             }
         }
+    }
+
+    @discardableResult
+    private func sendTextToSurface(_ text: String) -> Bool {
+        guard !text.isEmpty, let surface else { return false }
+        text.withCString { ptr in
+            var key = ghostty_input_key_s()
+            key.action = GHOSTTY_ACTION_PRESS
+            key.text = ptr
+            _ = ghostty_surface_key(surface, key)
+        }
+        return true
     }
 
     // ---- 焦点 ----
@@ -380,6 +393,27 @@ final class AcroTerminalNSView: NSView {
         ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
     }
 
+    // ---- 外部文件拖放 ----
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        TerminalFileDrop.canReadFileURLs(from: sender.draggingPasteboard) ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let text = TerminalFileDrop.insertedText(
+            for: TerminalFileDrop.fileURLs(from: sender.draggingPasteboard)
+        )
+        guard !text.isEmpty, surface != nil else { return false }
+        onFocus?()
+        focusTerminal()
+        insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+        return true
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         for area in trackingAreas { removeTrackingArea(area) }
@@ -453,13 +487,8 @@ extension AcroTerminalNSView: NSTextInputClient {
         guard !text.isEmpty else { return }
         if currentKeyEvent != nil {
             keyTextAccumulator.append(text)
-        } else if let surface {
-            text.withCString { ptr in
-                var key = ghostty_input_key_s()
-                key.action = GHOSTTY_ACTION_PRESS
-                key.text = ptr
-                _ = ghostty_surface_key(surface, key)
-            }
+        } else {
+            sendTextToSurface(text)
         }
     }
 

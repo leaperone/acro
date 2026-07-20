@@ -344,6 +344,33 @@ private struct PaneView: View {
 
 // ---- 标签条 ----
 
+struct TabBarWindowDragArea<Tabs: View>: View {
+    private let tabs: Tabs
+
+    init(@ViewBuilder tabs: () -> Tabs) {
+        self.tabs = tabs()
+    }
+
+    var body: some View {
+        // 标签放得下时,把余下空白变成明确的窗口拖动区;标签本身仍只负责选中/排序。
+        // 放不下时退回横向滚动,避免拖动手柄覆盖或压缩标签命中区。
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                tabs
+                WindowDragHandle()
+                    .frame(minWidth: 24, maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    tabs
+                }
+            }
+            .scrollIndicators(.never)
+        }
+    }
+}
+
 private struct PaneTabBar: View {
     @ObservedObject var model: WorkbenchModel
     let pane: PaneTabGroup
@@ -385,15 +412,10 @@ private struct PaneTabBar: View {
                     .frame(width: 80)
                     .frame(maxHeight: .infinity)
             }
-            ScrollView(.horizontal) {
-                HStack(spacing: 0) {
-                    ForEach(Array(pane.sessionIds.enumerated()), id: \.element) { index, sessionId in
-                        tab(sessionId: sessionId, index: index)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+            TabBarWindowDragArea {
+                tabItems
             }
-            .scrollIndicators(.never)
             .frame(maxWidth: .infinity)
 
             Button {
@@ -411,6 +433,13 @@ private struct PaneTabBar: View {
             .help("新建标签(\(ShortcutSettings.stored(.newTerminalTab).displayString))")
             .accessibilityLabel("新建标签")
             .padding(.trailing, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var tabItems: some View {
+        ForEach(Array(pane.sessionIds.enumerated()), id: \.element) { index, sessionId in
+            tab(sessionId: sessionId, index: index)
         }
     }
 
