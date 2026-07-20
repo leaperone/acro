@@ -218,9 +218,11 @@ async function main(): Promise<void> {
   // 无 owner 时回退到所有在挂客户端的最小值,保证只读画面不裁切。
   const sessionSizes = new Map<string, Map<Conn, { cols: number; rows: number }>>();
   const appliedSizes = new Map<string, { cols: number; rows: number }>();
-  const applySessionSize = async (sessionId: string): Promise<void> => {
+  const applySessionSize = async (
+    sessionId: string,
+    ownerDeviceId = focusOwners.get(sessionId)?.deviceId,
+  ): Promise<void> => {
     const entries = [...(sessionSizes.get(sessionId)?.entries() ?? [])];
-    const ownerDeviceId = focusOwners.get(sessionId)?.deviceId;
     const votes = ownerDeviceId
       ? entries.filter(([conn]) => conn.device?.id === ownerDeviceId).map(([, size]) => size)
       : entries.map(([, size]) => size);
@@ -235,7 +237,7 @@ async function main(): Promise<void> {
   const reconcileSessionConnection = (
     conn: Conn,
     sessionId: string,
-    releaseFocus: boolean,
+    shouldReleaseFocus: (deviceId: string) => boolean,
   ): Promise<void> =>
     runSessionControl(sessionId, async () => {
       const votes = sessionSizes.get(sessionId);
@@ -243,9 +245,9 @@ async function main(): Promise<void> {
 
       const deviceId = conn.device?.id;
       if (
-        releaseFocus &&
         deviceId &&
-        focusOwners.get(sessionId)?.deviceId === deviceId
+        focusOwners.get(sessionId)?.deviceId === deviceId &&
+        shouldReleaseFocus(deviceId)
       ) {
         focusOwners.delete(sessionId);
         emitRuntimeEvent("session.focusChanged", {
@@ -412,17 +414,19 @@ async function main(): Promise<void> {
             throw new Error("session not alive");
           }
           const activeDevice = requireActiveDevice(conn);
+          await applySessionSize(sessionId, activeDevice.id);
+          if (
+            pendingFocusClaims.get(sessionId) !== intent ||
+            !gateway.hasConnection(conn)
+          ) {
+            appliedSizes.delete(sessionId);
+            await applySessionSize(sessionId).catch(() => {});
+            throw new Error("connection closed");
+          }
           focusOwners.set(sessionId, {
             deviceId: activeDevice.id,
             deviceName: activeDevice.name,
           });
-          try {
-            await applySessionSize(sessionId);
-          } catch (error) {
-            if (owner) focusOwners.set(sessionId, owner);
-            else focusOwners.delete(sessionId);
-            throw error;
-          }
           emitRuntimeEvent("session.focusChanged", {
             sessionId,
             deviceId: activeDevice.id,
@@ -458,7 +462,11 @@ async function main(): Promise<void> {
       for (const [channel, st] of conn.attached) {
         if (st.sessionId === sessionId) conn.attached.delete(channel);
       }
-      await reconcileSessionConnection(conn, sessionId, false).catch(() => {});
+      await reconcileSessionConnection(
+        conn,
+        sessionId,
+        (deviceId) => !gateway.hasDeviceSessionAttachment(deviceId, sessionId),
+      ).catch(() => {});
       return { detached: true };
     },
     "session.resize": (conn, params) =>
@@ -720,17 +728,20 @@ async function main(): Promise<void> {
   gateway.onConnClosed = (conn) => {
     conn.pendingSimAttaches.clear();
     const deviceId = conn.device?.id;
-    const deviceDisconnected = Boolean(deviceId && !gateway.hasDeviceConnection(deviceId));
     const affectedSessions = new Set(
       [...sessionSizes.keys()].filter((sessionId) => sessionSizes.get(sessionId)?.has(conn)),
     );
-    if (deviceDisconnected && deviceId) {
+    if (deviceId && !gateway.hasDeviceConnection(deviceId)) {
       for (const [sessionId, owner] of focusOwners) {
         if (owner.deviceId === deviceId) affectedSessions.add(sessionId);
       }
     }
     for (const sessionId of affectedSessions) {
-      void reconcileSessionConnection(conn, sessionId, deviceDisconnected).catch(() => {});
+      void reconcileSessionConnection(
+        conn,
+        sessionId,
+        (closedDeviceId) => !gateway.hasDeviceConnection(closedDeviceId),
+      ).catch(() => {});
     }
     for (const [channel, browserId] of conn.browserChannels) {
       void browsers
@@ -740,7 +751,7 @@ async function main(): Promise<void> {
     for (const udid of conn.simChannels.values()) {
       if (!gateway.hasSimInterest(udid)) simulators.detach(udid);
     }
-    if (!deviceDisconnected || !deviceId) return;
+    if (!deviceId || gateway.hasDeviceConnection(deviceId)) return;
     for (const [browserId, owner] of browserControlOwners) {
       if (owner.deviceId !== deviceId) continue;
       void runBrowserControl(browserId, () => {

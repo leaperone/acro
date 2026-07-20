@@ -659,11 +659,27 @@ async function main(): Promise<void> {
     assert.equal(retained?.cols, 60, "attach reconnect must keep the owner's cols");
     assert.equal(retained?.rows, 20, "attach reconnect must keep the owner's rows");
 
+    const sizeSeatReattach = new Client();
+    await sizeSeatReattach.connect(decodePairingOffer(sizeSeatShare.offer));
+    await sizeSeatReattach.rpc("session.attach", { sessionId: session.id });
+    await sizeSeatReattach.rpc("session.resize", { sessionId: session.id, cols: 70, rows: 25 });
+    const reattached = (await client.rpc<Session[]>("session.list")).find(
+      (s) => s.id === session.id,
+    );
+    assert.equal(reattached?.cols, 70, "reattached owner must resume controlling pty cols");
+    assert.equal(reattached?.rows, 25, "reattached owner must resume controlling pty rows");
+
+    await sizeSeatReattach.rpc("session.detach", { sessionId: session.id });
+    const detachedOwners = await client.rpc<Array<{ sessionId: string }>>("session.focusList");
+    assert.ok(
+      !detachedOwners.some((owner) => owner.sessionId === session.id),
+      "explicit detach must release focus when the device has no rendered attachment",
+    );
+    sizeSeatReattach.close();
     sizeSeatControl.close();
-    await sleep(500);
     const regrown = (await client.rpc<Session[]>("session.list")).find((s) => s.id === session.id);
-    assert.equal(regrown?.cols, 220, "pty must fall back after the focus owner leaves");
-    assert.equal(regrown?.rows, 60, "pty must fall back after the focus owner leaves");
+    assert.equal(regrown?.cols, 220, "pty must fall back after the focus owner detaches");
+    assert.equal(regrown?.rows, 60, "pty must fall back after the focus owner detaches");
 
     const deadResize = await client.rpc<Session>("session.create", {
       command: "/bin/sh",
