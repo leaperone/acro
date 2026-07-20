@@ -211,16 +211,6 @@ export class Gateway {
     return false;
   }
 
-  hasDeviceSessionAttachment(deviceId: string, sessionId: string): boolean {
-    for (const conn of this.conns) {
-      if (conn.device?.id !== deviceId) continue;
-      for (const attached of conn.attached.values()) {
-        if (attached.sessionId === sessionId) return true;
-      }
-    }
-    return false;
-  }
-
   hasConnection(conn: Conn): boolean {
     return this.conns.has(conn);
   }

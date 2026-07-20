@@ -617,6 +617,8 @@ async function main(): Promise<void> {
     });
     const sizeSeat = new Client();
     await sizeSeat.connect(decodePairingOffer(sizeSeatShare.offer));
+    const sizeSeatControl = new Client();
+    await sizeSeatControl.connect(decodePairingOffer(sizeSeatShare.offer));
     await client.rpc("session.attach", { sessionId: session.id });
     await sizeSeat.rpc("session.attach", { sessionId: session.id });
     await client.rpc("session.resize", { sessionId: session.id, cols: 200, rows: 50 });
@@ -642,6 +644,22 @@ async function main(): Promise<void> {
     assert.equal(sized?.rows, 20, "previous owner resize must not change pty rows");
 
     sizeSeat.close();
+    await sleep(500);
+    const retainedOwners = await client.rpc<Array<{ sessionId: string; deviceId: string }>>(
+      "session.focusList",
+    );
+    assert.equal(
+      retainedOwners.find((owner) => owner.sessionId === session.id)?.deviceId,
+      sizeSeatControl.deviceId,
+      "attach reconnect must retain focus while the device control connection remains",
+    );
+    const retained = (await client.rpc<Session[]>("session.list")).find(
+      (s) => s.id === session.id,
+    );
+    assert.equal(retained?.cols, 60, "attach reconnect must keep the owner's cols");
+    assert.equal(retained?.rows, 20, "attach reconnect must keep the owner's rows");
+
+    sizeSeatControl.close();
     await sleep(500);
     const regrown = (await client.rpc<Session[]>("session.list")).find((s) => s.id === session.id);
     assert.equal(regrown?.cols, 220, "pty must fall back after the focus owner leaves");

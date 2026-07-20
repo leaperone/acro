@@ -232,16 +232,20 @@ async function main(): Promise<void> {
     await daemon.request("session.resize", { sessionId, cols, rows });
     appliedSizes.set(sessionId, { cols, rows });
   };
-  const reconcileDetachedSession = (conn: Conn, sessionId: string): Promise<void> =>
+  const reconcileSessionConnection = (
+    conn: Conn,
+    sessionId: string,
+    releaseFocus: boolean,
+  ): Promise<void> =>
     runSessionControl(sessionId, async () => {
       const votes = sessionSizes.get(sessionId);
       if (votes?.delete(conn) && votes.size === 0) sessionSizes.delete(sessionId);
 
       const deviceId = conn.device?.id;
       if (
+        releaseFocus &&
         deviceId &&
-        focusOwners.get(sessionId)?.deviceId === deviceId &&
-        !gateway.hasDeviceSessionAttachment(deviceId, sessionId)
+        focusOwners.get(sessionId)?.deviceId === deviceId
       ) {
         focusOwners.delete(sessionId);
         emitRuntimeEvent("session.focusChanged", {
@@ -454,7 +458,7 @@ async function main(): Promise<void> {
       for (const [channel, st] of conn.attached) {
         if (st.sessionId === sessionId) conn.attached.delete(channel);
       }
-      await reconcileDetachedSession(conn, sessionId).catch(() => {});
+      await reconcileSessionConnection(conn, sessionId, false).catch(() => {});
       return { detached: true };
     },
     "session.resize": (conn, params) =>
@@ -712,19 +716,21 @@ async function main(): Promise<void> {
     const owner = focusOwners.get(sessionId);
     return !owner || owner.deviceId === conn.device?.id;
   };
-  // owner 设备不再附着该终端时自动释放,其他设备无需手动接管
+  // owner 设备的连接全部断开后自动释放;attach 子连接瞬断重连不丢控制权
   gateway.onConnClosed = (conn) => {
     conn.pendingSimAttaches.clear();
     const deviceId = conn.device?.id;
+    const deviceDisconnected = Boolean(deviceId && !gateway.hasDeviceConnection(deviceId));
     const affectedSessions = new Set(
-      [...sessionSizes.keys(), ...focusOwners.keys()].filter(
-        (sessionId) =>
-          sessionSizes.get(sessionId)?.has(conn) ||
-          (deviceId && focusOwners.get(sessionId)?.deviceId === deviceId),
-      ),
+      [...sessionSizes.keys()].filter((sessionId) => sessionSizes.get(sessionId)?.has(conn)),
     );
+    if (deviceDisconnected && deviceId) {
+      for (const [sessionId, owner] of focusOwners) {
+        if (owner.deviceId === deviceId) affectedSessions.add(sessionId);
+      }
+    }
     for (const sessionId of affectedSessions) {
-      void reconcileDetachedSession(conn, sessionId).catch(() => {});
+      void reconcileSessionConnection(conn, sessionId, deviceDisconnected).catch(() => {});
     }
     for (const [channel, browserId] of conn.browserChannels) {
       void browsers
@@ -734,7 +740,7 @@ async function main(): Promise<void> {
     for (const udid of conn.simChannels.values()) {
       if (!gateway.hasSimInterest(udid)) simulators.detach(udid);
     }
-    if (!deviceId || gateway.hasDeviceConnection(deviceId)) return;
+    if (!deviceDisconnected || !deviceId) return;
     for (const [browserId, owner] of browserControlOwners) {
       if (owner.deviceId !== deviceId) continue;
       void runBrowserControl(browserId, () => {

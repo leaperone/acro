@@ -294,30 +294,6 @@ test("terminal session cleanup drops attachments from every connection", () => {
   }
 });
 
-test("terminal attachment ownership follows all connections from the same device", () => {
-  const { gateway, conn, close } = fixture(0);
-  const second = {
-    ...conn,
-    attached: new Map<number, { sessionId: string; attachSeq: number }>(),
-    browserChannels: new Map<number, string>(),
-    simChannels: new Map<number, string>(),
-    pendingSimAttaches: new Map<string, symbol>(),
-  };
-  try {
-    conn.attached.set(7, { sessionId: "session", attachSeq: 1 });
-    (gateway as unknown as { conns: Set<Conn> }).conns.add(second);
-
-    assert.equal(gateway.hasDeviceSessionAttachment(conn.device!.id, "session"), true);
-    conn.attached.clear();
-    assert.equal(gateway.hasDeviceSessionAttachment(conn.device!.id, "session"), false);
-
-    second.attached.set(8, { sessionId: "session", attachSeq: 2 });
-    assert.equal(gateway.hasDeviceSessionAttachment(conn.device!.id, "session"), true);
-  } finally {
-    close();
-  }
-});
-
 test("simulator interest includes pending and attached subscribers", () => {
   const { gateway, conn, close } = fixture(0);
   try {
