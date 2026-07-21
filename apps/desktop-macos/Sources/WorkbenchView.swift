@@ -28,9 +28,9 @@ struct WorkbenchView: View {
                             .layoutPriority(1)
 
                         if model.inspectorVisible, geometry.size.width >= 720 {
-                            InspectorView(model: model, runtime: runtime)
+                            RightSidebarView(model: model, runtime: runtime)
                                 .ignoresSafeArea(.container, edges: .top)
-                                .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
+                                .frame(minWidth: 260, idealWidth: 320, maxWidth: 460)
                                 .frame(maxHeight: .infinity)
                         }
                     }

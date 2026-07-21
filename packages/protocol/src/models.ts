@@ -55,6 +55,30 @@ export const ComputerControl = z.object({
 });
 export type ComputerControl = z.infer<typeof ComputerControl>;
 
+// 文件浏览器条目(只读)。Acro 的文件在 Mac mini 上,由 runtime 经 fs.list 返回。
+// path 是绝对路径;kind 由 codegen 落成 String;size 目录为 0。
+export const FileEntry = z.object({
+  name: z.string(),
+  path: z.string(),
+  kind: z.enum(["dir", "file", "symlink", "other"]),
+  size: z.number().int(),
+  mtimeMs: z.number(),
+});
+export type FileEntry = z.infer<typeof FileEntry>;
+
+// 文件预览内容(只读)。kind=text 用 text(UTF-8);kind=image 用 base64;
+// kind=binary 两者皆空,客户端降级显示大小/类型。size 是真实字节数,truncated 表示被截断。
+export const FileContent = z.object({
+  path: z.string(),
+  kind: z.enum(["text", "image", "binary"]),
+  text: z.string().nullable(),
+  base64: z.string().nullable(),
+  mime: z.string().nullable(),
+  size: z.number().int(),
+  truncated: z.boolean(),
+});
+export type FileContent = z.infer<typeof FileContent>;
+
 export const Session = z.object({
   id: z.string(),
   // cwd 是创建时目录;daemon 查询实时目录成功后会回写此字段

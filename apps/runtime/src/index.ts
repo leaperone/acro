@@ -15,6 +15,7 @@ import { BrowserManager } from "./browser.ts";
 import { SimulatorManager } from "./simulator.ts";
 import { HelperClient } from "./computer.ts";
 import { WorkspaceRegistry } from "./workspaces.ts";
+import * as fsBrowser from "./fs.ts";
 import { createHttpHandler } from "./http.ts";
 import {
   clearBootstrapOffer,
@@ -262,6 +263,14 @@ async function main(): Promise<void> {
       requireActiveDevice(conn);
       await restartTerminalDaemon(daemon);
       return { restarting: true };
+    },
+    "fs.list": (conn, { path }) => {
+      requireActiveDevice(conn);
+      return fsBrowser.list(path);
+    },
+    "fs.read": (conn, { path, maxBytes }) => {
+      requireActiveDevice(conn);
+      return fsBrowser.read(path, maxBytes);
     },
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>
