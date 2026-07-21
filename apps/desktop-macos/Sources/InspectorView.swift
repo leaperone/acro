@@ -2,33 +2,14 @@
 
 import SwiftUI
 
+// 右侧栏「上下文」页:会话 / 工作区 / Runtime 概览。外层 chrome(标题栏、模式切换、
+// 关闭)由 RightSidebarView 提供,这里只出内容。
 struct InspectorView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "sidebar.right")
-                    .foregroundStyle(.secondary)
-                Text("上下文")
-                    .font(.callout.weight(.semibold))
-                Spacer()
-                Button {
-                    model.inspectorVisible = false
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .help("隐藏右侧栏")
-                .accessibilityLabel("隐藏右侧栏")
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 38)
-
-            Divider()
-
-            ScrollView {
+        ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     if let selectedSession = model.selectedSession {
                         section("会话") {
@@ -93,10 +74,7 @@ struct InspectorView: View {
                     }
                 }
                 .padding(16)
-            }
         }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(.bar)
     }
 
     private func section<Content: View>(

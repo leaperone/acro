@@ -54,3 +54,21 @@ struct ComputerControl: Codable, Equatable, Hashable, Sendable {
     let deviceId: String
     let deviceName: String
 }
+
+struct FileEntry: Codable, Equatable, Hashable, Sendable {
+    let name: String
+    let path: String
+    let kind: String
+    let size: Int
+    let mtimeMs: Double
+}
+
+struct FileContent: Codable, Equatable, Hashable, Sendable {
+    let path: String
+    let kind: String
+    let text: String?
+    let base64: String?
+    let mime: String?
+    let size: Int
+    let truncated: Bool
+}

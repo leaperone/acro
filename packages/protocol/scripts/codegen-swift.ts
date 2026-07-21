@@ -9,6 +9,8 @@ import {
   BrowserControl,
   ComputerControl,
   Device,
+  FileContent,
+  FileEntry,
   Session,
   SessionFocus,
   Workspace,
@@ -23,6 +25,8 @@ const models: Record<string, z.ZodType> = {
   SessionFocus,
   BrowserControl,
   ComputerControl,
+  FileEntry,
+  FileContent,
 };
 
 type JsonSchema = {

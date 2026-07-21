@@ -1,0 +1,155 @@
+// 文件浏览器状态。数据全部经 RuntimeConnection 的 fs.list / fs.read RPC 从 Mac mini 取。
+// 设计参考 cmux 的 FileExplorerStore(懒加载子节点、目录优先)与 orca 的取消在途请求。
+
+import Foundation
+
+// 树节点(引用类型:懒加载 children、展开态可变)。id 用绝对路径。
+@MainActor
+final class FileNode: ObservableObject, Identifiable {
+    let name: String
+    let path: String
+    let isDir: Bool
+    let size: Int
+    nonisolated let id: String
+
+    @Published var children: [FileNode]?   // nil = 未加载
+    @Published var isExpanded = false
+    @Published var isLoading = false
+    @Published var loadError: String?
+
+    init(entry: FileEntry) {
+        name = entry.name
+        path = entry.path
+        isDir = entry.kind == "dir"
+        size = entry.size
+        id = entry.path
+    }
+}
+
+@MainActor
+final class FileBrowserModel: ObservableObject {
+    @Published private(set) var rootPath = ""
+    @Published private(set) var rootNodes: [FileNode]?
+    @Published private(set) var isRootLoading = false
+    @Published private(set) var rootError: String?
+
+    @Published private(set) var selectedPath: String?
+    @Published private(set) var preview: FileContent?
+    @Published private(set) var isPreviewLoading = false
+    @Published private(set) var previewError: String?
+
+    private weak var runtime: RuntimeConnection?
+    private var previewTask: Task<Void, Never>?
+
+    // 以某路径为根同步文件树。仅当根变化时重载,避免每次刷新都抖动。
+    // root 为空串时由 runtime 落到 home。
+    func sync(root: String, runtime: RuntimeConnection) {
+        self.runtime = runtime
+        if root == rootPath, rootNodes != nil || isRootLoading { return }
+        rootPath = root
+        selectedPath = nil
+        preview = nil
+        previewError = nil
+        reloadRoot()
+    }
+
+    func reloadRoot() {
+        guard let runtime else { return }
+        isRootLoading = true
+        rootError = nil
+        let path = rootPath
+        Task {
+            do {
+                let entries = try await runtime.rpc("fs.list", ["path": path], as: [FileEntry].self)
+                guard path == rootPath else { return }   // 根已变,丢弃过期结果
+                rootNodes = entries.map(FileNode.init)
+                // path 为空("home")时,用返回条目的父目录把 rootPath 锚定成 runtime 侧的
+                // 绝对路径——客户端不知道 Mac mini 的 home,goUp/显示都要用真实远端路径。
+                if rootPath.isEmpty,
+                   let anchor = entries.first.map({ ($0.path as NSString).deletingLastPathComponent }),
+                   !anchor.isEmpty {
+                    rootPath = anchor
+                }
+                isRootLoading = false
+            } catch {
+                guard path == rootPath else { return }
+                rootError = Self.friendly(error)
+                rootNodes = nil
+                isRootLoading = false
+            }
+        }
+    }
+
+    // 上一级目录。rootPath 是 runtime 侧的绝对路径(加载后已锚定);为空则还没锚定,不动。
+    func goUp() {
+        guard runtime != nil, !rootPath.isEmpty else { return }
+        let parent = (rootPath as NSString).deletingLastPathComponent
+        guard !parent.isEmpty, parent != rootPath else { return }
+        rootPath = parent
+        selectedPath = nil
+        preview = nil
+        reloadRoot()
+    }
+
+    func toggle(_ node: FileNode) {
+        guard node.isDir else { return }
+        node.isExpanded.toggle()
+        if node.isExpanded, node.children == nil, !node.isLoading {
+            loadChildren(node)
+        }
+    }
+
+    private func loadChildren(_ node: FileNode) {
+        guard let runtime else { return }
+        node.isLoading = true
+        node.loadError = nil
+        Task {
+            do {
+                let entries = try await runtime.rpc(
+                    "fs.list", ["path": node.path], as: [FileEntry].self)
+                node.children = entries.map(FileNode.init)
+                node.isLoading = false
+            } catch {
+                node.loadError = Self.friendly(error)
+                node.isLoading = false
+            }
+        }
+    }
+
+    // 选中:目录则展开/折叠,文件则拉预览(取消上一个在途预览)。
+    func select(_ node: FileNode) {
+        if node.isDir { toggle(node); return }
+        selectedPath = node.path
+        loadPreview(node.path)
+    }
+
+    private func loadPreview(_ path: String) {
+        guard let runtime else { return }
+        previewTask?.cancel()
+        preview = nil
+        previewError = nil
+        isPreviewLoading = true
+        previewTask = Task {
+            do {
+                let content = try await runtime.rpc("fs.read", ["path": path], as: FileContent.self)
+                guard !Task.isCancelled, selectedPath == path else { return }
+                preview = content
+                isPreviewLoading = false
+            } catch {
+                guard !Task.isCancelled, selectedPath == path else { return }
+                previewError = Self.friendly(error)
+                isPreviewLoading = false
+            }
+        }
+    }
+
+    // RPC 错误码 → 人话(参考 orca 的错误映射)
+    private static func friendly(_ error: Error) -> String {
+        let message = (error as? RpcError)?.message ?? error.localizedDescription
+        if message.contains("ENOENT") || message.contains("no such file") { return "路径不存在" }
+        if message.contains("EACCES") || message.contains("permission") { return "没有访问权限" }
+        if message.contains("ENOTDIR") { return "不是目录" }
+        if message.contains("timeout") { return "请求超时" }
+        return message
+    }
+}

@@ -3,6 +3,8 @@ import {
   BrowserControl,
   ComputerControl,
   Device,
+  FileContent,
+  FileEntry,
   Session,
   SessionFocus,
   Workspace,
@@ -331,6 +333,20 @@ export const methods = {
   "computer.activate": {
     params: z.object({ bundleId: z.string() }),
     result: z.object({ activated: z.boolean() }),
+  },
+  // 文件浏览器(只读):列目录 + 读预览。文件在 Mac mini 上,runtime 直接读盘。
+  // path 空串表示"以约定根"(runtime 用 home);否则须是绝对路径。
+  "fs.list": {
+    params: z.object({ path: z.string() }),
+    result: z.array(FileEntry),
+  },
+  "fs.read": {
+    params: z.object({
+      path: z.string(),
+      // 文本预览上限;省略走 runtime 默认。超限则截断并置 truncated。
+      maxBytes: z.number().int().positive().optional(),
+    }),
+    result: FileContent,
   },
 } as const;
 
