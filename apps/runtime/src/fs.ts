@@ -2,10 +2,11 @@
 // 客户端经 fs.list / fs.read RPC 获取。策略参考 orca:双级上限、前 8KB 探二进制、
 // 图片走 base64、文本超限截断。只读——不提供写/删/改(那属于终端 Agent 的边界)。
 
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { FileContent, FileEntry } from "@acro/protocol";
+import type { FileContent, FileEntry, SearchHit } from "@acro/protocol";
 
 // 文本预览上限;超过则截断并置 truncated(截断的内容禁止在客户端当可编辑)
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024;
@@ -130,4 +131,94 @@ export async function read(input: string, maxBytes?: number): Promise<FileConten
   } finally {
     await handle.close();
   }
+}
+
+const SEARCH_DEFAULT_MAX_RESULTS = 500;
+const SEARCH_TIMEOUT_MS = 15_000;
+
+// 内容搜索。优先 ripgrep(尊重 .gitignore、跳过 .git、快);缺则退回系统 grep。
+// 结果达上限即杀进程返回;超时也杀。
+export async function search(
+  input: string,
+  query: string,
+  maxResults?: number,
+): Promise<SearchHit[]> {
+  const root = resolvePath(input);
+  const cap = Math.max(1, Math.min(maxResults ?? SEARCH_DEFAULT_MAX_RESULTS, 2000));
+  try {
+    return await runSearch(
+      "rg",
+      ["--vimgrep", "--smart-case", "--no-heading", "--color", "never", "--max-columns", "300",
+       "-e", query, "--", root],
+      cap,
+      true,
+    );
+  } catch (err) {
+    // rg 未安装:退回 grep(始终存在)。其余错误(如无匹配)已在 runSearch 里当空结果处理。
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return runSearch(
+        "grep",
+        ["-rIn", "--exclude-dir=.git", "--exclude-dir=node_modules", "-e", query, root],
+        cap,
+        false,
+      );
+    }
+    throw err;
+  }
+}
+
+// hasColumn: rg --vimgrep 是 path:line:col:text;grep -n 是 path:line:text(无列)。
+function runSearch(
+  cmd: string,
+  args: string[],
+  cap: number,
+  hasColumn: boolean,
+): Promise<SearchHit[]> {
+  return new Promise((resolve, reject) => {
+    const hits: SearchHit[] = [];
+    let buffer = "";
+    let settled = false;
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"] });
+    const timer = setTimeout(() => finish(), SEARCH_TIMEOUT_MS);
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      resolve(hits);
+    };
+
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const hit = parseLine(line, hasColumn);
+        if (hit) hits.push(hit);
+        if (hits.length >= cap) return finish();
+      }
+    });
+
+    // rg/grep 无匹配时退出码为 1,不是错误;正常返回已收集的(空)结果。
+    child.on("close", () => finish());
+  });
+}
+
+function parseLine(line: string, hasColumn: boolean): SearchHit | null {
+  const re = hasColumn ? /^(.+?):(\d+):(\d+):(.*)$/ : /^(.+?):(\d+):(.*)$/;
+  const m = line.match(re);
+  if (!m) return null;
+  if (hasColumn) {
+    return { path: m[1]!, line: Number(m[2]), column: Number(m[3]), preview: m[4]!.slice(0, 300) };
+  }
+  return { path: m[1]!, line: Number(m[2]), column: 0, preview: m[3]!.slice(0, 300) };
 }

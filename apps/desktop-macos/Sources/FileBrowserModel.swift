@@ -38,8 +38,19 @@ final class FileBrowserModel: ObservableObject {
     @Published private(set) var isPreviewLoading = false
     @Published private(set) var previewError: String?
 
+    // 内容搜索(以当前根为范围,runtime 跑 ripgrep/grep)
+    @Published var searchQuery = ""
+    @Published private(set) var searchResults: [SearchHit]?
+    @Published private(set) var isSearching = false
+    @Published private(set) var searchError: String?
+
+    var searchActive: Bool {
+        searchResults != nil || isSearching || searchError != nil
+    }
+
     private weak var runtime: RuntimeConnection?
     private var previewTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
 
     // 以某路径为根同步文件树。仅当根变化时重载,避免每次刷新都抖动。
     // root 为空串时由 runtime 落到 home。
@@ -119,8 +130,45 @@ final class FileBrowserModel: ObservableObject {
     // 选中:目录则展开/折叠,文件则拉预览(取消上一个在途预览)。
     func select(_ node: FileNode) {
         if node.isDir { toggle(node); return }
-        selectedPath = node.path
-        loadPreview(node.path)
+        openPreview(node.path)
+    }
+
+    // 直接以路径打开预览(搜索结果点击也走这里)。
+    func openPreview(_ path: String) {
+        selectedPath = path
+        loadPreview(path)
+    }
+
+    // 内容搜索:以当前根为范围。空串清空。取消上一个在途搜索。
+    func runSearch() {
+        let query = searchQuery.trimmingCharacters(in: .whitespaces)
+        guard let runtime, !query.isEmpty else { clearSearch(); return }
+        searchTask?.cancel()
+        isSearching = true
+        searchError = nil
+        searchResults = nil
+        let root = rootPath
+        searchTask = Task {
+            do {
+                let hits = try await runtime.rpc(
+                    "fs.search", ["path": root, "query": query], as: [SearchHit].self)
+                guard !Task.isCancelled else { return }
+                searchResults = hits
+                isSearching = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                searchError = Self.friendly(error)
+                isSearching = false
+            }
+        }
+    }
+
+    func clearSearch() {
+        searchTask?.cancel()
+        searchQuery = ""
+        searchResults = nil
+        searchError = nil
+        isSearching = false
     }
 
     private func loadPreview(_ path: String) {

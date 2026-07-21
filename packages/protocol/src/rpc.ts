@@ -5,6 +5,7 @@ import {
   Device,
   FileContent,
   FileEntry,
+  SearchHit,
   Session,
   SessionFocus,
   Workspace,
@@ -347,6 +348,15 @@ export const methods = {
       maxBytes: z.number().int().positive().optional(),
     }),
     result: FileContent,
+  },
+  // 内容搜索:runtime 在 path 子树跑 ripgrep(缺则 grep)。默认尊重 .gitignore、跳过 .git。
+  "fs.search": {
+    params: z.object({
+      path: z.string(),
+      query: z.string().min(1).max(512),
+      maxResults: z.number().int().positive().max(2000).optional(),
+    }),
+    result: z.array(SearchHit),
   },
 } as const;
 

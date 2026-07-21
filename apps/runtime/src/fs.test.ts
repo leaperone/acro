@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import nodeFs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { list, read } from "./fs.ts";
+import { list, read, search } from "./fs.ts";
 
 async function tmpDir(): Promise<string> {
   return nodeFs.mkdtemp(path.join(os.tmpdir(), "acro-fs-test-"));
@@ -67,4 +67,22 @@ test("read returns base64 image for a known image extension", async () => {
   assert.equal(content.kind, "image");
   assert.equal(content.mime, "image/png");
   assert.equal(content.base64, bytes.toString("base64"));
+});
+
+test("search finds matching lines with path/line/preview", async () => {
+  const dir = await tmpDir();
+  await nodeFs.writeFile(path.join(dir, "a.ts"), "const needle = 1;\nother line\n");
+  await nodeFs.writeFile(path.join(dir, "b.ts"), "no match here\n");
+  const hits = await search(dir, "needle");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0]!.path, path.join(dir, "a.ts"));
+  assert.equal(hits[0]!.line, 1);
+  assert.match(hits[0]!.preview, /needle/);
+});
+
+test("search returns empty for no matches", async () => {
+  const dir = await tmpDir();
+  await nodeFs.writeFile(path.join(dir, "a.ts"), "hello world\n");
+  const hits = await search(dir, "zzz-nonexistent-token");
+  assert.deepEqual(hits, []);
 });

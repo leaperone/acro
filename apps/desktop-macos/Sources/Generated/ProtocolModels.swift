@@ -72,3 +72,10 @@ struct FileContent: Codable, Equatable, Hashable, Sendable {
     let size: Int
     let truncated: Bool
 }
+
+struct SearchHit: Codable, Equatable, Hashable, Sendable {
+    let path: String
+    let line: Int
+    let column: Int
+    let preview: String
+}
