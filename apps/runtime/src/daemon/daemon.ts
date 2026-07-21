@@ -142,7 +142,7 @@ class DaemonSession {
       this.resolveExit = resolve;
     });
     this.hasCommand = opts.command !== undefined;
-    const shell = process.env.SHELL ?? "/bin/zsh";
+    const shell = process.env.SHELL ?? (process.platform === "darwin" ? "/bin/zsh" : "/bin/bash");
     const cwd = opts.cwd ?? os.homedir();
     const args = opts.command ? ["-lc", opts.command] : ["-l"];
     this.meta = {
@@ -311,20 +311,27 @@ class DaemonSession {
     });
   }
 
-  // 实时工作目录:查 PTY shell 进程的 cwd(macOS 没有 pwdx,走 lsof)。
-  // 只在"新终端继承路径"时按需调用,不轮询。
+  // 实时工作目录:查 PTY shell 进程的 cwd。只在"新终端继承路径"时按需调用,不轮询。
+  // Linux/WSL 直接读 /proc/<pid>/cwd 符号链接(无 lsof 依赖);macOS 没有 /proc,走 lsof。
   async currentCwd(): Promise<string | null> {
     if (!this.meta.alive) return null;
-    const lsof = process.platform === "darwin" ? "/usr/sbin/lsof" : "lsof";
     const pid = await this.resolveCwdPid();
+    // spawn-helper chdir 前的瞬间窗口里,子进程 cwd 还是 daemon 自己的;
+    // 这种读数不可信,回退用会话档案里的目录(下面统一按 process.cwd() 判定)。
+    if (process.platform !== "darwin") {
+      try {
+        const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+        return cwd === process.cwd() ? null : cwd;
+      } catch {
+        return null;
+      }
+    }
     return new Promise((resolve) => {
-      execFile(lsof, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { timeout: 2000 },
+      execFile("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { timeout: 2000 },
         (err, stdout) => {
           if (err) return resolve(null);
           const line = stdout.split("\n").find((l) => l.startsWith("n"));
           const cwd = line && line.length > 1 ? line.slice(1) : null;
-          // spawn-helper chdir 前的瞬间窗口里,子进程 cwd 还是 daemon 自己的;
-          // 这种读数不可信,回退用会话档案里的目录
           resolve(cwd === process.cwd() ? null : cwd);
         },
       );

@@ -44,12 +44,16 @@ export class ServerIdentity {
   }
 }
 
-// 真实网卡(macOS 的 en0/en1 = Wi-Fi/以太网)的 IPv4 地址,写进配对码供客户端直连。
-// vmnet/utun 等虚拟接口的宿主地址对外不可达,只会污染入口列表,一律排除。
+// 真实网卡的 IPv4 地址,写进配对码供客户端直连。跨平台:取非 internal 的 IPv4,
+// 排除虚拟/隧道接口——它们的宿主地址对外不可达,只会污染入口列表。
+// macOS 常见虚拟名:bridge/vmnet/utun/llw/awdl;Linux 常见:docker/veth/br-/virbr/tun/tap
+// 以及各类 VPN(zt/tailscale/wg)。真实有线/无线口(en*/eth*/ens*/enp*/wlan* 等)保留。
+const VIRTUAL_IFACE = /^(bridge|vmnet|utun|llw|awdl|docker|veth|br-|virbr|tun|tap|zt|tailscale|wg)/i;
+
 export function lanEndpoints(port: number): string[] {
   const endpoints: string[] = [];
   for (const [name, infos] of Object.entries(os.networkInterfaces())) {
-    if (!/^en\d+$/.test(name)) continue;
+    if (VIRTUAL_IFACE.test(name)) continue;
     for (const info of infos ?? []) {
       if (info.family === "IPv4" && !info.internal) endpoints.push(`${info.address}:${port}`);
     }

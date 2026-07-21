@@ -24,21 +24,31 @@ const DEFAULT_HEIGHT = 800;
 export const MAX_BROWSER_SURFACES = 32;
 
 function findChromium(): string {
-  const cache = path.join(os.homedir(), "Library", "Caches", "ms-playwright");
+  const isMac = process.platform === "darwin";
+  // playwright 缓存位置与包内可执行路径按平台不同
+  const cache = isMac
+    ? path.join(os.homedir(), "Library", "Caches", "ms-playwright")
+    : path.join(os.homedir(), ".cache", "ms-playwright");
+  const rels = isMac
+    ? [
+        "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+        "chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
+      ]
+    : ["chrome-linux/chrome"];
   if (fs.existsSync(cache)) {
     for (const entry of fs.readdirSync(cache).sort().reverse()) {
       if (!entry.startsWith("chromium-")) continue;
-      for (const rel of [
-        "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-        "chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
-      ]) {
+      for (const rel of rels) {
         const p = path.join(cache, entry, rel);
         if (fs.existsSync(p)) return p;
       }
     }
   }
-  const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  if (fs.existsSync(chrome)) return chrome;
+  // 系统安装的 Chrome / Chromium
+  const system = isMac
+    ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
+  for (const p of system) if (fs.existsSync(p)) return p;
   throw new Error("no chromium found; run `npx playwright install chromium` or install Chrome");
 }
 
@@ -71,9 +81,14 @@ export class BrowserManager extends EventEmitter {
 
   private async startContext(): Promise<BrowserContext> {
     const chromium = await loadChromium();
+    // 无头 Linux/WSL 服务器无显示,默认 headless;macOS 保持 headful(窗口可见于本机)。
+    // ACRO_BROWSER_HEADLESS 显式覆盖:"1" 强制 headless,"0" 强制 headful。
+    const headless = process.env.ACRO_BROWSER_HEADLESS
+      ? process.env.ACRO_BROWSER_HEADLESS === "1"
+      : process.platform !== "darwin";
     const context = await chromium.launchPersistentContext(path.join(paths.state, "browser-profile"), {
       executablePath: findChromium(),
-      headless: process.env.ACRO_BROWSER_HEADLESS === "1",
+      headless,
       viewport: null,
     });
     this.context = context;
