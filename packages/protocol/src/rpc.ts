@@ -6,6 +6,7 @@ import {
   FileContent,
   FileEntry,
   GitStatus,
+  PortListener,
   SearchHit,
   Session,
   SessionFocus,
@@ -368,6 +369,11 @@ export const methods = {
   "git.diff": {
     params: z.object({ path: z.string() }),
     result: z.object({ diff: z.string(), truncated: z.boolean() }),
+  },
+  // 监听端口(只读):Mac mini 上正在 LISTEN 的 TCP 端口 + 进程。
+  "ports.list": {
+    params: z.object({}),
+    result: z.array(PortListener),
   },
 } as const;
 

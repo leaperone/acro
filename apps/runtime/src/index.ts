@@ -17,6 +17,7 @@ import { HelperClient } from "./computer.ts";
 import { WorkspaceRegistry } from "./workspaces.ts";
 import * as fsBrowser from "./fs.ts";
 import * as gitStatus from "./git.ts";
+import * as ports from "./ports.ts";
 import { createHttpHandler } from "./http.ts";
 import {
   clearBootstrapOffer,
@@ -284,6 +285,10 @@ async function main(): Promise<void> {
     "git.diff": (conn, { path }) => {
       requireActiveDevice(conn);
       return gitStatus.diff(path);
+    },
+    "ports.list": (conn) => {
+      requireActiveDevice(conn);
+      return ports.list();
     },
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>

@@ -9,12 +9,13 @@ struct RightSidebarView: View {
     @ObservedObject var runtime: RuntimeConnection
 
     private enum Mode: String, CaseIterable {
-        case context, files, git
+        case context, files, git, ports
         var title: String {
             switch self {
             case .context: "上下文"
             case .files: "文件"
             case .git: "Git"
+            case .ports: "端口"
             }
         }
         var icon: String {
@@ -22,6 +23,7 @@ struct RightSidebarView: View {
             case .context: "sidebar.right"
             case .files: "folder"
             case .git: "arrow.triangle.branch"
+            case .ports: "point.3.connected.trianglepath.dotted"
             }
         }
     }
@@ -33,14 +35,12 @@ struct RightSidebarView: View {
             HStack(spacing: 8) {
                 Picker("", selection: $mode) {
                     ForEach(Mode.allCases, id: \.self) { m in
-                        Label(m.title, systemImage: m.icon).tag(m)
+                        Text(m.title).tag(m)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .fixedSize()
-
-                Spacer()
+                .frame(maxWidth: .infinity)
 
                 Button {
                     model.inspectorVisible = false
@@ -63,6 +63,8 @@ struct RightSidebarView: View {
                 FileBrowserView(model: model, runtime: runtime)
             case .git:
                 GitPanelView(model: model, runtime: runtime)
+            case .ports:
+                PortsPanelView(model: model, runtime: runtime)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
