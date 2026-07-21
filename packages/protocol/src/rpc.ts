@@ -158,6 +158,12 @@ export const methods = {
     params: z.object({}),
     result: z.array(Session),
   },
+  // 会话实时工作目录:runtime 转发到 daemon(走 lsof 查 PTY 进程 cwd)。
+  // 文件浏览器用它跟随聚焦终端的当前目录(session.list 的 cwd 不实时)。
+  "session.cwd": {
+    params: z.object({ sessionId: z.string() }),
+    result: z.object({ cwd: z.string().nullable() }),
+  },
   // 终端占用锁:claim 即夺取占用权(focus 上报与显式接管共用);
   // 非占用设备的终端输入会被网关丢弃,设备全部断开时占用自动释放
   // force=false 时会话已被其他设备占用则拒绝(claimed:false)——
