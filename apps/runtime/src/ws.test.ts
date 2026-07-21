@@ -294,6 +294,31 @@ test("terminal session cleanup drops attachments from every connection", () => {
   }
 });
 
+test("terminal attachment lookup follows all connections from the same device", () => {
+  const { gateway, conn, close } = fixture(0);
+  const second = {
+    ...conn,
+    attached: new Map<number, { sessionId: string; attachSeq: number }>(),
+    browserChannels: new Map<number, string>(),
+    simChannels: new Map<number, string>(),
+    pendingSimAttaches: new Map<string, symbol>(),
+  };
+  try {
+    (gateway as unknown as { conns: Set<Conn> }).conns.add(second);
+    conn.attached.set(7, { sessionId: "session", attachSeq: 1 });
+    assert.equal(gateway.hasDeviceSessionAttachment(conn.device!.id, "session"), true);
+
+    conn.attached.clear();
+    second.attached.set(8, { sessionId: "session", attachSeq: 2 });
+    assert.equal(gateway.hasDeviceSessionAttachment(conn.device!.id, "session"), true);
+
+    second.attached.clear();
+    assert.equal(gateway.hasDeviceSessionAttachment(conn.device!.id, "session"), false);
+  } finally {
+    close();
+  }
+});
+
 test("simulator interest includes pending and attached subscribers", () => {
   const { gateway, conn, close } = fixture(0);
   try {
