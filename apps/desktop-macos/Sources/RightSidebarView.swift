@@ -9,9 +9,21 @@ struct RightSidebarView: View {
     @ObservedObject var runtime: RuntimeConnection
 
     private enum Mode: String, CaseIterable {
-        case context, files
-        var title: String { self == .context ? "上下文" : "文件" }
-        var icon: String { self == .context ? "sidebar.right" : "folder" }
+        case context, files, git
+        var title: String {
+            switch self {
+            case .context: "上下文"
+            case .files: "文件"
+            case .git: "Git"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .context: "sidebar.right"
+            case .files: "folder"
+            case .git: "arrow.triangle.branch"
+            }
+        }
     }
 
     @State private var mode: Mode = .context
@@ -49,6 +61,8 @@ struct RightSidebarView: View {
                 InspectorView(model: model, runtime: runtime)
             case .files:
                 FileBrowserView(model: model, runtime: runtime)
+            case .git:
+                GitPanelView(model: model, runtime: runtime)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
