@@ -32,7 +32,8 @@ EOF
 echo "已写入:$UNIT_DIR/acro-runtime.service"
 echo
 echo "前置依赖(目标机一次性):"
-echo "  - Node.js ≥ 23.6(可直接运行 .ts;22.x 需在 ExecStart 加 --experimental-strip-types)"
+echo "  - Node.js ≥ 23.6(默认剥离类型直接运行 .ts,与 macOS 部署一致;更低版本请升级 Node,"
+echo "    别用 ExecStart flag——runtime 派生 daemon 时不透传 argv,只有升级或 NODE_OPTIONS 能同时覆盖两者)"
 echo "  - node-pty 现编工具链:build-essential python3"
 echo "  - 端口面板用 ss(iproute2,通常自带);实时 cwd 读 /proc,无需 lsof"
 echo "  - 可选浏览器表面:npx playwright install --with-deps chromium"
