@@ -774,16 +774,29 @@ enum TerminalAppearance {
     // collection,对缺字形的码位在其中逐级找覆盖。
     static let cjkFallbackFamilies = ["PingFang SC", "Hiragino Sans GB", "STHeiti"]
 
-    static func write(fontFamily: String, fontSize: Int, theme: String) {
-        var lines: [String] = ["# 由 Acro 设置窗口生成;重启应用后生效"]
+    // 生成叠加在用户原生 ~/.config/ghostty/config 之上的 Acro 配置行(见 Ghostty.makeConfig)。
+    static func confLines(fontFamily: String, fontSize: Int, theme: String) -> [String] {
+        var lines: [String] = ["# 由 Acro 设置窗口生成,叠加在 ~/.config/ghostty/config 之上;改动即时生效"]
         let family = fontFamily.trimmingCharacters(in: .whitespaces)
-        // 西文主字体:用户选的,或常驻的 Menlo。必须是系统能查到的等宽字体,
-        // 否则下面的中文回退项会抢渲染西文(ghostty 内置 JetBrains Mono 无法按名引用)。
-        lines.append("font-family = \(family.isEmpty ? "Menlo" : family)")
+        if family.isEmpty {
+            // 用户没在 Acro 选字体:不重置,让原生 ghostty config 的字体(若有)作主字体,
+            // 没有则用常驻等宽的 Menlo 兜底。ghostty 内置 JetBrains Mono 无法按名引用,故用 Menlo。
+            lines.append("font-family = Menlo")
+        } else {
+            // 用户在 Acro 选了字体:先用空串重置基底字体链,让 Acro 选的覆盖原生 config 的字体。
+            lines.append("font-family = \"\"")
+            lines.append("font-family = \(family)")
+        }
+        // CJK 回退追加在主字体之后:缺字形的中文码位逐级落到常驻黑体,不回退到宋体。
         for cjk in cjkFallbackFamilies { lines.append("font-family = \(cjk)") }
         if fontSize > 0 { lines.append("font-size = \(fontSize)") }
         let trimmedTheme = theme.trimmingCharacters(in: .whitespaces)
         if !trimmedTheme.isEmpty { lines.append("theme = \(trimmedTheme)") }
+        return lines
+    }
+
+    static func write(fontFamily: String, fontSize: Int, theme: String) {
+        let lines = confLines(fontFamily: fontFamily, fontSize: fontSize, theme: theme)
         let directory = (confPath as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
         try? lines.joined(separator: "\n").appending("\n")
@@ -829,7 +842,7 @@ private struct AppearanceSettingsPane: View {
             } header: {
                 Text("终端")
             } footer: {
-                Text("写入 ~/.config/acro/ghostty.conf,重启应用后生效。中文优先苹方,缺失时回退黑体(Hiragino Sans GB)。")
+                Text("改动即时生效,无需重启。也会读取你的 ~/.config/ghostty/config 作为基底(字体/主题/内边距等),这里的选择叠加覆盖在其之上。中文优先苹方,缺失时回退常驻黑体。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -843,5 +856,7 @@ private struct AppearanceSettingsPane: View {
 
     private func persist() {
         TerminalAppearance.write(fontFamily: fontFamily, fontSize: fontSize, theme: theme)
+        // 热重载:推给已存在的所有 surface,改字体/字号/主题立即生效,不用重启。
+        Ghostty.shared.reloadConfig()
     }
 }

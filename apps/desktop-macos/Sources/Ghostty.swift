@@ -18,20 +18,10 @@ final class Ghostty {
             NSLog("ghostty_init failed")
             return
         }
-        guard let cfg = ghostty_config_new() else {
+        guard let cfg = Self.makeConfig() else {
             NSLog("ghostty_config_new failed")
             return
         }
-        // 先按已存设置(重)生成 conf:保证新机器也有 CJK 回退链,且按当前字体物化情况
-        // 重算(苹方未物化时不列它,兜到常驻黑体,避免中文落到宋体)。再加载。
-        TerminalAppearance.regenerateFromStoredSettings()
-        // 设置窗口写的外观配置(字体/主题);不存在则用 ghostty 默认
-        if FileManager.default.fileExists(atPath: TerminalAppearance.confPath) {
-            TerminalAppearance.confPath.withCString { ptr in
-                ghostty_config_load_file(cfg, ptr)
-            }
-        }
-        ghostty_config_finalize(cfg)
 
         var rt = ghostty_runtime_config_s()
         rt.userdata = nil
@@ -83,6 +73,36 @@ final class Ghostty {
 
     func tick() {
         if let app { ghostty_app_tick(app) }
+    }
+
+    // 构建一份配置:先吃用户原生的 ghostty 配置(XDG 发现 ~/.config/ghostty/config 等)作基底,
+    // 再叠加 Acro 设置面板生成的 conf(UI 选的字体/字号/主题 + CJK 回退,后加载覆盖用户值),
+    // 最后处理 config-file include。整个流程只依赖 ghostty 原生 C API,与原生 ghostty 配置兼容。
+    private static func makeConfig() -> ghostty_config_t? {
+        guard let cfg = ghostty_config_new() else {
+            NSLog("ghostty_config_new failed")
+            return nil
+        }
+        ghostty_config_load_default_files(cfg)
+        // 按已存设置(重)生成 Acro 叠加层:新机器也有 CJK 回退链,且按当前字体物化情况重算。
+        TerminalAppearance.regenerateFromStoredSettings()
+        if FileManager.default.fileExists(atPath: TerminalAppearance.confPath) {
+            TerminalAppearance.confPath.withCString { ptr in
+                ghostty_config_load_file(cfg, ptr)
+            }
+        }
+        ghostty_config_load_recursive_files(cfg)
+        ghostty_config_finalize(cfg)
+        return cfg
+    }
+
+    // 热重载:改字体/主题后立即生效,无需重启。重建配置并推给已存在的 app(ghostty 会传播到
+    // 所有 surface)。ghostty_app_update_config 持有新配置,旧的换出后释放(cmux 同款生命周期)。
+    func reloadConfig() {
+        guard let app, let cfg = Self.makeConfig() else { return }
+        ghostty_app_update_config(app, cfg)
+        if let config { ghostty_config_free(config) }
+        config = cfg
     }
 
     // 资源目录:env 覆盖 > .app bundle > 包目录(swift build 布局)
