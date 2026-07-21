@@ -79,3 +79,16 @@ struct SearchHit: Codable, Equatable, Hashable, Sendable {
     let column: Int
     let preview: String
 }
+
+struct GitFileStatus: Codable, Equatable, Hashable, Sendable {
+    let path: String
+    let status: String
+    let staged: Bool
+}
+
+struct GitStatus: Codable, Equatable, Hashable, Sendable {
+    let isRepo: Bool
+    let root: String?
+    let branch: String?
+    let files: [GitFileStatus]
+}

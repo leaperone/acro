@@ -5,6 +5,7 @@ import {
   Device,
   FileContent,
   FileEntry,
+  GitStatus,
   SearchHit,
   Session,
   SessionFocus,
@@ -357,6 +358,16 @@ export const methods = {
       maxResults: z.number().int().positive().max(2000).optional(),
     }),
     result: z.array(SearchHit),
+  },
+  // Git 状态(只读):以 path 所在仓库为准列改动文件 + 分支。非仓库返回 isRepo=false。
+  "git.status": {
+    params: z.object({ path: z.string() }),
+    result: GitStatus,
+  },
+  // 单个文件的 diff(相对 HEAD,只读)。超大 diff 截断。
+  "git.diff": {
+    params: z.object({ path: z.string() }),
+    result: z.object({ diff: z.string(), truncated: z.boolean() }),
   },
 } as const;
 

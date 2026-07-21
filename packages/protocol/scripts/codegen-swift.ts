@@ -11,6 +11,8 @@ import {
   Device,
   FileContent,
   FileEntry,
+  GitFileStatus,
+  GitStatus,
   SearchHit,
   Session,
   SessionFocus,
@@ -29,6 +31,8 @@ const models: Record<string, z.ZodType> = {
   FileEntry,
   FileContent,
   SearchHit,
+  GitFileStatus,
+  GitStatus,
 };
 
 type JsonSchema = {

@@ -79,6 +79,23 @@ export const FileContent = z.object({
 });
 export type FileContent = z.infer<typeof FileContent>;
 
+// Git 改动文件(只读)。runtime 在 Mac mini 上跑 git status 返回;status 由 codegen 落成 String。
+export const GitFileStatus = z.object({
+  path: z.string(),
+  status: z.enum(["modified", "added", "deleted", "renamed", "untracked", "conflicted"]),
+  staged: z.boolean(),
+});
+export type GitFileStatus = z.infer<typeof GitFileStatus>;
+
+// 仓库状态(只读)。非 git 仓库时 isRepo=false、其余为空。
+export const GitStatus = z.object({
+  isRepo: z.boolean(),
+  root: z.string().nullable(),
+  branch: z.string().nullable(),
+  files: z.array(GitFileStatus),
+});
+export type GitStatus = z.infer<typeof GitStatus>;
+
 // 内容搜索命中(只读)。runtime 在 Mac mini 上跑 ripgrep/grep 返回。
 export const SearchHit = z.object({
   path: z.string(),

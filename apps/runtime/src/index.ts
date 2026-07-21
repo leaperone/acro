@@ -16,6 +16,7 @@ import { SimulatorManager } from "./simulator.ts";
 import { HelperClient } from "./computer.ts";
 import { WorkspaceRegistry } from "./workspaces.ts";
 import * as fsBrowser from "./fs.ts";
+import * as gitStatus from "./git.ts";
 import { createHttpHandler } from "./http.ts";
 import {
   clearBootstrapOffer,
@@ -275,6 +276,14 @@ async function main(): Promise<void> {
     "fs.search": (conn, { path, query, maxResults }) => {
       requireActiveDevice(conn);
       return fsBrowser.search(path, query, maxResults);
+    },
+    "git.status": (conn, { path }) => {
+      requireActiveDevice(conn);
+      return gitStatus.status(path);
+    },
+    "git.diff": (conn, { path }) => {
+      requireActiveDevice(conn);
+      return gitStatus.diff(path);
     },
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>
