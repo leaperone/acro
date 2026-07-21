@@ -6,6 +6,23 @@ systemd 服务常驻在 Linux 服务器或 Windows WSL 上,长期稳定接受客
 macOS 服务端用桌面 App(内置 runtime)或 `scripts/install-launchagents.sh`;本文只讲
 Linux / WSL。终端字节流、Git、文件与生产操作仍由终端里的 Agent 按项目规则处理,Acro 不解释。
 
+## 一键部署:`acro ssh`
+
+从客户端一条命令搞定「SSH 进目标机 → 装依赖 → 启动 runtime → 取回配对码」,免去下面的手动步骤:
+
+```bash
+acro ssh <[user@]host | ssh 别名>            # 装好并打印配对码,你自己配对
+acro ssh <target> --pair                     # 顺手完成配对(用配对码里的服务器地址,适合同网段)
+acro ssh <target> --pair --endpoint host:8790  # 指定客户端可达的入口(公网 / FRP)后配对
+```
+
+- 复用系统 `ssh`,读你的 `~/.ssh/config`、密钥与 agent;认证方式(密钥 / 密码 / passphrase)与平时 `ssh` 一致。不自研 SSH。
+- 幂等:已装过就只 `git pull` + 重启服务;首次会自动装 Node 24、编译工具、拉仓库、`pnpm install`、装并启动 systemd 服务。
+- 前提:目标机是 Debian / Ubuntu / WSL、当前用户有 `sudo`、能访问仓库(私有仓库需目标机具备 git 访问;或用 `--repo <url>` / `--branch <ref>` 覆盖)。
+- 传输不变:配对完成后仍是客户端到服务器 `8790` 的 WebSocket + E2EE;`acro ssh` 只做「装 + 返回配置」,不建隧道。服务器在 NAT 后面时,`--endpoint` 传你的公网 / FRP 入口。
+
+不满足上述前提(非 Debian 系、无 sudo、离线等)时,走下面的手动步骤。
+
 ## 能力差异
 
 Linux / WSL 服务端与 macOS 的差别:
