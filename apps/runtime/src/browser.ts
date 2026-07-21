@@ -23,32 +23,47 @@ const DEFAULT_HEIGHT = 800;
 // 每个页面都可能持有 renderer；并发 open 也必须占用名额，不能靠竞态越过上限。
 export const MAX_BROWSER_SURFACES = 32;
 
+// Chromium 探测规格:按平台给出 playwright 缓存目录、包内可执行相对路径、系统安装候选。
+// 纯函数便于单测;findChromium 用它逐个探盘。
+export function chromiumSearchSpec(
+  platform: NodeJS.Platform,
+  homedir: string,
+): { cacheDir: string; execRelPaths: string[]; systemPaths: string[] } {
+  return platform === "darwin"
+    ? {
+        cacheDir: path.join(homedir, "Library", "Caches", "ms-playwright"),
+        execRelPaths: [
+          "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+          "chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
+        ],
+        systemPaths: ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"],
+      }
+    : {
+        cacheDir: path.join(homedir, ".cache", "ms-playwright"),
+        execRelPaths: ["chrome-linux/chrome"],
+        systemPaths: ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"],
+      };
+}
+
+// 无头决策:ACRO_BROWSER_HEADLESS 显式覆盖("1" headless、"0" headful),
+// 否则无头 Linux/WSL 服务器默认 headless,macOS 保持 headful(窗口可见于本机)。
+export function resolveHeadless(headlessEnv: string | undefined, platform: NodeJS.Platform): boolean {
+  if (headlessEnv) return headlessEnv === "1";
+  return platform !== "darwin";
+}
+
 function findChromium(): string {
-  const isMac = process.platform === "darwin";
-  // playwright 缓存位置与包内可执行路径按平台不同
-  const cache = isMac
-    ? path.join(os.homedir(), "Library", "Caches", "ms-playwright")
-    : path.join(os.homedir(), ".cache", "ms-playwright");
-  const rels = isMac
-    ? [
-        "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
-        "chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
-      ]
-    : ["chrome-linux/chrome"];
-  if (fs.existsSync(cache)) {
-    for (const entry of fs.readdirSync(cache).sort().reverse()) {
+  const { cacheDir, execRelPaths, systemPaths } = chromiumSearchSpec(process.platform, os.homedir());
+  if (fs.existsSync(cacheDir)) {
+    for (const entry of fs.readdirSync(cacheDir).sort().reverse()) {
       if (!entry.startsWith("chromium-")) continue;
-      for (const rel of rels) {
-        const p = path.join(cache, entry, rel);
+      for (const rel of execRelPaths) {
+        const p = path.join(cacheDir, entry, rel);
         if (fs.existsSync(p)) return p;
       }
     }
   }
-  // 系统安装的 Chrome / Chromium
-  const system = isMac
-    ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
-    : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
-  for (const p of system) if (fs.existsSync(p)) return p;
+  for (const p of systemPaths) if (fs.existsSync(p)) return p;
   throw new Error("no chromium found; run `npx playwright install chromium` or install Chrome");
 }
 
@@ -81,11 +96,7 @@ export class BrowserManager extends EventEmitter {
 
   private async startContext(): Promise<BrowserContext> {
     const chromium = await loadChromium();
-    // 无头 Linux/WSL 服务器无显示,默认 headless;macOS 保持 headful(窗口可见于本机)。
-    // ACRO_BROWSER_HEADLESS 显式覆盖:"1" 强制 headless,"0" 强制 headful。
-    const headless = process.env.ACRO_BROWSER_HEADLESS
-      ? process.env.ACRO_BROWSER_HEADLESS === "1"
-      : process.platform !== "darwin";
+    const headless = resolveHeadless(process.env.ACRO_BROWSER_HEADLESS, process.platform);
     const context = await chromium.launchPersistentContext(path.join(paths.state, "browser-profile"), {
       executablePath: findChromium(),
       headless,
