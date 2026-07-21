@@ -9,8 +9,8 @@ struct FileBrowserView: View {
     @ObservedObject var runtime: RuntimeConnection
     @StateObject private var browser = FileBrowserModel()
 
-    // 以当前选中终端的实时 cwd 为根(Acro 里唯一可靠的路径信号)。
-    private var rootPath: String { model.selectedSession?.cwd ?? "" }
+    // 跟随聚焦终端:根 = 聚焦终端的实时 cwd。没有聚焦终端时落到 runtime home。
+    private var focusedSessionId: String? { model.selectedSession?.id }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,8 +19,19 @@ struct FileBrowserView: View {
             Divider()
             content
         }
-        .onAppear { browser.sync(root: rootPath, runtime: runtime) }
-        .onChange(of: rootPath) { _, newValue in browser.sync(root: newValue, runtime: runtime) }
+        // 聚焦终端变化即重启该 task:先重置跟随基线,再立即拉一次实时 cwd,
+        // 之后每 4s 轮询跟随终端的 cd。切到别的侧栏模式时视图消失,task 自动取消、停止轮询。
+        .task(id: focusedSessionId) {
+            browser.resetFollow()
+            guard let sessionId = focusedSessionId else {
+                browser.sync(root: "", runtime: runtime)   // 无聚焦终端:列 home
+                return
+            }
+            while !Task.isCancelled {
+                await browser.follow(sessionId: sessionId, runtime: runtime)
+                try? await Task.sleep(for: .seconds(4))
+            }
+        }
     }
 
     private var searchBar: some View {

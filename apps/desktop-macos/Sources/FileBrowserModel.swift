@@ -3,6 +3,11 @@
 
 import Foundation
 
+// session.cwd 的内联结果(非 codegen 模型),手写解码。
+struct SessionCwd: Decodable {
+    let cwd: String?
+}
+
 // 树节点(引用类型:懒加载 children、展开态可变)。id 用绝对路径。
 @MainActor
 final class FileNode: ObservableObject, Identifiable {
@@ -51,6 +56,9 @@ final class FileBrowserModel: ObservableObject {
     private weak var runtime: RuntimeConnection?
     private var previewTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
+    // 跟随聚焦终端时最后一次已知的终端 cwd。用它判断"终端 cd 了"(而非用户手动导航):
+    // 只在终端 cwd 真正变化时才改根,不打断用户在浏览器里的手动 goUp/展开。
+    private var lastKnownCwd: String?
 
     // 以某路径为根同步文件树。仅当根变化时重载,避免每次刷新都抖动。
     // root 为空串时由 runtime 落到 home。
@@ -61,6 +69,37 @@ final class FileBrowserModel: ObservableObject {
         selectedPath = nil
         preview = nil
         previewError = nil
+        reloadRoot()
+    }
+
+    // 聚焦终端切换时调用:清掉 lastKnownCwd,让下一次 follow 强制把根切到新终端的实时 cwd。
+    func resetFollow() { lastKnownCwd = nil }
+
+    // 跟随聚焦终端的实时工作目录。拉 session.cwd(daemon 走 lsof 实时查),
+    // 只在终端 cwd 变化时改根;用户手动导航后终端没 cd 则不动。
+    func follow(sessionId: String, runtime: RuntimeConnection) async {
+        self.runtime = runtime
+        do {
+            let result = try await runtime.rpc(
+                "session.cwd", ["sessionId": sessionId], as: SessionCwd.self)
+            guard let cwd = result.cwd, !cwd.isEmpty else { return }
+            if cwd != lastKnownCwd {
+                lastKnownCwd = cwd
+                setRoot(cwd)
+            }
+        } catch {
+            // 拉取失败(会话死/超时):静默,保留当前视图
+        }
+    }
+
+    // 把根切到指定绝对路径并重载(清掉选中/预览/搜索)。
+    private func setRoot(_ path: String) {
+        guard path != rootPath else { return }
+        rootPath = path
+        selectedPath = nil
+        preview = nil
+        previewError = nil
+        clearSearch()
         reloadRoot()
     }
 

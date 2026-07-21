@@ -331,6 +331,21 @@ async function main(): Promise<void> {
       requireActiveDevice(conn);
       return ports.list();
     },
+    "session.cwd": async (conn, { sessionId }) => {
+      requireActiveDevice(conn);
+      try {
+        return await daemon.request<{ cwd: string | null }>("session.cwd", { sessionId });
+      } catch (error) {
+        // 会话已死 / 旧 daemon 无此方法:降级为无实时目录,客户端沿用已知 cwd。
+        if (
+          (error as Error).message === "session not alive" ||
+          (error as Error).message === "unknown method session.cwd"
+        ) {
+          return { cwd: null };
+        }
+        throw error;
+      }
+    },
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>
       workspaces.create(name, workspaceGroupId),
