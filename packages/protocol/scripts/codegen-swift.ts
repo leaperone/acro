@@ -11,6 +11,7 @@ import {
   Device,
   FileContent,
   FileEntry,
+  SearchHit,
   Session,
   SessionFocus,
   Workspace,
@@ -27,6 +28,7 @@ const models: Record<string, z.ZodType> = {
   ComputerControl,
   FileEntry,
   FileContent,
+  SearchHit,
 };
 
 type JsonSchema = {

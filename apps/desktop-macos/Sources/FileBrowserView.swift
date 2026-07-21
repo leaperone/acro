@@ -15,6 +15,7 @@ struct FileBrowserView: View {
     var body: some View {
         VStack(spacing: 0) {
             pathBar
+            searchBar
             Divider()
             content
         }
@@ -22,15 +23,60 @@ struct FileBrowserView: View {
         .onChange(of: rootPath) { _, newValue in browser.sync(root: newValue, runtime: runtime) }
     }
 
+    private var searchBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
+            TextField("在此目录内搜索内容", text: $browser.searchQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .onSubmit { browser.runSearch() }
+            if browser.searchActive {
+                Button { browser.clearSearch() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .help("清除搜索")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+    }
+
     @ViewBuilder
     private var content: some View {
+        let top = browser.searchActive ? AnyView(searchResults) : AnyView(tree)
         if browser.selectedPath != nil {
             VSplitView {
-                tree.frame(minHeight: 120)
+                top.frame(minHeight: 120)
                 FilePreviewView(browser: browser).frame(minHeight: 140)
             }
         } else {
-            tree
+            top
+        }
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        if browser.isSearching {
+            centered { ProgressView().controlSize(.small) }
+        } else if let error = browser.searchError {
+            centered { Text(error).font(.caption).foregroundStyle(.secondary) }
+        } else if let hits = browser.searchResults {
+            if hits.isEmpty {
+                centered { Text("无匹配").font(.caption).foregroundStyle(.secondary) }
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(hits.enumerated()), id: \.offset) { _, hit in
+                            SearchResultRow(
+                                hit: hit,
+                                root: browser.rootPath,
+                                selected: browser.selectedPath == hit.path
+                            ) { browser.openPreview(hit.path) }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
         }
     }
 
@@ -148,6 +194,46 @@ private struct FileRow: View {
                 }
             }
         }
+    }
+}
+
+// 搜索结果行:相对路径 + 行号 + 命中行片段。
+private struct SearchResultRow: View {
+    let hit: SearchHit
+    let root: String
+    let selected: Bool
+    let onTap: () -> Void
+
+    private var relativePath: String {
+        guard !root.isEmpty, hit.path.hasPrefix(root) else { return hit.path }
+        let tail = hit.path.dropFirst(root.count)
+        return tail.hasPrefix("/") ? String(tail.dropFirst()) : String(tail)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 4) {
+                Text(relativePath)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                Text(":\(hit.line)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            Text(hit.preview.trimmingCharacters(in: .whitespaces))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background(selected ? Color.accentColor.opacity(0.18) : .clear)
+        .onTapGesture(perform: onTap)
     }
 }
 

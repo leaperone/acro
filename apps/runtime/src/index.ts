@@ -272,6 +272,10 @@ async function main(): Promise<void> {
       requireActiveDevice(conn);
       return fsBrowser.read(path, maxBytes);
     },
+    "fs.search": (conn, { path, query, maxResults }) => {
+      requireActiveDevice(conn);
+      return fsBrowser.search(path, query, maxResults);
+    },
     "workspace.list": () => workspaces.list(),
     "workspace.create": (_conn, { name, workspaceGroupId }) =>
       workspaces.create(name, workspaceGroupId),

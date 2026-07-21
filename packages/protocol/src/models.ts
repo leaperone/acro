@@ -79,6 +79,15 @@ export const FileContent = z.object({
 });
 export type FileContent = z.infer<typeof FileContent>;
 
+// 内容搜索命中(只读)。runtime 在 Mac mini 上跑 ripgrep/grep 返回。
+export const SearchHit = z.object({
+  path: z.string(),
+  line: z.number().int(),
+  column: z.number().int(),
+  preview: z.string(),
+});
+export type SearchHit = z.infer<typeof SearchHit>;
+
 export const Session = z.object({
   id: z.string(),
   // cwd 是创建时目录;daemon 查询实时目录成功后会回写此字段
