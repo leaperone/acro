@@ -61,6 +61,7 @@ Mac mini Acro Runtime
 - 工作区、标签页、分屏和快捷键。
 - 左侧栏默认只投影 Workspace；会话详情是客户端视图偏好，不进入 Runtime 数据模型。
 - 终端、浏览器、模拟器和 Computer Use 表面。
+- 右侧栏只读数据面板（上下文 / 文件 / Git / 端口 + 文件内容搜索）：文件树、文件预览、内容搜索、Git 状态与 diff、监听端口全部经 Runtime 的只读 RPC 家族（`fs.*` / `git.*` / `ports.list`）从 Mac mini 取，客户端只显示。**只读**——列目录、读文件、grep、git status/diff、lsof 属于"显示"，不越界；写 / stage / commit / kill 等变更仍归终端里的 Agent。UI 对标 cmux 右侧栏与 orca source-control；不移植 cmux/orca 里绑其 agent 编排框架的模式（会话历史 / 活动流 / dock / 自定义侧栏）。
 - 本地窗口状态。真实进程状态始终来自 Runtime。
 
 ### Mobile Client
