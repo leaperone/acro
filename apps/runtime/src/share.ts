@@ -50,9 +50,12 @@ export class ServerIdentity {
 // 以及各类 VPN(zt/tailscale/wg)。真实有线/无线口(en*/eth*/ens*/enp*/wlan* 等)保留。
 const VIRTUAL_IFACE = /^(bridge|vmnet|utun|llw|awdl|docker|veth|br-|virbr|tun|tap|zt|tailscale|wg)/i;
 
-export function lanEndpoints(port: number): string[] {
+export function lanEndpoints(
+  port: number,
+  interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces(),
+): string[] {
   const endpoints: string[] = [];
-  for (const [name, infos] of Object.entries(os.networkInterfaces())) {
+  for (const [name, infos] of Object.entries(interfaces)) {
     if (VIRTUAL_IFACE.test(name)) continue;
     for (const info of infos ?? []) {
       if (info.family === "IPv4" && !info.internal) endpoints.push(`${info.address}:${port}`);

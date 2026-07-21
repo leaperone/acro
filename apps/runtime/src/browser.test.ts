@@ -1,6 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BrowserManager, MAX_BROWSER_SURFACES } from "./browser.ts";
+import {
+  BrowserManager,
+  MAX_BROWSER_SURFACES,
+  chromiumSearchSpec,
+  resolveHeadless,
+} from "./browser.ts";
+
+test("resolveHeadless: env overrides, otherwise headless off darwin", () => {
+  assert.equal(resolveHeadless(undefined, "linux"), true);
+  assert.equal(resolveHeadless(undefined, "darwin"), false);
+  assert.equal(resolveHeadless("1", "darwin"), true); // 显式强制 headless
+  assert.equal(resolveHeadless("0", "linux"), false); // 显式强制 headful
+  assert.equal(resolveHeadless("", "linux"), true); // 空串按未设处理
+});
+
+test("chromiumSearchSpec: linux and macOS cache/exec/system paths", () => {
+  const linux = chromiumSearchSpec("linux", "/home/acro");
+  assert.equal(linux.cacheDir, "/home/acro/.cache/ms-playwright");
+  assert.deepEqual(linux.execRelPaths, ["chrome-linux/chrome"]);
+  assert.ok(linux.systemPaths.includes("/usr/bin/chromium"));
+
+  const mac = chromiumSearchSpec("darwin", "/Users/acro");
+  assert.equal(mac.cacheDir, "/Users/acro/Library/Caches/ms-playwright");
+  assert.ok(mac.execRelPaths.every((p) => p.startsWith("chrome-mac")));
+  assert.ok(mac.systemPaths.some((p) => p.includes("Google Chrome")));
+});
 
 test("browser capture coalesces concurrent starts and rechecks before stopping", async () => {
   const manager = new BrowserManager();

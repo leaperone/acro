@@ -52,7 +52,7 @@ Mac mini Acro Runtime
 - 调用 `xcrun simctl` 管理 Apple 模拟器。
 - 保存设备、Workspace Group、Workspace、项目引用、会话、布局引用和审计记录。
 
-Runtime 逻辑跨平台:也可作为登录用户的 systemd service 常驻在 Linux 服务器或 Windows WSL 上(见 `scripts/install-systemd.sh`)。此时终端、文件、Git、端口、配对与断线重连原样工作;iOS 模拟器与 Computer Use 是 macOS 专有,不可用;浏览器视 Chromium 是否安装。这些能力差异待桌面端引入对应表面时,再由 `server.info` 能力协商在客户端按平台隐藏。node-pty 的原生绑定需在目标机 `pnpm install` 现编,故服务端按 OS/架构分别打包,不产出单一跨平台二进制。
+Runtime 逻辑跨平台:也可作为登录用户的 systemd service 常驻在 Linux 服务器或 Windows WSL 上(见 `scripts/install-systemd.sh` 与安装教程 `docs/linux-wsl-server.md`)。此时终端、文件、Git、端口、配对与断线重连原样工作;iOS 模拟器与 Computer Use 是 macOS 专有,不可用;浏览器视 Chromium 是否安装。这些能力差异待桌面端引入对应表面时,再由 `server.info` 能力协商在客户端按平台隐藏。node-pty 的原生绑定需在目标机 `pnpm install` 现编,故服务端按 OS/架构分别打包,不产出单一跨平台二进制。
 
 ### Desktop Client
 

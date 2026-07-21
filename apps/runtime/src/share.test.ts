@@ -10,9 +10,45 @@ import {
   createShareOffer,
   ensureBootstrapOffer,
   ensureLocalOffer,
+  lanEndpoints,
   ServerIdentity,
   writeBootstrapOffer,
 } from "./share.ts";
+
+test("lanEndpoints keeps real NICs and drops virtual/tunnel interfaces and IPv6", () => {
+  const v4 = (address: string, internal = false): os.NetworkInterfaceInfo =>
+    ({
+      address,
+      family: "IPv4",
+      internal,
+      netmask: "255.255.255.0",
+      mac: "00:00:00:00:00:00",
+      cidr: null,
+    }) as os.NetworkInterfaceInfo;
+  const v6 = (address: string): os.NetworkInterfaceInfo =>
+    ({
+      address,
+      family: "IPv6",
+      internal: false,
+      netmask: "ffff::",
+      mac: "00:00:00:00:00:00",
+      cidr: null,
+      scopeid: 0,
+    }) as os.NetworkInterfaceInfo;
+  const interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = {
+    lo: [v4("127.0.0.1", true)], // internal 环回,排除
+    eth0: [v4("192.168.1.5")], // 真实有线,保留
+    en0: [v4("10.0.0.2")], // macOS 有线,保留
+    docker0: [v4("172.17.0.1")], // 容器桥,排除
+    "br-abc123": [v4("172.18.0.1")], // compose 桥,排除
+    veth9f: [v4("169.254.1.1")], // 容器 veth,排除
+    utun3: [v4("10.9.8.7")], // macOS VPN 隧道,排除
+    tailscale0: [v4("100.64.0.1")], // VPN,排除
+    wg0: [v4("10.2.0.1")], // WireGuard,排除
+    eth1: [v6("fe80::1")], // IPv6,排除
+  };
+  assert.deepEqual(lanEndpoints(8790, interfaces), ["192.168.1.5:8790", "10.0.0.2:8790"]);
+});
 
 test("server identity is created once and corruption never rotates it", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-server-identity-"));
