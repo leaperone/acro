@@ -79,6 +79,15 @@ export const FileContent = z.object({
 });
 export type FileContent = z.infer<typeof FileContent>;
 
+// 监听端口(只读)。runtime 在 Mac mini 上跑 lsof 列出正在 LISTEN 的 TCP 端口。
+export const PortListener = z.object({
+  port: z.number().int(),
+  address: z.string(),
+  pid: z.number().int(),
+  process: z.string(),
+});
+export type PortListener = z.infer<typeof PortListener>;
+
 // Git 改动文件(只读)。runtime 在 Mac mini 上跑 git status 返回;status 由 codegen 落成 String。
 export const GitFileStatus = z.object({
   path: z.string(),

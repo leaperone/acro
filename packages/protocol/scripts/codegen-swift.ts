@@ -13,6 +13,7 @@ import {
   FileEntry,
   GitFileStatus,
   GitStatus,
+  PortListener,
   SearchHit,
   Session,
   SessionFocus,
@@ -33,6 +34,7 @@ const models: Record<string, z.ZodType> = {
   SearchHit,
   GitFileStatus,
   GitStatus,
+  PortListener,
 };
 
 type JsonSchema = {

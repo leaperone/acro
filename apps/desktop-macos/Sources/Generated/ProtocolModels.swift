@@ -92,3 +92,10 @@ struct GitStatus: Codable, Equatable, Hashable, Sendable {
     let branch: String?
     let files: [GitFileStatus]
 }
+
+struct PortListener: Codable, Equatable, Hashable, Sendable {
+    let port: Int
+    let address: String
+    let pid: Int
+    let process: String
+}
