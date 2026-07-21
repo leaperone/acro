@@ -109,26 +109,41 @@ async function cmdPair(args: string[]): Promise<void> {
   console.log(`已配对 ${name},入口: ${offer.endpoints.join(", ")}`);
 }
 
-// 经系统 ssh 在远端执行引导脚本。stdin 继承给 ssh 做交互认证(密码 / passphrase),
-// stderr 直通让安装进度实时可见,stdout 抓回配对码那一行。
-function runSsh(target: string, remoteCmd: string): Promise<string> {
+// 装阶段:ssh -t 分配 PTY(需要密码的 sudo 能提示),全程 inherit 让进度 / 提示直达用户终端。
+function runSshInstall(target: string, installCmd: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("ssh", [target, remoteCmd], { stdio: ["inherit", "pipe", "inherit"] });
+    const child = spawn("ssh", ["-t", target, installCmd], { stdio: "inherit" });
+    child.on("error", (err) => reject(new Error(`无法启动 ssh: ${err.message}`)));
+    child.on("close", (code) =>
+      code === 0
+        ? resolve()
+        : reject(new Error(`ssh ${target} 安装失败(退出码 ${code ?? "?"});见上方日志`)),
+    );
+  });
+}
+
+// 取配对码:单独一段干净 ssh,只抓 stdout 的 acro:// 行。首次启动有配对码;
+// 已配对主机的 bootstrap 配对码首次认证后即删除,此处返回空串(更新语义)。
+function fetchRemoteOffer(target: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "ssh",
+      [target, 'cat "$HOME/.acro/bootstrap-offer.txt" 2>/dev/null || true'],
+      { stdio: ["inherit", "pipe", "inherit"] },
+    );
     let out = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       out += chunk;
     });
     child.on("error", (err) => reject(new Error(`无法启动 ssh: ${err.message}`)));
-    child.on("close", (code) => {
-      if (code !== 0) return reject(new Error(`ssh ${target} 退出码 ${code ?? "?"}`));
+    child.on("close", () => {
       const offer = out
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line.startsWith("acro://"))
         .pop();
-      if (!offer) return reject(new Error("远程未返回配对码;查看上面的安装日志"));
-      resolve(offer);
+      resolve(offer ?? "");
     });
   });
 }
@@ -148,12 +163,19 @@ async function cmdSsh(args: string[]): Promise<void> {
   // base64 经命令参数传入(非 stdin),好让 ssh 的 stdin 留给交互式认证
   const b64 = Buffer.from(REMOTE_BOOTSTRAP, "utf8").toString("base64");
   const decode = `printf %s ${shellQuote(b64)} | base64 -d`;
-  const remoteCmd = envPrefix ? `${decode} | ${envPrefix} bash -s` : `${decode} | bash -s`;
+  const installCmd = envPrefix ? `${decode} | ${envPrefix} bash -s` : `${decode} | bash -s`;
 
   console.error(`[acro] 连接 ${parsed.target} 并安装 runtime…`);
-  const offer = await runSsh(parsed.target, remoteCmd);
-  const decoded = decodePairingOffer(offer);
+  await runSshInstall(parsed.target, installCmd);
+  const offer = await fetchRemoteOffer(parsed.target);
   console.log(`\n已在 ${parsed.target} 安装并启动 Acro runtime。`);
+
+  if (!offer) {
+    // bootstrap 配对码首次认证后即删除;取不到说明主机已配对,本次是更新
+    console.log("主机已配对,本次只更新并重启了 runtime(无需新配对码)。");
+    return;
+  }
+  const decoded = decodePairingOffer(offer);
 
   if (!parsed.pair) {
     console.log(`\n配对码:\n${offer}`);

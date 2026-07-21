@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { REMOTE_BOOTSTRAP } from "./remote-bootstrap.ts";
 
-test("REMOTE_BOOTSTRAP is valid bash (bash -n) and prints only the offer to stdout", () => {
+test("REMOTE_BOOTSTRAP is valid bash and (re)starts the service to load new code", () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "acro-boot-")), "bootstrap.sh");
   fs.writeFileSync(file, REMOTE_BOOTSTRAP);
   try {
@@ -17,6 +17,8 @@ test("REMOTE_BOOTSTRAP is valid bash (bash -n) and prints only the offer to stdo
   }
   // JS 模板不得意外把 \n 变成真实换行:printf 里必须是字面量反斜杠-n
   assert.match(REMOTE_BOOTSTRAP, /printf '\[acro-ssh\] %s\\n'/);
-  // 只有配对码走 stdout,其余进度都重定向到 stderr
-  assert.match(REMOTE_BOOTSTRAP, /cat "\$HOME\/\.acro\/bootstrap-offer\.txt"/);
+  // restart(而非 enable --now)才能在更新重跑时加载新代码
+  assert.match(REMOTE_BOOTSTRAP, /systemctl --user restart acro-runtime\.service/);
+  // 配对码由客户端另一段 ssh 取回,脚本自身不 cat offer
+  assert.doesNotMatch(REMOTE_BOOTSTRAP, /cat .*bootstrap-offer/);
 });

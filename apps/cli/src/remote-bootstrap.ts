@@ -1,10 +1,10 @@
-// 远程引导脚本(Debian / Ubuntu / WSL)。经 `ssh <target>` 以 base64 传入远端执行:
-// 幂等安装依赖 → 拉取 / 更新 acro → 启动 systemd 用户服务 → 把配对码打到 stdout。
-// 约定:所有进度日志走 stderr(用户实时可见),唯一的 stdout 输出是配对码那一行。
-// 以 base64 参数而非 stdin 传入,好让 ssh 的 stdin 留给交互式认证(密码 / passphrase)。
+// 远程引导脚本(Debian / Ubuntu / WSL)。经 `ssh -t <target>` 在远端执行,输出全程直通用户终端:
+// 幂等安装依赖 → 拉取 / 更新 acro → 编译 → 安装并(重)启动 systemd 用户服务 → 等 runtime 就绪。
+// -t 分配 PTY,好让需要密码的 sudo 能提示。配对码不在这里取——装完后由客户端单独一段干净 ssh
+// `cat ~/.acro/bootstrap-offer.txt` 拿回(见 cli.ts),避免把安装噪声和配对码混在一条流里。
 export const REMOTE_BOOTSTRAP = `set -euo pipefail
 export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-log() { printf '[acro-ssh] %s\\n' "$*" >&2; }
+log() { printf '[acro-ssh] %s\\n' "$*"; }
 REPO="\${ACRO_REPO:-https://github.com/leaperone/acro.git}"
 BRANCH="\${ACRO_BRANCH:-main}"
 DIR="$HOME/acro"
@@ -16,7 +16,7 @@ command -v curl >/dev/null || { log "安装 curl"; apt_install curl; }
 
 if ! command -v node >/dev/null || [ "$(node -pe 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)" -lt 23 ]; then
   log "安装 Node.js 24 (NodeSource)"
-  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - >&2
+  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
   apt_install nodejs
 fi
 
@@ -34,28 +34,29 @@ if [ -d "$DIR/.git" ]; then
   git -C "$DIR" reset --hard -q "origin/$BRANCH"
 else
   log "克隆 $REPO ($BRANCH) 到 $DIR"
-  git clone --depth 1 --branch "$BRANCH" "$REPO" "$DIR" >&2
+  git clone --depth 1 --branch "$BRANCH" "$REPO" "$DIR"
 fi
 
 cd "$DIR"
 log "pnpm install(现编 node-pty)"
-pnpm install --prefer-offline >&2
+pnpm install --prefer-offline
 
-log "安装并启动 systemd 用户服务"
-bash scripts/install-systemd.sh >&2
-loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+log "安装 systemd 用户服务"
+bash scripts/install-systemd.sh
+# 无登录会话也保活;polkit 可能要求管理员认证,优先走 sudo(装阶段本就依赖 sudo)
+sudo loginctl enable-linger "$USER" >/dev/null 2>&1 || loginctl enable-linger "$USER" >/dev/null 2>&1 || true
 # 非交互 SSH 会话里 systemctl --user 需要 XDG_RUNTIME_DIR + 已就绪的 user manager
 export XDG_RUNTIME_DIR="\${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 for _ in $(seq 1 10); do systemctl --user show-environment >/dev/null 2>&1 && break; sleep 1; done
 systemctl --user daemon-reload
-systemctl --user enable --now acro-runtime.service
+systemctl --user enable acro-runtime.service
+# restart 而非 enable --now:首次启动、更新重跑都能加载新代码(--now 对已运行服务是 no-op)
+log "启动 / 重启 runtime"
+systemctl --user restart acro-runtime.service
 
-log "等待配对码"
-for _ in $(seq 1 30); do [ -f "$HOME/.acro/bootstrap-offer.txt" ] && break; sleep 1; done
-if [ ! -f "$HOME/.acro/bootstrap-offer.txt" ]; then
-  log "未生成配对码,查看: journalctl --user -u acro-runtime.service -e"
-  exit 1
-fi
-cat "$HOME/.acro/bootstrap-offer.txt"
+log "等待 runtime 监听 8790"
+for _ in $(seq 1 30); do curl -sf http://127.0.0.1:8790/health >/dev/null 2>&1 && break; sleep 1; done
+# 首次启动时配对码在监听后写入,留一拍让落盘完成(客户端随后单独 ssh 取回)
+sleep 1
 log "完成"
 `;
