@@ -1,6 +1,61 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseCommandLine, parsePairArgs, parseRunArgs, shellQuote } from "./args.ts";
+import {
+  parseCommandLine,
+  parsePairArgs,
+  parseRunArgs,
+  parseSshArgs,
+  selectPairEndpoints,
+  shellQuote,
+} from "./args.ts";
+
+test("parseSshArgs takes a single target plus options and defaults pair off", () => {
+  assert.deepEqual(parseSshArgs(["user@host"]), {
+    target: "user@host",
+    name: undefined,
+    repo: undefined,
+    branch: undefined,
+    endpoint: undefined,
+    pair: false,
+  });
+  assert.deepEqual(
+    parseSshArgs(["prod", "--pair", "--endpoint", "1.2.3.4:8790", "--branch", "dev"]),
+    {
+      target: "prod",
+      name: undefined,
+      repo: undefined,
+      branch: "dev",
+      endpoint: "1.2.3.4:8790",
+      pair: true,
+    },
+  );
+});
+
+test("parseSshArgs fails closed on missing target, dupes, and unknown flags", () => {
+  assert.throws(() => parseSshArgs(["--pair"]), /usage: acro ssh/);
+  assert.throws(() => parseSshArgs(["a", "b"]), /single target/);
+  assert.throws(() => parseSshArgs(["a", "--endpoint"]), /requires a value/);
+  assert.throws(
+    () => parseSshArgs(["a", "--branch", "x", "--branch", "y"]),
+    /only be specified once/,
+  );
+  assert.throws(() => parseSshArgs(["a", "--tunnel"]), /unknown ssh option/);
+  // 目标以 - 开头会被 ssh 当选项(参数注入),拒绝
+  assert.throws(() => parseSshArgs(["-oProxyCommand=x"]), /invalid ssh target/);
+});
+
+test("selectPairEndpoints drops loopback and puts an explicit endpoint first", () => {
+  const offer = ["192.168.1.5:8790", "127.0.0.1:8790", "[::1]:8790", "localhost:8790"];
+  assert.deepEqual(selectPairEndpoints(offer), ["192.168.1.5:8790"]);
+  assert.deepEqual(selectPairEndpoints(offer, "acro.example:8790"), [
+    "acro.example:8790",
+    "192.168.1.5:8790",
+  ]);
+  // explicit endpoint already present is not duplicated
+  assert.deepEqual(selectPairEndpoints(offer, "192.168.1.5:8790"), ["192.168.1.5:8790"]);
+  // only-loopback offer yields nothing to connect to
+  assert.deepEqual(selectPairEndpoints(["127.0.0.1:8790"]), []);
+});
 
 test("double dash keeps target command flags outside Acro parsing", () => {
   const parsed = parseCommandLine([

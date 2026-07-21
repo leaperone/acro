@@ -7,6 +7,7 @@
 //   acro run [--cwd <dir>] [--] [command...]
 //   acro attach <sessionId>
 
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +27,9 @@ import {
   parseCommandLine,
   parsePairArgs,
   parseRunArgs,
+  parseSshArgs,
+  selectPairEndpoints,
+  shellQuote,
   type ParsedRunArgs,
 } from "./args.ts";
 
@@ -103,6 +107,119 @@ async function cmdPair(args: string[]): Promise<void> {
   config.active = entry.localId; // active 存稳定 id
   saveClientConfig(config);
   console.log(`已配对 ${name},入口: ${offer.endpoints.join(", ")}`);
+}
+
+// 装阶段:ssh -t 分配 PTY(需要密码的 sudo 能提示),全程 inherit 让进度 / 提示直达用户终端。
+function runSshInstall(target: string, installCmd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("ssh", ["-t", target, installCmd], { stdio: "inherit" });
+    child.on("error", (err) => reject(new Error(`无法启动 ssh: ${err.message}`)));
+    child.on("close", (code) =>
+      code === 0
+        ? resolve()
+        : reject(new Error(`ssh ${target} 安装失败(退出码 ${code ?? "?"});见上方日志`)),
+    );
+  });
+}
+
+// 取配对码:单独一段干净 ssh,只抓 stdout 的 acro:// 行。首次启动有配对码;
+// 已配对主机的 bootstrap 配对码首次认证后即删除,此处返回空串(更新语义)。
+function fetchRemoteOffer(target: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "ssh",
+      [target, 'cat "$HOME/.acro/bootstrap-offer.txt" 2>/dev/null || true'],
+      { stdio: ["inherit", "pipe", "inherit"] },
+    );
+    let out = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      out += chunk;
+    });
+    child.on("error", (err) => reject(new Error(`无法启动 ssh: ${err.message}`)));
+    child.on("close", () => {
+      const offer = out
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("acro://"))
+        .pop();
+      resolve(offer ?? "");
+    });
+  });
+}
+
+// acro ssh <target>:SSH 进目标机 → 幂等装依赖并启动 runtime → 取回配对码。
+// 默认只打印配对码由用户自行配对;--pair 顺手完成配对(入口取 --endpoint 或配对码里的非回环地址)。
+async function cmdSsh(args: string[]): Promise<void> {
+  const parsed = parseSshArgs(args);
+  const { decodePairingOffer } = await import("@acro/protocol");
+  const { REMOTE_BOOTSTRAP } = await import("./remote-bootstrap.ts");
+  const envPrefix = [
+    parsed.repo ? `ACRO_REPO=${shellQuote(parsed.repo)}` : "",
+    parsed.branch ? `ACRO_BRANCH=${shellQuote(parsed.branch)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  // base64 经命令参数传入(非 stdin),好让 ssh 的 stdin 留给交互式认证
+  const b64 = Buffer.from(REMOTE_BOOTSTRAP, "utf8").toString("base64");
+  const decode = `printf %s ${shellQuote(b64)} | base64 -d`;
+  const installCmd = envPrefix ? `${decode} | ${envPrefix} bash -s` : `${decode} | bash -s`;
+
+  console.error(`[acro] 连接 ${parsed.target} 并安装 runtime…`);
+  await runSshInstall(parsed.target, installCmd);
+  const offer = await fetchRemoteOffer(parsed.target);
+  console.log(`\n已在 ${parsed.target} 安装并启动 Acro runtime。`);
+
+  if (!offer) {
+    // bootstrap 配对码首次认证后即删除;取不到说明主机已配对,本次是更新
+    console.log("主机已配对,本次只更新并重启了 runtime(无需新配对码)。");
+    return;
+  }
+  const decoded = decodePairingOffer(offer);
+
+  if (!parsed.pair) {
+    console.log(`\n配对码:\n${offer}`);
+    console.log(
+      "\n完成连接:在客户端运行 `acro pair`(粘贴上面的配对码),或桌面「连接服务器」粘贴。\n" +
+        "若客户端不在服务器同网段,pair 后用 `acro endpoints add <可达地址:8790>` 补入口,\n" +
+        `或直接 \`acro ssh ${parsed.target} --pair --endpoint <host:port>\` 一步到位。`,
+    );
+    return;
+  }
+
+  const endpoints = selectPairEndpoints(decoded.endpoints, parsed.endpoint);
+  if (endpoints.length === 0) {
+    fail(
+      "配对码里没有可从客户端直连的入口(只有回环地址)。\n" +
+        `用 --endpoint <host:port> 指定可达地址重跑,或手动配对:\n${offer}`,
+    );
+  }
+  const name = parsed.name ?? parsed.target;
+  const entry = {
+    localId: crypto.randomUUID(),
+    name,
+    deviceId: "",
+    token: decoded.token,
+    pub: decoded.pub,
+    endpoints,
+  };
+  let client: AcroClient;
+  try {
+    client = await AcroClient.connect(entry);
+  } catch (err) {
+    fail(
+      `配对码已取回,但从客户端连接失败(${(err as Error).message})。\n` +
+        `服务器地址可能对客户端不可达;用 --endpoint <可达地址:port> 重跑,或手动配对:\n${offer}`,
+    );
+  }
+  entry.deviceId = client.deviceId;
+  client.close();
+  const config = loadOrEmptyConfig();
+  config.servers = config.servers.filter((s) => s.name !== name);
+  config.servers.push(entry);
+  config.active = entry.localId;
+  saveClientConfig(config);
+  console.log(`已配对 ${name},入口: ${endpoints.join(", ")}`);
 }
 
 function cmdEndpoints(config: ClientConfig, server: ServerEntry, args: string[]): void {
@@ -359,6 +476,8 @@ async function main(): Promise<void> {
       [
         "pbpaste | acro pair [--name <label>]  从 stdin 安全读取远程配对码",
         "acro pair [--name <label>]            Runtime 本机读取 bootstrap 配对码",
+        "acro ssh <[user@]host|别名> [--pair] [--endpoint host:port] [--name <label>] [--branch <ref>]",
+        "                                      SSH 进目标机装好 runtime 并取回配对码(--pair 顺手配对)",
         "acro --server <名称|deviceId> <命令>  指定目标服务器",
         "acro endpoints [add|rm <host:port>]",
         "acro sessions",
@@ -371,6 +490,10 @@ async function main(): Promise<void> {
   if (passthrough && cmd !== "run") fail(`${cmd} does not accept -- passthrough arguments`);
   if (cmd === "pair") {
     await cmdPair(args);
+    return;
+  }
+  if (cmd === "ssh") {
+    await cmdSsh(args);
     return;
   }
   if (cmd === "endpoints") {
