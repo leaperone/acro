@@ -226,7 +226,8 @@ private struct PaneView: View {
                 model: model,
                 pane: pane,
                 focused: focused,
-                trafficLightClearance: isTopLeft && !model.leftSidebarVisible
+                trafficLightClearance: isTopLeft
+                    && model.leftSidebarPresentation == .hidden
             )
 
             GeometryReader { geometry in

@@ -246,11 +246,11 @@ extension WorkbenchModel {
             ),
             CommandPaletteItem(
                 id: "command:toggle-sidebar",
-                title: leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏",
-                subtitle: nil,
+                title: "切换到下一种左侧栏模式",
+                subtitle: "完整 → 紧凑 → 隐藏",
                 symbol: "sidebar.left",
                 kind: "命令",
-                action: { self.leftSidebarVisible.toggle() }
+                action: { self.cycleLeftSidebarPresentation() }
             ),
             CommandPaletteItem(
                 id: "command:toggle-inspector",

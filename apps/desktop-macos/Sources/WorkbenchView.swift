@@ -2,21 +2,42 @@
 
 import SwiftUI
 
+enum WorkbenchLayoutMetrics {
+    static let minimumWindowWidth: CGFloat = 760
+    static let minimumWindowHeight: CGFloat = 620
+    static let minimumTerminalWidth: CGFloat = 440
+    static let inspectorVisibilityWidth: CGFloat = 720
+    static let minimumInspectorWidth: CGFloat = 260
+    static let defaultSidebarWidth: CGFloat = 248
+    static let minimumSidebarWidth: CGFloat = 180
+    static let maximumSidebarWidth: CGFloat = 420
+}
+
 struct WorkbenchView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // 自绘布局(cmux 模式):NavigationSplitView 会给隐藏的工具栏保留整条高度,
     // 紧凑模式必须让 tab 条真正贴到窗口顶边。
-    @AppStorage("acro.sidebar.width") private var sidebarWidth = 248.0
+    @AppStorage("acro.sidebar.width") private var sidebarWidth = Double(
+        WorkbenchLayoutMetrics.defaultSidebarWidth
+    )
 
     var body: some View {
         ZStack(alignment: .top) {
             HStack(spacing: 0) {
-                if model.leftSidebarVisible {
+                if model.leftSidebarPresentation == .wide {
                     SidebarView(model: model, runtime: runtime, hub: model.hub)
-                        .frame(width: max(180, min(sidebarWidth, 420)))
+                        .frame(width: max(
+                            WorkbenchLayoutMetrics.minimumSidebarWidth,
+                            min(CGFloat(sidebarWidth), WorkbenchLayoutMetrics.maximumSidebarWidth)
+                        ))
+                        .transition(.opacity)
                     sidebarResizeHandle
+                } else if model.leftSidebarPresentation == .compact {
+                    CompactSidebarView(model: model, hub: model.hub)
+                        .transition(.opacity)
                 }
 
                 GeometryReader { geometry in
@@ -24,13 +45,22 @@ struct WorkbenchView: View {
                     HSplitView {
                         TerminalPanesView(model: model, runtime: runtime)
                             .ignoresSafeArea(.container, edges: .top)
-                            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(
+                                minWidth: WorkbenchLayoutMetrics.minimumTerminalWidth,
+                                maxWidth: .infinity,
+                                maxHeight: .infinity
+                            )
                             .layoutPriority(1)
 
-                        if model.inspectorVisible, geometry.size.width >= 720 {
+                        if model.inspectorVisible,
+                           geometry.size.width >= WorkbenchLayoutMetrics.inspectorVisibilityWidth {
                             RightSidebarView(model: model, runtime: runtime)
                                 .ignoresSafeArea(.container, edges: .top)
-                                .frame(minWidth: 260, idealWidth: 320, maxWidth: 460)
+                                .frame(
+                                    minWidth: WorkbenchLayoutMetrics.minimumInspectorWidth,
+                                    idealWidth: 320,
+                                    maxWidth: 460
+                                )
                                 .frame(maxHeight: .infinity)
                         }
                     }
@@ -46,7 +76,10 @@ struct WorkbenchView: View {
             .coordinateSpace(name: "workbench-root")
             .ignoresSafeArea(.container, edges: .top)
             .background(WindowConfigurator())
-            .animation(.easeOut(duration: 0.18), value: model.leftSidebarVisible)
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 0.18),
+                value: model.leftSidebarPresentation
+            )
 
             reconnectBanner
 
@@ -58,7 +91,10 @@ struct WorkbenchView: View {
                 .zIndex(10)
             }
         }
-        .frame(minWidth: 760, minHeight: 620)
+        .frame(
+            minWidth: WorkbenchLayoutMetrics.minimumWindowWidth,
+            minHeight: WorkbenchLayoutMetrics.minimumWindowHeight
+        )
         .onChange(of: runtime.snapshotLoaded, initial: true) { _, loaded in
             guard loaded else { return }
             model.handleSnapshotLoaded()
@@ -201,7 +237,13 @@ struct WorkbenchView: View {
                     .gesture(
                         DragGesture(minimumDistance: 1, coordinateSpace: .named("workbench-root"))
                             .onChanged { value in
-                                sidebarWidth = Double(min(max(value.location.x, 180), 420))
+                                sidebarWidth = Double(min(
+                                    max(
+                                        value.location.x,
+                                        WorkbenchLayoutMetrics.minimumSidebarWidth
+                                    ),
+                                    WorkbenchLayoutMetrics.maximumSidebarWidth
+                                ))
                             }
                     )
                     .onHover { hovering in

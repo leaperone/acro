@@ -182,11 +182,12 @@ final class WorkbenchLayoutStateTests: XCTestCase {
             workspaceLayouts: [
                 ScopedResourceID(serverId: "server", resourceId: "workspace"): layout,
             ],
-            leftSidebarVisible: true,
+            leftSidebarPresentation: .compact,
             inspectorVisible: false
         )
         let data = try JSONEncoder().encode(snapshot)
         XCTAssertEqual(try JSONDecoder().decode(WorkbenchLayoutSnapshot.self, from: data), snapshot)
+        XCTAssertTrue(snapshot.leftSidebarVisible)
     }
 
     func testSnapshotKeepsSameWorkspaceIdSeparateAcrossServers() throws {
@@ -200,7 +201,7 @@ final class WorkbenchLayoutStateTests: XCTestCase {
             selectedServerId: "server-a",
             selectedWorkspaceId: "workspace",
             workspaceLayouts: [firstKey: first, secondKey: second],
-            leftSidebarVisible: true,
+            leftSidebarPresentation: .wide,
             inspectorVisible: true
         )
 
@@ -235,6 +236,60 @@ final class WorkbenchLayoutStateTests: XCTestCase {
             ],
             layout
         )
+        XCTAssertEqual(decoded.leftSidebarPresentation, .wide)
+    }
+
+    func testLegacyHiddenSidebarSnapshotMigratesToHidden() throws {
+        let legacy = LegacyWorkbenchLayoutSnapshot(
+            selectedServerId: nil,
+            selectedWorkspaceId: nil,
+            workspaceLayouts: [:],
+            leftSidebarVisible: false,
+            inspectorVisible: true
+        )
+
+        let decoded = try JSONDecoder().decode(
+            WorkbenchLayoutSnapshot.self,
+            from: JSONEncoder().encode(legacy)
+        )
+
+        XCTAssertEqual(decoded.leftSidebarPresentation, .hidden)
+        XCTAssertFalse(decoded.leftSidebarVisible)
+    }
+
+    func testNewSnapshotKeepsLegacyVisibilityProjection() throws {
+        let snapshot = WorkbenchLayoutSnapshot(
+            selectedServerId: nil,
+            selectedWorkspaceId: nil,
+            workspaceLayouts: [:],
+            leftSidebarPresentation: .hidden,
+            inspectorVisible: true
+        )
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any]
+        )
+        XCTAssertEqual(object["leftSidebarVisible"] as? Bool, false)
+        XCTAssertEqual(object["leftSidebarPresentation"] as? String, "hidden")
+
+        let decoded = try JSONDecoder().decode(
+            WorkbenchLayoutSnapshot.self,
+            from: JSONEncoder().encode(snapshot)
+        )
+        XCTAssertEqual(decoded.leftSidebarPresentation, .hidden)
+    }
+
+    @MainActor
+    func testSidebarPresentationCyclesWideCompactHidden() {
+        let model = WorkbenchModel(hub: RuntimeHub())
+
+        XCTAssertEqual(model.leftSidebarPresentation, .wide)
+        model.cycleLeftSidebarPresentation()
+        XCTAssertEqual(model.leftSidebarPresentation, .compact)
+        model.cycleLeftSidebarPresentation()
+        XCTAssertEqual(model.leftSidebarPresentation, .hidden)
+        model.cycleLeftSidebarPresentation()
+        XCTAssertEqual(model.leftSidebarPresentation, .wide)
     }
 
     @MainActor
