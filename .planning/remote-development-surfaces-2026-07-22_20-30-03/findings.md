@@ -172,6 +172,7 @@
 | CLI 与 skills 同包同版本 | 本机独立文档会和命令漂移 |
 | 扩展现有 apps/cli | 已有配对、配置、连接、背压和参数校验，重复实现会制造协议漂移 |
 | CLI 继续使用 AcroClient 和 client.json | 当前连接层已满足认证、E2EE 与多入口，不需要新增本机 socket |
+| 布局移除与领域终止分开 | 现有 Terminal 关闭会终止 PTY，但 Simulator 和 Computer Use 关闭只应停止观看 |
 | 不在终端环境注入 token | Agent 需要上下文，不需要长期凭证 |
 
 ## 风险与边界
