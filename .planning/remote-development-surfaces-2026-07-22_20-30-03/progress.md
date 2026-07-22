@@ -15,6 +15,7 @@
 - 校验 leaperone 项目基线：.planning、.worktrees ignore、AGENTS.md 和 CLAUDE.md 均符合要求。
 - 阅读 Acro 蓝图、协议、Runtime、Desktop、Mobile 和 helper 的真实调用链。
 - 审查阶段补充读取现有 apps/cli，确认复用配对、连接、参数和背压实现。
+- 第二轮审查删除未证实需要的画面 keyframe 标志和新本机 socket，并补齐 Browser title 与 URL 同步。
 - 阅读 apps/mobile/AGENTS.md；确认实现移动端前必须查 Expo 57 精确文档。
 - 只读调研 Orca Browser、Emulator、Computer Use 与 cmux Browser 参考实现。
 - 核对 agent-browser 与 serve-sim 的 npm 许可证和固定版本候选。
