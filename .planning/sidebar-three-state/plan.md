@@ -61,8 +61,9 @@ enum LeftSidebarPresentation: String, Codable, CaseIterable {
 
 快照迁移：
 
-- 新快照写入 `leftSidebarPresentation`。
-- 一个兼容周期内继续写入 `leftSidebarVisible`，让旧版本应用仍能读取快照。
+- 新快照写入 `leftSidebarPresentation` 和 `lastVisibleSidebarPresentation`。
+- `lastVisibleSidebarPresentation` 缺失或非法时回退为 `wide`。
+- 继续写入 `leftSidebarVisible` 作为旧版本的兼容投影，让旧版本应用仍能读取快照；它不再是新版本的状态真源。
 - 新版本优先读取 `leftSidebarPresentation`。
 - 缺少新字段时，`leftSidebarVisible == true` 映射为 `wide`，`false` 映射为 `hidden`。
 - Compact 写入兼容字段时视为可见。
@@ -83,7 +84,7 @@ enum LeftSidebarPresentation: String, Codable, CaseIterable {
 - 命令面板增加三个明确命令：使用宽侧栏、使用窄侧栏、隐藏侧栏。
 - 菜单项显示当前状态的选中标记。
 
-快捷键触发的状态变化立即完成。鼠标触发使用最长 160ms 的无弹跳宽度过渡；减少动态效果开启时只做短淡化。
+快捷键触发的状态变化立即完成。鼠标触发使用 160ms 的无弹跳宽度过渡；减少动态效果开启时只做短淡化。
 
 ## Wide
 
@@ -108,6 +109,7 @@ Compact 是独立呈现，不是缩窄后的 Wide。
    - 本机：`desktopcomputer`
    - 远程：`network`
    - 角标显示连接状态。
+   - 单击激活服务器；右键菜单提供新建 Workspace 和展开 Wide。
 4. 服务器下方按当前顺序显示 Workspace 按钮。
 5. Workspace 使用名称中第一个有效字符作为本地缩写，不写入 Runtime。
 6. Workspace Group 只用间距分段，不显示分组名称。
@@ -118,10 +120,11 @@ Compact 是独立呈现，不是缩窄后的 Wide。
 - 固定 36×36pt，外层保持稳定行高。
 - 选中状态使用现有强调色背景和清晰的 leading indicator。
 - 单击激活对应服务器并选择 Workspace。
-- 右键菜单复用 Wide 的新建终端、重命名、移动和删除动作。
+- 右键菜单只提供新建终端和“在宽侧栏中显示”。重命名、移动、删除和拖拽整理统一回到 Wide。
 - 悬停提示显示“服务器 / 分组 / Workspace”、连接状态和会话数量。
 - VoiceOver 标签使用完整名称，不读缩写。
 - Compact 不提供拖拽重排；结构管理回到 Wide 完成。
+- 进入 Compact 或切换服务器后，自动把当前 Workspace 滚动到可见区域。
 
 Compact 始终投影 Workspace。`sidebarViewMode == sessions` 只影响 Wide，因为中央标签栏已经承担 Compact 下的会话切换。
 
@@ -171,6 +174,7 @@ Compact 始终投影 Workspace。`sidebarViewMode == sessions` 只影响 Wide，
 
 - 三态显式选择和切换矩阵。
 - Hidden 恢复到最后一次 Wide 或 Compact。
+- 应用在 Hidden 状态重启后仍能恢复到之前的 Wide 或 Compact。
 - 旧 `leftSidebarVisible` 快照迁移。
 - 新快照同时保留降级兼容字段。
 - Compact 宽度固定，Wide 宽度仍受 180–420pt 限制。
