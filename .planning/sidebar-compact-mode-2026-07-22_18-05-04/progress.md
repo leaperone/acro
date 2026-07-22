@@ -2,7 +2,7 @@
 
 - 任务 ID：`sidebar-compact-mode-2026-07-22_18-05-04`
 - 创建时间：`2026-07-22_18-05-04`
-- 当前状态：`ready_for_preflight`
+- 当前状态：`preflight_passed`
 
 ## 已完成
 
@@ -19,13 +19,23 @@
 
 ## 进行中
 
-- 推送、创建 PR，并执行 preflight。
+- PR #108 squash merge。
 
 ## 本轮交互修正
 
 - `⌘B`、工作台菜单、命令面板和侧栏按钮统一调用三态循环。
 - 删除 `lastVisibleSidebarPresentation` 及三套隐藏/恢复方法。
 - 删除 Terminal 悬浮恢复按钮，并把红黄绿留白恢复为 80pt。
+
+## Preflight
+
+- Phase 0：未发现项目配置；使用 `main`、根 workspace 的 `pnpm check` / `pnpm build`，无领域检查和关联仓库。
+- Phase 1：`pnpm check`、`pnpm build` 通过；build 只有既有 esbuild `import.meta` 警告。
+- Phase 1.5：与最新 `origin/main` 无冲突。
+- Phase 2：未配置领域检查，跳过。
+- Phase 3：diff 审查通过，无 critical/high/medium/low 问题。
+- Phase 4：PR #108 为 OPEN/CLEAN，TypeScript 与 desktop-macos CI 均通过；无 linked repo。
+- Phase 5：构建、冲突、领域检查、critical/high 审查四项全绿，决策为自动 squash merge。
 
 ## 修改文件
 
@@ -67,3 +77,4 @@
 | 自动缩放到最小窗口时 `osascript` 缺少辅助功能权限 | 1 | 未绕过权限；保留现有 760×620 最小约束，并用真实大窗口与代码布局检查覆盖。 |
 | 首次交互修正补丁未匹配 planning 清单前缀 | 1 | 补丁未产生改动；拆成代码加状态和详细 planning 两次 `apply_patch`。 |
 | Computer Use 初次动作截图捕获在 180ms 过渡期间 | 1 | 等待过渡完成后重新读取窗口，确认 Hidden 已完全清除 Compact 轨道和悬浮按钮。 |
+| preflight reference 的三位置 `merge-tree --write-tree` 不被当前 Git 接受 | 1 | 改用等价的 `--merge-base <sha> HEAD origin/main`，探测通过。 |
