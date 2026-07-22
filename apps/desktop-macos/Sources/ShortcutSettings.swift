@@ -136,7 +136,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .newWorkspace: "新建工作区"
         case .newWorkspaceGroup: "新建分组"
         case .commandPalette: "命令面板"
-        case .toggleSidebar: "显示 / 隐藏左侧栏"
+        case .toggleSidebar: "切换左侧栏模式"
         case .toggleInspector: "显示 / 隐藏右侧栏"
         case .splitRight: "向右分屏"
         case .splitDown: "向下分屏"

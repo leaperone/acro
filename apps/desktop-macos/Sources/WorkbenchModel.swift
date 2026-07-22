@@ -70,7 +70,9 @@ final class WorkbenchModel: ObservableObject {
     }
     @Published var expandedWorkspaceGroupIds: Set<ScopedResourceID> = []
     @Published var expandedWorkspaceIds: Set<ScopedResourceID> = []
-    @Published var leftSidebarVisible = true { didSet { persistLayout() } }
+    @Published private(set) var leftSidebarPresentation: LeftSidebarPresentation = .wide {
+        didSet { persistLayout() }
+    }
     @Published var inspectorVisible = true { didSet { persistLayout() } }
     @Published var sidebarViewMode: SidebarViewMode {
         didSet { UserDefaults.standard.set(sidebarViewMode.rawValue, forKey: Self.sidebarModeKey) }
@@ -246,7 +248,7 @@ final class WorkbenchModel: ObservableObject {
         case .commandPalette:
             showingCommandPalette = true
         case .toggleSidebar:
-            leftSidebarVisible.toggle()
+            cycleLeftSidebarPresentation()
         case .toggleInspector:
             inspectorVisible.toggle()
         case .splitRight:
@@ -282,6 +284,15 @@ final class WorkbenchModel: ObservableObject {
 
     deinit {
         if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
+    }
+
+    func setLeftSidebarPresentation(_ presentation: LeftSidebarPresentation) {
+        guard leftSidebarPresentation != presentation else { return }
+        leftSidebarPresentation = presentation
+    }
+
+    func cycleLeftSidebarPresentation() {
+        setLeftSidebarPresentation(leftSidebarPresentation.next)
     }
 
     // 切换当前查看的服务器:其他服务器的连接与会话保持在线,只换视角
@@ -1061,7 +1072,7 @@ final class WorkbenchModel: ObservableObject {
         if let serverId = snapshot.selectedServerId { selectedServerId = serverId }
         selectedWorkspaceId = snapshot.selectedWorkspaceId
         workspaceLayouts = snapshot.workspaceLayouts(scopedTo: restoredServerId)
-        leftSidebarVisible = snapshot.leftSidebarVisible
+        leftSidebarPresentation = snapshot.leftSidebarPresentation
         inspectorVisible = snapshot.inspectorVisible
     }
 
@@ -1306,7 +1317,7 @@ final class WorkbenchModel: ObservableObject {
             selectedServerId: selectedServerId,
             selectedWorkspaceId: selectedWorkspaceId,
             workspaceLayouts: workspaceLayouts,
-            leftSidebarVisible: leftSidebarVisible,
+            leftSidebarPresentation: leftSidebarPresentation,
             inspectorVisible: inspectorVisible
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }

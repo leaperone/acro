@@ -101,7 +101,7 @@ struct AcroWorkbenchCommands: Commands {
 
             Divider()
 
-            item("切换左侧栏", "sidebar.left", .toggleSidebar)
+            item("切换左侧栏模式", "sidebar.left", .toggleSidebar)
             item("切换右侧栏", "sidebar.right", .toggleInspector)
 
             Divider()

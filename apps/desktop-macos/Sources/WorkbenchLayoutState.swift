@@ -537,16 +537,36 @@ struct ScopedResourceID: Hashable {
     let resourceId: String
 }
 
+enum LeftSidebarPresentation: String, Codable, CaseIterable, Identifiable {
+    case wide
+    case compact
+    case hidden
+
+    var id: String { rawValue }
+    var isVisible: Bool { self != .hidden }
+
+    var next: Self {
+        switch self {
+        case .wide: .compact
+        case .compact: .hidden
+        case .hidden: .wide
+        }
+    }
+}
+
 struct WorkbenchLayoutSnapshot: Codable, Equatable {
     // 多主机:记住上次查看的服务器(旧快照无此字段,解码为 nil)
     var selectedServerId: String?
     var selectedWorkspaceId: String?
     var workspaceLayouts: [ScopedResourceID: WorkspaceTerminalLayout]
-    var leftSidebarVisible: Bool
+    var leftSidebarPresentation: LeftSidebarPresentation
     var inspectorVisible: Bool
+
+    var leftSidebarVisible: Bool { leftSidebarPresentation.isVisible }
 
     private enum CodingKeys: String, CodingKey {
         case selectedServerId, selectedWorkspaceId, workspaceLayouts
+        case leftSidebarPresentation
         case leftSidebarVisible, inspectorVisible
     }
 
@@ -554,13 +574,13 @@ struct WorkbenchLayoutSnapshot: Codable, Equatable {
         selectedServerId: String?,
         selectedWorkspaceId: String?,
         workspaceLayouts: [ScopedResourceID: WorkspaceTerminalLayout],
-        leftSidebarVisible: Bool,
+        leftSidebarPresentation: LeftSidebarPresentation,
         inspectorVisible: Bool
     ) {
         self.selectedServerId = selectedServerId
         self.selectedWorkspaceId = selectedWorkspaceId
         self.workspaceLayouts = workspaceLayouts
-        self.leftSidebarVisible = leftSidebarVisible
+        self.leftSidebarPresentation = leftSidebarPresentation
         self.inspectorVisible = inspectorVisible
     }
 
@@ -568,7 +588,11 @@ struct WorkbenchLayoutSnapshot: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         selectedServerId = try container.decodeIfPresent(String.self, forKey: .selectedServerId)
         selectedWorkspaceId = try container.decodeIfPresent(String.self, forKey: .selectedWorkspaceId)
-        leftSidebarVisible = try container.decode(Bool.self, forKey: .leftSidebarVisible)
+        let legacyVisible = try container.decodeIfPresent(Bool.self, forKey: .leftSidebarVisible) ?? true
+        leftSidebarPresentation = (try? container.decode(
+            LeftSidebarPresentation.self,
+            forKey: .leftSidebarPresentation
+        )) ?? (legacyVisible ? .wide : .hidden)
         inspectorVisible = try container.decode(Bool.self, forKey: .inspectorVisible)
 
         if let layoutsByServer = try? container.decode(
@@ -601,6 +625,7 @@ struct WorkbenchLayoutSnapshot: Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(selectedServerId, forKey: .selectedServerId)
         try container.encodeIfPresent(selectedWorkspaceId, forKey: .selectedWorkspaceId)
+        try container.encode(leftSidebarPresentation, forKey: .leftSidebarPresentation)
         try container.encode(leftSidebarVisible, forKey: .leftSidebarVisible)
         try container.encode(inspectorVisible, forKey: .inspectorVisible)
         let layoutsByServer = workspaceLayouts.reduce(

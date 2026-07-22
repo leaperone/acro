@@ -655,6 +655,7 @@ struct SidebarView: View {
     // 对齐 cmux 的 footer 抽屉惯例,让内容列表底部更干净。固定钉底不随列表滚动。
     private var sidebarFooter: some View {
         HStack(spacing: 4) {
+            SidebarPresentationMenuButton(model: model)
             Button {
                 connectSheetPresented = true
             } label: {
