@@ -14,6 +14,7 @@
   - 路径：/Users/harry/project/acro/.worktrees/plan-remote-development-surfaces
 - 校验 leaperone 项目基线：.planning、.worktrees ignore、AGENTS.md 和 CLAUDE.md 均符合要求。
 - 阅读 Acro 蓝图、协议、Runtime、Desktop、Mobile 和 helper 的真实调用链。
+- 审查阶段补充读取现有 apps/cli，确认复用配对、连接、参数和背压实现。
 - 阅读 apps/mobile/AGENTS.md；确认实现移动端前必须查 Expo 57 精确文档。
 - 只读调研 Orca Browser、Emulator、Computer Use 与 cmux Browser 参考实现。
 - 核对 agent-browser 与 serve-sim 的 npm 许可证和固定版本候选。
@@ -68,3 +69,5 @@
 |---|---:|---|
 | 规划 worktree 中没有 .tmp/orca 与 .tmp/cmux | 1 | 从主 checkout 只读参考；未修改参考目录 |
 | development-guard 因模板未填写阻止继续搜索 | 1 | 先写满三文件，再运行完整性与 diff 检查 |
+| 初稿误把 apps/cli 当作待创建应用 | 1 | preflight 审查发现后改为扩展现有 CLI，并补齐真实调用链 |
+| 本机 git merge-tree 不接受文档中的三位置参数写法 | 1 | 使用本机支持的 --merge-base 参数完成同等无冲突探测 |

@@ -108,6 +108,14 @@
 - 持久终端 daemon 与 Runtime 版本可能不同。新终端环境字段需要旧 daemon 兼容，不能假设 daemon 已重启。
 - apps/runtime/scripts/e2e.ts 已覆盖多设备 attach、focus 接管、重连和并发，是新增 Surface 回归的高价值入口。
 
+### 现有 CLI
+
+- apps/cli 已经存在，不需要新建应用。
+- apps/cli/src/cli.ts 已实现 pair、ssh、endpoints、sessions、run 和 attach。
+- apps/cli/src/client.ts 已复用 packages/protocol、~/.acro/client.json、E2EE WebSocket 和流控。
+- apps/cli/src/args.ts 已集中处理参数边界，并有注入与歧义测试。
+- browser、emulator 和 computer 应作为现有命令树的子命令扩展，不能再建第二套客户端、配置或连接层。
+
 ### Browser 参考
 
 - Orca 的 agent-browser-bridge.ts 证明 agent-browser 可以通过 CDP 控制已有页面。
@@ -162,6 +170,7 @@
 | 移植 Orca macOS provider，不移植 provider 框架 | 当前平台边界明确，额外抽象没有第二实现 |
 | 移动端增加原生二进制图像 Surface | data URI 每帧复制不适合持续画面 |
 | CLI 与 skills 同包同版本 | 本机独立文档会和命令漂移 |
+| 扩展现有 apps/cli | 已有配对、配置、连接、背压和参数校验，重复实现会制造协议漂移 |
 | 不在终端环境注入 token | Agent 需要上下文，不需要长期凭证 |
 
 ## 风险与边界
@@ -205,6 +214,9 @@
 - apps/runtime/src/simulator.ts
 - apps/runtime/src/computer.ts
 - apps/runtime/src/daemon/env.ts
+- apps/cli/src/cli.ts
+- apps/cli/src/args.ts
+- apps/cli/src/client.ts
 - apps/helper-macos/Sources/main.swift
 - apps/desktop-macos/Sources/WorkbenchLayoutState.swift
 - apps/desktop-macos/Sources/RuntimeConnection.swift
