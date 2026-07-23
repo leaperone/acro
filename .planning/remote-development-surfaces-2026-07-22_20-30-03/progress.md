@@ -19,12 +19,16 @@
   - iOS Simulator 实时画面、输入和完整生命周期。
   - Computer Use 稳定 provider 与客户端入口。
   - Mobile Server → Workspace → Surface 工作台。
-  - 通用 Agent 状态、提问和审批。
+  - 通用 Agent 状态和会话定位。
   - Runtime 持久通知、按设备未读和最小化后台推送。
   - 用户可操作的诊断页、协议兼容闸门和脱敏报告。
 - 单列 Workspace / Project 规格冲突，并新增阶段 -1 用户决策门；planning 不暗选任一架构契约。
 - 明确 Agent 状态由显式 hook 适配器和受限 OSC 消息产生，不解析普通 PTY 文本，也不把供应商逻辑放进 Runtime 核心。
-- 明确通知真实内容只保存在 Runtime，经 E2EE 拉取；推送服务只接收 opaque 唤醒信息。
+- 明确 OSC 只能上报不可操作状态；needs_user 只通知并定位会话，客户端不生成审批按钮或终端输入。
+- 明确相同 Agent 状态按 Session 去重，高频切换合并为最新事实，needs_user 通知和 Push 保持有界。
+- 明确通知真实内容只保存在 Runtime，经 E2EE 拉取；推送服务只接收随机 pushRouteId 和 opaque notificationId。
+- 明确客户端按每个配对 Server 保存 pushRouteId 映射，覆盖多服务器相同 notificationId、未知 route 和 route 轮换。
+- 区分 Expo push/access token 与 Acro 配对认证 token；前者是第三方交付所需凭证，后者和 E2EE 密钥绝不进入推送服务。
 - 本轮没有修改产品代码、依赖、蓝图、发布配置或本机 dev 实例。
 
 ## 已完成
@@ -77,6 +81,11 @@
 | Git diff 边界 | 仅三份 planning 文件 | 通过 |
 | 2026-07-23 planning 补齐复检 | Planning complete；无未完成复选框或待填写占位 | 通过 |
 | 2026-07-23 diff 检查 | git diff --check 无错误；仍只改三份 planning 文件 | 通过 |
+| 2026-07-23 pnpm check | Protocol、Runtime、Mobile、CLI 全部通过 | 通过 |
+| 2026-07-23 pnpm build | CLI、Runtime 构建通过；只有既有 import.meta/CJS 警告 | 通过 |
+| 2026-07-23 merge probe | 与 origin/main 合并树生成成功，无冲突 | 通过 |
+| PR | #110：docs: complete remote development planning | 已创建 |
+| 2026-07-23 preflight 文档审查 | 首轮发现 OSC 可执行输入 High 与多服务器 Push 路由 Medium；二轮补充状态 Push 风暴与 token 边界 Medium | 三轮复检通过，无 Critical/High/Medium |
 
 基线测试来自只读调研阶段，只证明现有代码状态。计划功能尚未实现，因此没有功能完成声明。
 
