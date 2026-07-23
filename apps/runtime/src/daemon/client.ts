@@ -28,6 +28,11 @@ export interface DaemonEvent {
   payload: unknown;
 }
 
+interface DaemonRequestOptions {
+  deadline?: number;
+  stallOnTimeout?: boolean;
+}
+
 export class DaemonClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private reader = new FrameReader();
@@ -146,6 +151,7 @@ export class DaemonClient extends EventEmitter {
     method: string,
     params?: unknown,
     beforeResolve?: (result: T) => void,
+    options: DaemonRequestOptions = {},
   ): Promise<T> {
     if (!this.socket) return Promise.reject(new Error("daemon not connected"));
     if (this.stalled) return Promise.reject(new Error("daemon stalled after request timeout"));
@@ -154,16 +160,23 @@ export class DaemonClient extends EventEmitter {
     }
     const id = this.nextId++;
     const socket = this.socket;
-    const deadline = Date.now() + this.requestTimeoutMs;
+    const now = Date.now();
+    const requestDeadline = Math.min(options.deadline ?? Infinity, now + this.requestTimeoutMs);
+    if (!Number.isFinite(requestDeadline) || requestDeadline <= now) {
+      return Promise.reject(new Error(`daemon timeout: ${method}`));
+    }
+    const timeoutMs = requestDeadline - now;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        this.timedOut.set(id, method);
-        this.stalled = true;
+        if (options.stallOnTimeout !== false) {
+          this.timedOut.set(id, method);
+          this.stalled = true;
+        }
         pending.reject(new Error(`daemon timeout: ${method}`));
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
       this.pending.set(id, {
         resolve: resolve as (v: unknown) => void,
         reject,
@@ -181,7 +194,7 @@ export class DaemonClient extends EventEmitter {
         socket.destroy();
       };
       try {
-        socket.write(packJson({ t: "req", id, method, params, deadline }), (error) => {
+        socket.write(packJson({ t: "req", id, method, params, deadline: requestDeadline }), (error) => {
           if (error) failWrite(error);
         });
       } catch (error) {

@@ -26,6 +26,10 @@ export const paths = {
   daemonMeta: path.join(stateDir, "daemon.meta.json"),
   daemonLog: path.join(stateDir, "daemon.log"),
   sessions: path.join(stateDir, "sessions"),
+  agentHooks: path.join(stateDir, "agent-hooks"),
+  agentHookScript: path.join(stateDir, "agent-hooks", "hook.sh"),
+  agentHookEndpoint: path.join(stateDir, "agent-hooks", "endpoint.env"),
+  claudeAgentSettings: path.join(stateDir, "agent-hooks", "claude-settings.json"),
 };
 
 export function ensurePrivateDirectory(directory: string): void {

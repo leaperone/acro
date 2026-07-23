@@ -23,8 +23,10 @@ const { SerializeAddon } = xtermSerialize;
 type Terminal = InstanceType<typeof Terminal>;
 type SerializeAddon = InstanceType<typeof SerializeAddon>;
 import {
+  AgentSession as AgentSessionSchema,
   Session as SessionSchema,
   SessionId as SessionIdSchema,
+  type AgentSession,
   type Session,
 } from "@acro/protocol";
 import { encodeOutFrame, decodeFrame, FRAME_IN } from "@acro/protocol";
@@ -93,7 +95,7 @@ class DaemonSession {
   readonly handle = nextHandle++;
   readonly meta: Session;
   private ptyProc: pty.IPty;
-  private hasCommand = false;
+  private resolveChildCwd = false;
   private term: Terminal;
   private serializer: SerializeAddon;
   private seq = 0;
@@ -128,6 +130,10 @@ class DaemonSession {
       id: string;
       cwd?: string | undefined;
       command?: string | undefined;
+      executable?: string | undefined;
+      args?: string[] | undefined;
+      env?: Record<string, string> | undefined;
+      agent?: AgentSession | null | undefined;
       cols: number;
       rows: number;
     },
@@ -141,10 +147,11 @@ class DaemonSession {
     this.exited = new Promise((resolve) => {
       this.resolveExit = resolve;
     });
-    this.hasCommand = opts.command !== undefined;
+    this.resolveChildCwd = opts.command !== undefined && opts.executable === undefined;
     const shell = process.env.SHELL ?? (process.platform === "darwin" ? "/bin/zsh" : "/bin/bash");
     const cwd = opts.cwd ?? os.homedir();
-    const args = opts.command ? ["-lc", opts.command] : ["-l"];
+    const executable = opts.executable ?? shell;
+    const args = opts.executable ? (opts.args ?? []) : opts.command ? ["-lc", opts.command] : ["-l"];
     this.meta = {
       id: opts.id,
       cwd,
@@ -155,6 +162,7 @@ class DaemonSession {
       alive: true,
       exitCode: null,
       title: null,
+      agent: opts.agent ?? null,
     };
     this.term = new Terminal({
       cols: opts.cols,
@@ -166,12 +174,12 @@ class DaemonSession {
     this.term.loadAddon(this.serializer);
     // OSC 0/2 标题:xterm 解析屏幕数据时触发,与 serializer 同生命周期,随 term 释放
     this.term.onTitleChange((title) => this.updateTitle(title));
-    this.ptyProc = pty.spawn(shell, args, {
+    this.ptyProc = pty.spawn(executable, args, {
       name: "xterm-256color",
       cols: opts.cols,
       rows: opts.rows,
       cwd,
-      env: buildSessionEnv(),
+      env: { ...buildSessionEnv(), ...opts.env },
     });
     this.ptyProc.onData((data) => {
       this.seq += 1;
@@ -210,7 +218,15 @@ class DaemonSession {
       }
       this.meta.alive = false;
       this.meta.exitCode = exitCode;
-      if (!this.removeOnExit) this.checkpointBestEffort();
+      if (this.meta.agent) {
+        this.meta.agent = {
+          ...this.meta.agent,
+          state: exitCode === 0 ? "done" : "error",
+          interrupted: false,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      if (!this.removeOnExit) this.checkpointBestEffort(true);
       this.onExit(this, this.removeOnExit, this.notifyRemoval);
       this.resolveExit();
     });
@@ -302,7 +318,7 @@ class DaemonSession {
   // 命令型会话(zsh -lc cmd)的 cd 发生在 zsh 的子进程里,向下解析一层;
   // 交互型会话 pty 进程就是用户 shell,直接用它
   private resolveCwdPid(): Promise<number> {
-    if (!this.hasCommand) return Promise.resolve(this.ptyProc.pid);
+    if (!this.resolveChildCwd) return Promise.resolve(this.ptyProc.pid);
     return new Promise((resolve) => {
       execFile("pgrep", ["-P", String(this.ptyProc.pid)], { timeout: 1000 }, (err, out) => {
         const first = err ? NaN : Number(out.trim().split("\n")[0]);
@@ -385,10 +401,30 @@ class DaemonSession {
     this.published = true;
   }
 
-  checkpoint(): Promise<void> {
+  updateAgent(update: Partial<AgentSession>): AgentSession {
+    if (!this.meta.agent) throw new Error("session is not a managed agent");
+    const next = AgentSessionSchema.parse({
+      ...this.meta.agent,
+      ...update,
+      provider: this.meta.agent.provider,
+      managed: this.meta.agent.managed,
+      interrupted: false,
+    });
+    this.meta.agent = next;
+    this.persistMetadata();
+    return next;
+  }
+
+  persistMetadata(): void {
     const dir = path.join(paths.sessions, this.meta.id);
     fs.mkdirSync(dir, { recursive: true });
     writeJsonAtomic(path.join(dir, "meta.json"), this.meta);
+  }
+
+  checkpoint(): Promise<void> {
+    const dir = path.join(paths.sessions, this.meta.id);
+    fs.mkdirSync(dir, { recursive: true });
+    this.persistMetadata();
     this.dirty = false;
     return this.snapshot()
       .then(({ snapshot }) => {
@@ -400,12 +436,21 @@ class DaemonSession {
       });
   }
 
-  private checkpointBestEffort(): void {
+  private checkpointBestEffort(failClosed = false): void {
     try {
       void this.checkpoint().catch((error) => {
         console.warn(`[daemon] failed to checkpoint session ${this.meta.id}: ${error.message}`);
       });
     } catch (error) {
+      if (failClosed) {
+        try {
+          fs.rmSync(path.join(paths.sessions, this.meta.id, "meta.json"), { force: true });
+        } catch (removeError) {
+          console.warn(
+            `[daemon] failed to invalidate session ${this.meta.id}: ${(removeError as Error).message}`,
+          );
+        }
+      }
       console.warn(
         `[daemon] failed to checkpoint session ${this.meta.id}: ${(error as Error).message}`,
       );
@@ -463,10 +508,20 @@ function loadDeadSessions(): void {
     const parsed = SessionSchema.safeParse(stored);
     if (!parsed.success) continue;
     const meta = parsed.data;
+    if (meta.agent?.managed && !meta.agent.accountFingerprint) {
+      meta.agent = { ...meta.agent, managed: false };
+    }
     // 上一个 daemon 进程死掉时还活着的会话,现在必然已死
     if (meta.alive) {
       meta.alive = false;
       meta.exitCode = null;
+      if (meta.agent) {
+        meta.agent = {
+          ...meta.agent,
+          interrupted: true,
+          updatedAt: new Date().toISOString(),
+        };
+      }
     }
     // 旧版本可能留下已废弃字段；按协议真源重写，避免内部状态继续携带。
     writeJsonAtomic(metaPath, meta);
@@ -546,27 +601,55 @@ function handleTitle(session: DaemonSession, title: string | null): void {
   emitEvent("session.title", { sessionId: session.meta.id, title });
 }
 
-type Handler = (params: any) => Promise<unknown> | unknown;
+type Handler = (params: any, deadline?: unknown) => Promise<unknown> | unknown;
 interface CreateSessionParams {
   cwd?: string;
   command?: string;
+  executable?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  agent?: AgentSession | null;
   cols: number;
   rows: number;
 }
 
-async function createSession(params: CreateSessionParams, id: string): Promise<unknown> {
+async function createSession(
+  params: CreateSessionParams,
+  id: string,
+  revive = false,
+  deadline?: unknown,
+): Promise<unknown> {
   const existing = live.get(id);
   if (existing) return { session: existing.meta, handle: existing.handle };
-  if (dead.has(id)) throw new Error("session id already exists");
+  const previous = dead.get(id);
+  if (previous && !revive) throw new Error("session id already exists");
+  if (!previous && revive) throw new Error("session not found");
   if (daemonSessionCapacityExceeded(live.size)) throw new Error("live session limit reached");
+  if (daemonRequestExpired(deadline)) throw new Error("daemon request expired: session.reviveOwned");
   const session = new DaemonSession({ ...params, id }, handleOutput, handleExit, handleTitle);
+  if (previous) dead.delete(id);
   live.set(session.meta.id, session);
   liveByHandle.set(session.handle, session);
   try {
-    await session.checkpoint();
+    if (daemonRequestExpired(deadline)) throw new Error("daemon request expired: session.reviveOwned");
+    if (previous) session.persistMetadata();
+    else await session.checkpoint();
+    if (daemonRequestExpired(deadline)) throw new Error("daemon request expired: session.reviveOwned");
   } catch (error) {
-    await session.remove(false);
-    fs.rmSync(path.join(paths.sessions, session.meta.id), { recursive: true, force: true });
+    live.delete(id);
+    liveByHandle.delete(session.handle);
+    try {
+      if (previous) {
+        dead.set(id, previous);
+        const metaPath = path.join(paths.sessions, id, "meta.json");
+        fs.rmSync(metaPath, { force: true });
+        writeJsonAtomic(metaPath, previous);
+      } else {
+        fs.rmSync(path.join(paths.sessions, session.meta.id), { recursive: true, force: true });
+      }
+    } finally {
+      await session.remove(false);
+    }
     throw error;
   }
   session.publish();
@@ -585,7 +668,7 @@ interface DaemonRequest {
 let daemonRequestsInFlight = 0;
 
 const handlers: Record<string, Handler> = {
-  "daemon.info": () => ({ boot, pid: process.pid }),
+  "daemon.info": () => ({ boot, pid: process.pid, features: { agentSessions: true } }),
   "daemon.restart": () => {
     setImmediate(() => process.kill(process.pid, "SIGTERM"));
     return { restarting: true };
@@ -599,6 +682,8 @@ const handlers: Record<string, Handler> = {
   // 新方法名是版本边界：旧 daemon 会在启动 PTY 前返回 unknown method，不能静默忽略 id。
   "session.createOwned": (params: CreateSessionParams & { id: string }) =>
     createSession(params, params.id),
+  "session.reviveOwned": (params: CreateSessionParams & { id: string }, deadline) =>
+    createSession(params, params.id, true, deadline),
   "session.list": () => [
     ...[...live.values()].map((s) => s.meta),
     ...dead.values(),
@@ -635,6 +720,24 @@ const handlers: Record<string, Handler> = {
   "session.kill": (params: { sessionId: string }) => {
     live.get(params.sessionId)?.kill();
     return {};
+  },
+  "session.updateAgent": (params: {
+    sessionId: string;
+    provider: AgentSession["provider"];
+    state?: AgentSession["state"];
+    providerSessionId?: string;
+    updatedAt: string;
+  }) => {
+    const session = live.get(params.sessionId);
+    if (!session) throw new Error("session not alive");
+    if (session.meta.agent?.provider !== params.provider) throw new Error("agent provider mismatch");
+    const agent = session.updateAgent({
+      ...(params.state ? { state: params.state } : {}),
+      ...(params.providerSessionId ? { providerSessionId: params.providerSessionId } : {}),
+      updatedAt: params.updatedAt,
+    });
+    emitEvent("session.agentChanged", { sessionId: params.sessionId });
+    return { agent };
   },
   "session.remove": async (params: { sessionId: string }) => {
     SessionIdSchema.parse(params.sessionId);
@@ -678,7 +781,7 @@ async function respond(socket: net.Socket, req: DaemonRequest, withReplay: boole
     }
     const handler = handlers[req.method];
     if (!handler) throw new Error(`unknown method ${req.method}`);
-    const result = await handler(req.params ?? {});
+    const result = await handler(req.params ?? {}, req.deadline);
     if (replay?.overflowed) throw new Error("attach replay buffer exceeded; retry attach");
     response = packJson({ t: "res", id: req.id, ok: true, result });
   } catch (err) {

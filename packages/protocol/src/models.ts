@@ -114,6 +114,36 @@ export const SearchHit = z.object({
 });
 export type SearchHit = z.infer<typeof SearchHit>;
 
+const ProviderSessionId = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine((value) => !value.startsWith("-") && !/[\u0000-\u001f\u007f]/.test(value), {
+    message: "invalid provider session id",
+  });
+
+export const AgentSession = z.object({
+  provider: z.enum(["codex", "claude"]),
+  state: z.enum(["starting", "working", "waiting", "done", "error"]),
+  providerSessionId: ProviderSessionId.nullable().default(null),
+  codexHome: z
+    .string()
+    .max(4096)
+    .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), { message: "invalid Codex home" })
+    .nullable()
+    .default(null),
+  accountFingerprint: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .default(null),
+  managed: z.boolean(),
+  interrupted: z.boolean(),
+  updatedAt: z.string(),
+});
+export type AgentSession = z.infer<typeof AgentSession>;
+
 export const Session = z.object({
   id: z.string(),
   // cwd 是创建时目录;daemon 查询实时目录成功后会回写此字段
@@ -127,5 +157,7 @@ export const Session = z.object({
   // 终端 OSC 0/2 标题;daemon 从 @xterm/headless 屏幕状态采集,无则 null 由客户端回退到 cwd 尾段。
   // nullable + default(null) 让旧 checkpoint / 旧 runtime 的 session 记录仍能通过 safeParse(版本偏斜兼容)。
   title: z.string().nullable().default(null),
+  // Agent 元数据与终端 checkpoint 同生共死；nullable + default 保持旧 daemon/client 兼容。
+  agent: AgentSession.nullable().default(null),
 });
 export type Session = z.infer<typeof Session>;

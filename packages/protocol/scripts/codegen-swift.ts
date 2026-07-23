@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
+  AgentSession,
   BrowserControl,
   ComputerControl,
   Device,
@@ -22,6 +23,7 @@ import {
 } from "../src/models.ts";
 
 const models: Record<string, z.ZodType> = {
+  AgentSession,
   Device,
   Workspace,
   WorkspaceGroup,

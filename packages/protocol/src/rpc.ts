@@ -77,6 +77,10 @@ export const methods = {
     params: z.object({ force: z.literal(true) }),
     result: z.object({ restarting: z.boolean() }),
   },
+  "agent.capabilities": {
+    params: z.object({}),
+    result: z.object({ providers: z.array(z.enum(["codex", "claude"])) }),
+  },
   "workspace.list": {
     params: z.object({}),
     result: z.array(Workspace),
@@ -149,8 +153,11 @@ export const methods = {
       cwd: z.string().optional(),
       inheritCwdFrom: z.string().optional(),
       command: z.string().optional(),
+      agent: z.enum(["codex", "claude"]).optional(),
       cols: z.number().int().min(2).max(1000),
       rows: z.number().int().min(2).max(1000),
+    }).refine((value) => !(value.command && value.agent), {
+      message: "command and agent are mutually exclusive",
     }),
     result: Session,
   },
@@ -207,6 +214,10 @@ export const methods = {
   "session.remove": {
     params: z.object({ sessionId: SessionId }),
     result: z.object({ removed: z.boolean() }),
+  },
+  "session.resumeAgent": {
+    params: z.object({ sessionId: SessionId }),
+    result: Session,
   },
   "browser.open": {
     params: z.object({
@@ -392,6 +403,7 @@ export const events = {
   "session.exit": z.object({ sessionId: z.string(), exitCode: z.number().int().nullable() }),
   "session.created": Session,
   "session.removed": z.object({ sessionId: z.string() }),
+  "session.agentChanged": z.object({ sessionId: z.string() }),
   "workspace.layoutChanged": z.object({ workspaceId: z.string(), rev: z.number().int() }),
   "session.focusChanged": z.object({
     sessionId: z.string(),
