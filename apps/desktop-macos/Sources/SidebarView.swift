@@ -463,8 +463,7 @@ private final class WorkspaceDragItemProvider: NSItemProvider {
 
 struct SidebarView: View {
     @ObservedObject var model: WorkbenchModel
-    @ObservedObject var runtime: RuntimeConnection
-    // hub 转发各子连接的变化;不观察它,其他服务器的数据更新不会触发重绘
+    // hub 只发布服务器目录和连接状态;每台服务器的内容由 RuntimeConnectionScope 隔离观察。
     @ObservedObject var hub: RuntimeHub
     // 多主机:所有已配对服务器同时在线,每台一个手风琴段,各自实时显示各自的工作区。
     // 折叠状态仅本地;选择/操作某台服务器的内容前先 activate 把动作路由过去。
@@ -479,7 +478,7 @@ struct SidebarView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: 2) {
                     content
                 }
                 .padding(.horizontal, 8)
@@ -611,15 +610,19 @@ struct SidebarView: View {
             .padding(.vertical, 8)
         }
         ForEach(locals) { entry in
-            localStatusBand(entry)
-            serverContent(entry)
+            RuntimeConnectionScope(connection: entry.connection) { _ in
+                localStatusBand(entry)
+                serverContent(entry)
+            }
         }
         if !locals.isEmpty && !remotes.isEmpty {
             Divider()
                 .padding(.vertical, 4)
         }
         ForEach(remotes) { entry in
-            serverSection(entry)
+            RuntimeConnectionScope(connection: entry.connection) { _ in
+                serverSection(entry)
+            }
         }
     }
 

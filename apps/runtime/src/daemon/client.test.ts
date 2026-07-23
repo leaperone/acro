@@ -45,46 +45,39 @@ test("daemon response hooks run before following frames in the same chunk", asyn
   assert.equal(frameSeen, true);
 });
 
-test("daemon requests time out, stall new work, and recover after late responses", async () => {
+test("daemon request timeout closes the poisoned socket so reconnect can recover", async () => {
   const client = new DaemonClient(20, 1);
-  let drainedMethods: string[] = [];
-  client.on("lateResponsesDrained", (methods: string[]) => {
-    drainedMethods = methods;
-  });
-  (
-    client as unknown as {
-      socket: net.Socket;
-    }
-  ).socket = {
+  let destroyed = false;
+  const socket = {
     write: (_data: Buffer, callback?: (error?: Error | null) => void) => {
       callback?.();
       return true;
     },
+    destroy: () => {
+      destroyed = true;
+      return undefined as unknown as net.Socket;
+    },
   } as unknown as net.Socket;
+  (
+    client as unknown as {
+      socket: net.Socket;
+    }
+  ).socket = socket;
 
   const blocked = client.request("blocked");
   await assert.rejects(client.request("overflow"), /queue full/);
   await assert.rejects(blocked, /daemon timeout: blocked/);
-  await assert.rejects(client.request("stalled"), /daemon stalled/);
+  assert.equal(destroyed, true);
   assert.equal(
     (client as unknown as { pending: Map<number, unknown> }).pending.size,
     0,
   );
-
-  (client as unknown as { onData(chunk: Buffer): void }).onData(
-    packJson({ t: "res", id: 1, ok: true, result: {} }),
-  );
-  assert.deepEqual(drainedMethods, ["blocked"]);
-  const recovered = client.request("recovered");
-  (client as unknown as { onData(chunk: Buffer): void }).onData(
-    packJson({ t: "res", id: 2, ok: true, result: { ok: true } }),
-  );
-  assert.deepEqual(await recovered, { ok: true });
 });
 
-test("daemon requests honor an earlier caller deadline", async () => {
+test("daemon requests honor a caller deadline without restarting bounded recovery", async () => {
   const client = new DaemonClient(1000, 1);
   let writes = 0;
+  let destroyed = false;
   (
     client as unknown as {
       socket: net.Socket;
@@ -95,13 +88,17 @@ test("daemon requests honor an earlier caller deadline", async () => {
       callback?.();
       return true;
     },
+    destroy: () => {
+      destroyed = true;
+      return undefined as unknown as net.Socket;
+    },
   } as unknown as net.Socket;
 
   const startedAt = Date.now();
   await assert.rejects(
     client.request("expired", undefined, undefined, {
       deadline: startedAt - 1,
-      stallOnTimeout: false,
+      destroySocketOnTimeout: false,
     }),
     /daemon timeout: expired/,
   );
@@ -109,12 +106,13 @@ test("daemon requests honor an earlier caller deadline", async () => {
   await assert.rejects(
     client.request("budgeted", undefined, undefined, {
       deadline: startedAt + 20,
-      stallOnTimeout: false,
+      destroySocketOnTimeout: false,
     }),
     /daemon timeout: budgeted/,
   );
   assert.ok(Date.now() - startedAt < 500);
   assert.equal(writes, 1);
+  assert.equal(destroyed, false);
 
   const recovered = client.request("recovered");
   (client as unknown as { onData(chunk: Buffer): void }).onData(

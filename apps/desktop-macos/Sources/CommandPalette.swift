@@ -16,9 +16,17 @@ struct CommandPaletteItem: Identifiable {
 }
 
 private struct RankedItem: Identifiable {
-    let item: CommandPaletteItem
+    let itemIndex: Int
+    let itemId: String
     let matchedIndices: Set<Int>
-    var id: String { item.id }
+    var id: String { itemId }
+}
+
+private struct CommandPaletteSearchKey: Equatable {
+    let id: String
+    let title: String
+    let subtitle: String?
+    let kind: String
 }
 
 struct CommandPalette: View {
@@ -28,26 +36,26 @@ struct CommandPalette: View {
     @State private var query = ""
     @State private var selectedIndex = 0
     @State private var hoveredIndex: Int?
+    @State private var searchEngine: CommandPaletteSearchEngine<Int>
+    @State private var rankedItems: [RankedItem]
     @FocusState private var searchFocused: Bool
 
-    // ponytail: 每次 body 求值重建 corpus,条目上千时再缓存到 State
-    private var rankedItems: [RankedItem] {
-        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else {
-            return items.map { RankedItem(item: $0, matchedIndices: []) }
-        }
-        let engine = CommandPaletteSearchEngine(
-            entries: items.enumerated().map { index, item in
-                CommandPaletteSearchCorpusEntry(
-                    payload: index,
-                    rank: index,
-                    title: item.title,
-                    searchableTexts: [item.subtitle, item.kind].compactMap { $0 }
-                )
-            }
-        )
-        return engine.search(query: value, historyBoost: { _, _ in 0 }).map { result in
-            RankedItem(item: items[result.payload], matchedIndices: result.titleMatchIndices)
+    init(items: [CommandPaletteItem], onDismiss: @escaping () -> Void) {
+        self.items = items
+        self.onDismiss = onDismiss
+        let engine = Self.makeSearchEngine(items)
+        _searchEngine = State(initialValue: engine)
+        _rankedItems = State(initialValue: Self.rank(items, with: engine, query: ""))
+    }
+
+    private var searchKeys: [CommandPaletteSearchKey] {
+        items.map {
+            CommandPaletteSearchKey(
+                id: $0.id,
+                title: $0.title,
+                subtitle: $0.subtitle,
+                kind: $0.kind
+            )
         }
     }
 
@@ -84,8 +92,7 @@ struct CommandPalette: View {
 
                 Divider()
 
-                let ranked = rankedItems
-                if ranked.isEmpty {
+                if rankedItems.isEmpty {
                     Text("没有匹配结果")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
@@ -96,16 +103,16 @@ struct CommandPalette: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 0) {
-                                ForEach(Array(ranked.enumerated()), id: \.element.id) { index, entry in
+                                ForEach(Array(rankedItems.enumerated()), id: \.element.id) { index, entry in
                                     row(entry, index: index)
                                 }
                             }
                             .padding(6)
                         }
-                        .frame(height: min(430, CGFloat(ranked.count) * 40 + 12))
+                        .frame(height: min(430, CGFloat(rankedItems.count) * 40 + 12))
                         .onChange(of: selectedIndex) { _, index in
-                            guard index < ranked.count else { return }
-                            proxy.scrollTo(ranked[index].id)
+                            guard index < rankedItems.count else { return }
+                            proxy.scrollTo(rankedItems[index].id)
                         }
                     }
                 }
@@ -135,66 +142,77 @@ struct CommandPalette: View {
             DispatchQueue.main.async { searchFocused = true }
         }
         .onChange(of: query) { _, _ in
+            rankedItems = Self.rank(items, with: searchEngine, query: query)
             selectedIndex = 0
+            hoveredIndex = nil
+        }
+        .onChange(of: searchKeys) { _, _ in
+            let engine = Self.makeSearchEngine(items)
+            searchEngine = engine
+            rankedItems = Self.rank(items, with: engine, query: query)
+            selectedIndex = min(selectedIndex, max(rankedItems.count - 1, 0))
             hoveredIndex = nil
         }
     }
 
+    @ViewBuilder
     private func row(_ entry: RankedItem, index: Int) -> some View {
-        let isSelected = index == selectedIndex
-        let isHovered = hoveredIndex == index
-        let background: Color = isSelected
-            ? Color.accentColor.opacity(0.16)
-            : (isHovered ? Color.primary.opacity(0.07) : .clear)
-        return Button {
-            perform(entry.item)
-        } label: {
-            HStack(spacing: 11) {
-                Image(systemName: entry.item.symbol)
-                    .frame(width: 18)
-                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    highlightedTitle(entry)
-                        .lineLimit(1)
-                    if let subtitle = entry.item.subtitle, !subtitle.isEmpty {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        if let item = item(for: entry) {
+            let isSelected = index == selectedIndex
+            let isHovered = hoveredIndex == index
+            let background: Color = isSelected
+                ? Color.accentColor.opacity(0.16)
+                : (isHovered ? Color.primary.opacity(0.07) : .clear)
+            Button {
+                perform(item)
+            } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: item.symbol)
+                        .frame(width: 18)
+                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        highlightedTitle(entry, title: item.title)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                        if let subtitle = item.subtitle, !subtitle.isEmpty {
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
+                    Spacer(minLength: 8)
+                    Text(item.kind)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary.opacity(0.5), in: Capsule())
                 }
-                Spacer(minLength: 8)
-                Text(entry.item.kind)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary.opacity(0.5), in: Capsule())
+                .padding(.horizontal, 11)
+                .frame(height: 40)
+                .background(background, in: RoundedRectangle(cornerRadius: 6))
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 11)
-            .frame(height: 40)
-            .background(background, in: RoundedRectangle(cornerRadius: 6))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .id(entry.id)
-        .onHover { hovering in
-            if hovering {
-                hoveredIndex = index
-            } else if hoveredIndex == index {
-                hoveredIndex = nil
+            .buttonStyle(.plain)
+            .id(entry.id)
+            .onHover { hovering in
+                if hovering {
+                    hoveredIndex = index
+                } else if hoveredIndex == index {
+                    hoveredIndex = nil
+                }
             }
         }
     }
 
     // 命中字符加粗提色,对应 cmux 的 matchedIndices 渲染
-    private func highlightedTitle(_ entry: RankedItem) -> Text {
+    private func highlightedTitle(_ entry: RankedItem, title: String) -> Text {
         guard !entry.matchedIndices.isEmpty else {
-            return Text(entry.item.title)
+            return Text(title)
         }
         var result = Text(verbatim: "")
-        for (index, char) in entry.item.title.enumerated() {
+        for (index, char) in title.enumerated() {
             let piece = Text(String(char))
             if entry.matchedIndices.contains(index) {
                 result = result + piece.bold().foregroundColor(.accentColor)
@@ -212,14 +230,62 @@ struct CommandPalette: View {
     }
 
     private func confirmSelection() {
-        let ranked = rankedItems
-        guard selectedIndex < ranked.count else { return }
-        perform(ranked[selectedIndex].item)
+        guard selectedIndex < rankedItems.count,
+              let item = item(for: rankedItems[selectedIndex])
+        else { return }
+        perform(item)
     }
 
     private func perform(_ item: CommandPaletteItem) {
         onDismiss()
         item.action()
+    }
+
+    private func item(for ranked: RankedItem) -> CommandPaletteItem? {
+        if items.indices.contains(ranked.itemIndex), items[ranked.itemIndex].id == ranked.itemId {
+            return items[ranked.itemIndex]
+        }
+        return items.first { $0.id == ranked.itemId }
+    }
+
+    private static func makeSearchEngine(
+        _ items: [CommandPaletteItem]
+    ) -> CommandPaletteSearchEngine<Int> {
+        CommandPaletteSearchEngine(
+            entries: items.enumerated().map { index, item in
+                CommandPaletteSearchCorpusEntry(
+                    payload: index,
+                    rank: index,
+                    title: item.title,
+                    searchableTexts: [item.subtitle, item.kind].compactMap { $0 }
+                )
+            }
+        )
+    }
+
+    private static func rank(
+        _ items: [CommandPaletteItem],
+        with engine: CommandPaletteSearchEngine<Int>,
+        query: String
+    ) -> [RankedItem] {
+        let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            return items.prefix(100).enumerated().map { index, item in
+                RankedItem(itemIndex: index, itemId: item.id, matchedIndices: [])
+            }
+        }
+        return engine.search(
+            query: value,
+            resultLimit: 100,
+            historyBoost: { _, _ in 0 }
+        ).compactMap { result in
+            guard items.indices.contains(result.payload) else { return nil }
+            return RankedItem(
+                itemIndex: result.payload,
+                itemId: items[result.payload].id,
+                matchedIndices: result.titleMatchIndices
+            )
+        }
     }
 }
 

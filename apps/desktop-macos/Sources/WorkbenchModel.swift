@@ -505,9 +505,21 @@ final class WorkbenchModel: ObservableObject {
     func claimFocus(_ sessionId: String, force: Bool = false) {
         let connection = runtime
         Task {
-            _ = try? await connection.rpc(
-                "session.claimFocus", ["sessionId": sessionId, "force": force])
-            await connection.refresh()
+            do {
+                struct Result: Decodable { let claimed: Bool }
+                let result = try await connection.rpc(
+                    "session.claimFocus",
+                    ["sessionId": sessionId, "force": force],
+                    as: Result.self
+                )
+                if !result.claimed {
+                    let focus = try await connection.rpc(
+                        "session.focusList", as: [SessionFocus].self)
+                    connection.commitFocusSnapshot(focus)
+                }
+            } catch {
+                if force { errorMessage = "无法接管终端：\(error.localizedDescription)" }
+            }
         }
     }
 
@@ -1121,11 +1133,14 @@ final class WorkbenchModel: ObservableObject {
                 ScopedResourceID(serverId: entry.id, resourceId: $0.id)
             }
         })
+        var nextExpandedWorkspaceGroupIds = expandedWorkspaceGroupIds
         if workspaceGroupsInitialized {
-            if allLoaded { expandedWorkspaceGroupIds.formIntersection(validWorkspaceGroupIds) }
+            if allLoaded {
+                nextExpandedWorkspaceGroupIds.formIntersection(validWorkspaceGroupIds)
+            }
         } else {
             workspaceGroupsInitialized = true
-            expandedWorkspaceGroupIds = validWorkspaceGroupIds
+            nextExpandedWorkspaceGroupIds = validWorkspaceGroupIds
         }
         let validWorkspaceKeys = Set(loadedEntries.flatMap { entry in
             entry.connection.workspaces.map {
@@ -1141,9 +1156,11 @@ final class WorkbenchModel: ObservableObject {
             }
         )
         TerminalSurfaceCache.shared.retainOnly(aliveSessionIds)
+        var nextExpandedWorkspaceIds = expandedWorkspaceIds
+        var nextWorkspaceLayouts = workspaceLayouts
         if allLoaded {
-            expandedWorkspaceIds.formIntersection(validWorkspaceKeys)
-            workspaceLayouts = workspaceLayouts.filter { validWorkspaceKeys.contains($0.key) }
+            nextExpandedWorkspaceIds.formIntersection(validWorkspaceKeys)
+            nextWorkspaceLayouts = nextWorkspaceLayouts.filter { validWorkspaceKeys.contains($0.key) }
         }
         let shouldInitializeWorkspaceExpansion = !workspaceExpansionInitialized
         workspaceExpansionInitialized = true
@@ -1160,8 +1177,8 @@ final class WorkbenchModel: ObservableObject {
                         if let decoded = try? JSONDecoder().decode(
                             WorkspaceTerminalLayout.self, from: Data(layoutJson.utf8)
                         ) {
-                            if workspaceLayouts[key] != decoded {
-                                workspaceLayouts[key] = decoded
+                            if nextWorkspaceLayouts[key] != decoded {
+                                nextWorkspaceLayouts[key] = decoded
                             }
                             if let canonical = Self.encodeLayout(decoded) {
                                 lastSyncedLayouts[key] = canonical
@@ -1175,7 +1192,7 @@ final class WorkbenchModel: ObservableObject {
                 }
                 let workspaceSessions = sessions(in: workspace, on: connection)
                 let validSessionIds = Set(workspaceSessions.map(\.id))
-                if var layout = workspaceLayouts[key] {
+                if var layout = nextWorkspaceLayouts[key] {
                     layout.prune(validSessionIds: validSessionIds)
                     // 新出现的会话(其他客户端创建的)并入布局作后台标签,不抢当前选中
                     for session in workspaceSessions
@@ -1189,17 +1206,27 @@ final class WorkbenchModel: ObservableObject {
                         }
                     }
                     // 无变化不写回:避免每次 refresh 都触发持久化与推送扫描
-                    if workspaceLayouts[key] != layout {
-                        workspaceLayouts[key] = layout
+                    if nextWorkspaceLayouts[key] != layout {
+                        nextWorkspaceLayouts[key] = layout
                     }
                 } else if !workspaceSessions.isEmpty {
                     // 首次见到该工作区:全部会话进同一窗格作标签
                     let pane = PaneTabGroup(sessionIds: workspaceSessions.map(\.id))
-                    workspaceLayouts[key] = WorkspaceTerminalLayout(root: .pane(pane))
+                    nextWorkspaceLayouts[key] = WorkspaceTerminalLayout(root: .pane(pane))
                 } else {
-                    workspaceLayouts[key] = WorkspaceTerminalLayout()
+                    nextWorkspaceLayouts[key] = WorkspaceTerminalLayout()
                 }
             }
+        }
+
+        if expandedWorkspaceGroupIds != nextExpandedWorkspaceGroupIds {
+            expandedWorkspaceGroupIds = nextExpandedWorkspaceGroupIds
+        }
+        if expandedWorkspaceIds != nextExpandedWorkspaceIds {
+            expandedWorkspaceIds = nextExpandedWorkspaceIds
+        }
+        if workspaceLayouts != nextWorkspaceLayouts {
+            workspaceLayouts = nextWorkspaceLayouts
         }
 
         if let selectedWorkspaceId, !selectedValidWorkspaceIds.contains(selectedWorkspaceId) {

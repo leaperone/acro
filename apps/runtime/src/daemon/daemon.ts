@@ -42,6 +42,7 @@ import {
   daemonRequestExpired,
   daemonSessionCapacityExceeded,
   shouldPausePty,
+  writeDaemonClient,
 } from "./backpressure.ts";
 
 const SCROLLBACK = 5000;
@@ -423,7 +424,6 @@ class DaemonSession {
 
   checkpoint(): Promise<void> {
     const dir = path.join(paths.sessions, this.meta.id);
-    fs.mkdirSync(dir, { recursive: true });
     this.persistMetadata();
     this.dirty = false;
     return this.snapshot()
@@ -542,12 +542,10 @@ const attachReplays = new Map<net.Socket, AttachReplay>();
 const snapshotRequests = new Map<net.Socket, Promise<void>>();
 
 function writeClient(client: net.Socket, buf: Buffer): boolean {
-  if (client.destroyed || daemonClientBufferExceeded(client.writableLength, buf.byteLength)) {
+  if (!writeDaemonClient(client, buf)) {
     clients.delete(client);
-    client.destroy();
     return false;
   }
-  client.write(buf);
   return true;
 }
 
@@ -695,7 +693,9 @@ const handlers: Record<string, Handler> = {
     if (cwd && cwd !== session.meta.cwd) {
       // 会话档案跟随事实:session.list 逐步反映真实目录
       session.meta.cwd = cwd;
-      await session.checkpoint();
+      // cwd 查询是右侧栏的轻量轮询。这里只写元数据,不要为一次 cd 同步
+      // 序列化整份 5000 行滚动区;完整快照仍由静默周期、退出和关机保存。
+      session.persistMetadata();
     }
     return { cwd };
   },
@@ -797,10 +797,9 @@ async function respond(socket: net.Socket, req: DaemonRequest, withReplay: boole
 
   if (socket.destroyed) return;
   try {
-    socket.write(response);
+    if (!writeClient(socket, response)) return;
     for (const frame of replay?.frames ?? []) {
-      if (socket.destroyed) break;
-      socket.write(frame);
+      if (!writeClient(socket, frame)) break;
     }
   } catch {
     socket.destroy();
@@ -809,20 +808,15 @@ async function respond(socket: net.Socket, req: DaemonRequest, withReplay: boole
 
 function dispatchRequest(socket: net.Socket, req: DaemonRequest): void {
   if (daemonRequestCapacityExceeded(daemonRequestsInFlight)) {
-    if (!socket.destroyed) {
-      try {
-        socket.write(
-          packJson({
-            t: "res",
-            id: req.id,
-            ok: false,
-            error: { code: "daemon_busy", message: "daemon request capacity reached" },
-          }),
-        );
-      } catch {
-        socket.destroy();
-      }
-    }
+    writeClient(
+      socket,
+      packJson({
+        t: "res",
+        id: req.id,
+        ok: false,
+        error: { code: "daemon_busy", message: "daemon request capacity reached" },
+      }),
+    );
     return;
   }
   daemonRequestsInFlight += 1;

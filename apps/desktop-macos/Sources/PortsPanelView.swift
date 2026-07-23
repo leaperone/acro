@@ -5,31 +5,80 @@ import SwiftUI
 
 @MainActor
 final class PortsPanelModel: ObservableObject {
+    struct Operations {
+        let load: (RuntimeConnection) async throws -> [PortListener]
+
+        static let live = Operations(load: { runtime in
+            try await runtime.rpc("ports.list", as: [PortListener].self)
+        })
+    }
+
     @Published private(set) var listeners: [PortListener]?
     @Published private(set) var isLoading = false
     @Published private(set) var loadError: String?
 
     private weak var runtime: RuntimeConnection?
+    private let operations: Operations
+    private var requestGeneration = 0
+    private var loadTask: Task<Void, Never>?
+
+    init(operations: Operations = .live) {
+        self.operations = operations
+    }
 
     func loadIfNeeded(runtime: RuntimeConnection) {
-        self.runtime = runtime
+        if self.runtime !== runtime {
+            requestGeneration &+= 1
+            loadTask?.cancel()
+            self.runtime = runtime
+            listeners = nil
+            isLoading = false
+            loadError = nil
+        }
         if listeners == nil, !isLoading { reload() }
+    }
+
+    func connectionChanged(runtime: RuntimeConnection, connected: Bool) {
+        if self.runtime !== runtime { self.runtime = runtime }
+        cancelAll()
+        listeners = nil
+        loadError = nil
+        if connected { reload() }
     }
 
     func reload() {
         guard let runtime else { return }
+        loadTask?.cancel()
         isLoading = true
         loadError = nil
-        Task {
+        let generation = requestGeneration
+        loadTask = Task {
             do {
-                listeners = try await runtime.rpc("ports.list", as: [PortListener].self)
+                let result = try await operations.load(runtime)
+                guard !Task.isCancelled,
+                      self.runtime === runtime,
+                      requestGeneration == generation
+                else { return }
+                listeners = result
                 isLoading = false
             } catch {
+                guard !Task.isCancelled,
+                      self.runtime === runtime,
+                      requestGeneration == generation
+                else { return }
                 loadError = (error as? RpcError)?.message ?? error.localizedDescription
                 listeners = nil
                 isLoading = false
             }
         }
+    }
+
+    func cancelAll() {
+        requestGeneration &+= 1
+        let task = loadTask
+        loadTask = nil
+        isLoading = false
+        task?.cancel()
     }
 }
 
@@ -37,6 +86,10 @@ struct PortsPanelView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
     @StateObject private var ports = PortsPanelModel()
+
+    private var connectionContext: ConnectionContext {
+        ConnectionContext(runtime: ObjectIdentifier(runtime), connected: runtime.connected)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,7 +111,15 @@ struct PortsPanelView: View {
             Divider()
             content
         }
-        .onAppear { ports.loadIfNeeded(runtime: runtime) }
+        .task(id: connectionContext) {
+            ports.connectionChanged(runtime: runtime, connected: runtime.connected)
+        }
+        .onDisappear { ports.cancelAll() }
+    }
+
+    private struct ConnectionContext: Hashable {
+        let runtime: ObjectIdentifier
+        let connected: Bool
     }
 
     @ViewBuilder

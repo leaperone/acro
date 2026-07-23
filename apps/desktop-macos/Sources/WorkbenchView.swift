@@ -28,7 +28,7 @@ struct WorkbenchView: View {
         ZStack(alignment: .top) {
             HStack(spacing: 0) {
                 if model.leftSidebarPresentation == .wide {
-                    SidebarView(model: model, runtime: runtime, hub: model.hub)
+                    SidebarView(model: model, hub: model.hub)
                         .frame(width: max(
                             WorkbenchLayoutMetrics.minimumSidebarWidth,
                             min(CGFloat(sidebarWidth), WorkbenchLayoutMetrics.maximumSidebarWidth)
@@ -203,14 +203,22 @@ struct WorkbenchView: View {
     // 断线时置顶提示;探针判死后由指数退避自动重连
     @ViewBuilder
     private var reconnectBanner: some View {
-        if runtime.snapshotLoaded && !runtime.connected {
+        if !runtime.connected, runtime.recoveryState != .idle {
             HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
+                if runtime.recoveryState == .retrying {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                }
                 Text(
-                    runtime.reconnectAttempt > 1
-                        ? "连接已断开，正在重连（第 \(runtime.reconnectAttempt) 次）…"
-                        : "连接已断开，正在重连…"
+                    runtime.recoveryState == .configurationError
+                        ? (runtime.lastConnectionError ?? "")
+                        : runtime.lastConnectionError.map { "\($0),正在重连…" }
+                            ?? (runtime.reconnectAttempt > 1
+                                ? "连接已断开，正在重连（第 \(runtime.reconnectAttempt) 次）…"
+                                : "连接已断开，正在重连…")
                 )
                 .font(.caption.weight(.medium))
             }

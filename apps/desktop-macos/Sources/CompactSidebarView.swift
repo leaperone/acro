@@ -158,7 +158,12 @@ struct CompactSidebarView: View {
                                 .accessibilityLabel("Runtime 尚未就绪")
                         }
                         ForEach(hub.entries) { entry in
-                            serverSection(entry)
+                            RuntimeConnectionScope(connection: entry.connection) { connection in
+                                serverSection(entry)
+                                    .onChange(of: connection.workspaces.map(\.id)) { _, _ in
+                                        scrollToSelection(proxy)
+                                    }
+                            }
                         }
                     }
                     .padding(.vertical, 8)

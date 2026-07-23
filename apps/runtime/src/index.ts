@@ -127,7 +127,7 @@ async function main(): Promise<void> {
     return sessions;
   };
   const recoveryDaemonOptions = (deadline?: number) =>
-    deadline === undefined ? undefined : { deadline, stallOnTimeout: false };
+    deadline === undefined ? undefined : { deadline, destroySocketOnTimeout: false };
   const requireAgentDaemon = async (deadline?: number): Promise<void> => {
     const info = await daemon.request<{ features?: { agentSessions?: boolean } }>(
       "daemon.info",
@@ -951,32 +951,6 @@ async function main(): Promise<void> {
     void daemonReady.catch((error) => {
       console.warn(`[runtime] failed to restore terminal sessions: ${error.message}`);
     });
-  });
-  daemon.on("lateResponsesDrained", (methods: string[]) => {
-    if (methods.includes("session.createOwned")) {
-      void reconcileWorkspaceSessions().catch((error) => {
-        console.warn(`[runtime] failed to reconcile late session creation: ${error.message}`);
-      });
-    }
-    if (methods.includes("session.resize")) {
-      for (const sessionId of [...sessionSizes.keys()]) {
-        void runSessionControl(sessionId, async () => {
-          appliedSizes.delete(sessionId);
-          try {
-            await applySessionSize(sessionId);
-          } catch (error) {
-            if ((error as Error).message === "session not alive") {
-              sessionSizes.delete(sessionId);
-              appliedSizes.delete(sessionId);
-              return;
-            }
-            console.warn(
-              `[runtime] failed to reconcile late session resize ${sessionId}: ${(error as Error).message}`,
-            );
-          }
-        });
-      }
-    }
   });
   daemon.on("event", (evt) => {
     // 会话结束或删除即清占用,不留脏条目

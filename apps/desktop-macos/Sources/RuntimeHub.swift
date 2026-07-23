@@ -4,6 +4,7 @@
 
 import Combine
 import Foundation
+import SwiftUI
 
 @MainActor
 final class RuntimeHub: ObservableObject {
@@ -39,10 +40,15 @@ final class RuntimeHub: ObservableObject {
             }
             let connection = RuntimeConnection()
             connection.connect(server: server)
-            // 子连接的数据变化向上冒泡,让只观察 hub 的视图也能刷新
-            cancellables[server.id] = connection.objectWillChange.sink { [weak self] _ in
-                self?.objectWillChange.send()
-            }
+            // Hub 只负责服务器目录和低频连接状态。workspace/session/focus 等内容
+            // 由各服务器视图直接观察自己的 connection,避免一台服务器的标题或焦点
+            // 变化让全部服务器和设置页一起重绘。
+            cancellables[server.id] = connection.$state
+                .dropFirst()
+                .removeDuplicates()
+                .sink { [weak self] _ in
+                    self?.objectWillChange.send()
+                }
             next.append(Entry(server: server, connection: connection))
         }
         for stale in entries where !seen.contains(stale.id) {
@@ -60,5 +66,23 @@ final class RuntimeHub: ObservableObject {
     func server(for serverId: String?) -> ServerEntry? {
         guard let serverId else { return nil }
         return entries.first { $0.id == serverId }?.server
+    }
+}
+
+// 把子连接的失效限制在单台服务器的视图子树,Hub 只发布目录和连接状态。
+struct RuntimeConnectionScope<Content: View>: View {
+    @ObservedObject private var connection: RuntimeConnection
+    private let content: (RuntimeConnection) -> Content
+
+    init(
+        connection: RuntimeConnection,
+        @ViewBuilder content: @escaping (RuntimeConnection) -> Content
+    ) {
+        _connection = ObservedObject(wrappedValue: connection)
+        self.content = content
+    }
+
+    var body: some View {
+        content(connection)
     }
 }

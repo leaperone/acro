@@ -30,7 +30,7 @@ export interface DaemonEvent {
 
 interface DaemonRequestOptions {
   deadline?: number;
-  stallOnTimeout?: boolean;
+  destroySocketOnTimeout?: boolean;
 }
 
 export class DaemonClient extends EventEmitter {
@@ -38,9 +38,6 @@ export class DaemonClient extends EventEmitter {
   private reader = new FrameReader();
   private nextId = 1;
   private pending = new Map<number, Pending>();
-  private timedOut = new Map<number, string>();
-  private completedTimedOutMethods = new Set<string>();
-  private stalled = false;
   private closed = false;
   private readonly requestTimeoutMs: number;
   private readonly maxPending: number;
@@ -99,9 +96,6 @@ export class DaemonClient extends EventEmitter {
       p.reject(new Error("daemon connection lost"));
     }
     this.pending.clear();
-    this.timedOut.clear();
-    this.completedTimedOutMethods.clear();
-    this.stalled = false;
     this.emit("down");
     if (this.closed) return;
     void retry(() => this.ensureConnected(), 100, 200).catch(() => {});
@@ -121,18 +115,9 @@ export class DaemonClient extends EventEmitter {
         | ({ t: "evt" } & DaemonEvent);
       if (parsed.t === "res") {
         const p = this.pending.get(parsed.id);
-        if (!p) {
-          const timedOutMethod = this.timedOut.get(parsed.id);
-          if (timedOutMethod) {
-            this.timedOut.delete(parsed.id);
-            this.completedTimedOutMethods.add(timedOutMethod);
-            this.recoverIfDrained();
-          }
-          continue;
-        }
+        if (!p) continue;
         this.pending.delete(parsed.id);
         clearTimeout(p.timer);
-        this.recoverIfDrained();
         if (parsed.ok) {
           try {
             p.beforeResolve?.(parsed.result);
@@ -154,7 +139,6 @@ export class DaemonClient extends EventEmitter {
     options: DaemonRequestOptions = {},
   ): Promise<T> {
     if (!this.socket) return Promise.reject(new Error("daemon not connected"));
-    if (this.stalled) return Promise.reject(new Error("daemon stalled after request timeout"));
     if (this.pending.size >= this.maxPending) {
       return Promise.reject(new Error("daemon request queue full"));
     }
@@ -171,11 +155,10 @@ export class DaemonClient extends EventEmitter {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        if (options.stallOnTimeout !== false) {
-          this.timedOut.set(id, method);
-          this.stalled = true;
-        }
         pending.reject(new Error(`daemon timeout: ${method}`));
+        // 请求已失去完成边界。继续复用同一 socket 会让所有后续终端 RPC
+        // 永久依赖一个可能永远不来的迟到响应;关闭后走既有重连和状态恢复。
+        if (options.destroySocketOnTimeout !== false) socket.destroy();
       }, timeoutMs);
       this.pending.set(id, {
         resolve: resolve as (v: unknown) => void,
@@ -188,7 +171,6 @@ export class DaemonClient extends EventEmitter {
         if (pending) {
           this.pending.delete(id);
           clearTimeout(pending.timer);
-          this.recoverIfDrained();
           pending.reject(error);
         }
         socket.destroy();
@@ -201,15 +183,6 @@ export class DaemonClient extends EventEmitter {
         failWrite(error instanceof Error ? error : new Error(String(error)));
       }
     });
-  }
-
-  private recoverIfDrained(): void {
-    if (this.stalled && this.timedOut.size === 0 && this.pending.size === 0) {
-      this.stalled = false;
-      const methods = [...this.completedTimedOutMethods];
-      this.completedTimedOutMethods.clear();
-      this.emit("lateResponsesDrained", methods);
-    }
   }
 
   sendInput(handle: number, data: Uint8Array): void {
