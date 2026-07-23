@@ -74,9 +74,9 @@ enum ServerDirectory {
         _ serverId: String, name: String, endpoints: [String], hub: RuntimeHub
     ) throws {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        let cleaned = endpoints
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+        let cleaned = try endpoints.map { try validatePairingEndpoint(
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        ) }
         guard !trimmedName.isEmpty, !cleaned.isEmpty,
               var config = ClientConfig.load(),
               let index = config.servers.firstIndex(where: { $0.id == serverId })

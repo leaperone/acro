@@ -167,8 +167,9 @@ struct AcroApp: App {
                     hub.reload() // 为每台已配对服务器建立常驻连接
                 }
                 .task {
-                    // 本地优先:确保本机 runtime 在跑并已静默配对
-                    await localRuntime.ensureLocalRuntime(hub: hub)
+                    // 本地优先:持续保证 runtime 可用;runtime 崩溃时 daemon/PTY 仍存活,
+                    // 拉起新 runtime 后客户端自动重连到原会话。
+                    await localRuntime.monitor(hub: hub)
                 }
         }
         // 紧凑模式(cmux compact):无标题栏,内容顶到窗口顶部,tab 条即顶行

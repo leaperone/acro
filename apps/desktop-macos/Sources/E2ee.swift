@@ -32,8 +32,36 @@ struct PairingOffer: Codable {
         }
         let offer = try JSONDecoder().decode(PairingOffer.self, from: data)
         guard offer.v == 1 else { throw E2eeError.handshake("不支持的配对码版本 \(offer.v)") }
+        guard !offer.endpoints.isEmpty else {
+            throw E2eeError.handshake("配对码没有可用的服务器入口")
+        }
+        for endpoint in offer.endpoints { _ = try validatePairingEndpoint(endpoint) }
+        guard offer.token.count >= 32 else {
+            throw E2eeError.handshake("配对码里的访问凭据无效")
+        }
+        guard let pub = Data(base64Encoded: offer.pub), pub.count == 32 else {
+            throw E2eeError.handshake("配对码里的服务端公钥无效")
+        }
         return offer
     }
+}
+
+@discardableResult
+func validatePairingEndpoint(_ raw: String) throws -> String {
+    let endpoint = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard endpoint == raw,
+          let components = URLComponents(string: "ws://\(endpoint)"),
+          let host = components.host,
+          !host.isEmpty,
+          let port = components.port,
+          (1...65_535).contains(port),
+          components.path.isEmpty,
+          components.query == nil,
+          components.fragment == nil
+    else {
+        throw E2eeError.handshake("服务器入口必须是 host:port")
+    }
+    return endpoint
 }
 
 func pairingAdmissionId(_ token: String) -> String {
@@ -41,7 +69,8 @@ func pairingAdmissionId(_ token: String) -> String {
 }
 
 func pairingWebSocketURL(endpoint: String, token: String) -> URL? {
-    URL(string: "ws://\(endpoint)/ws?grant=\(pairingAdmissionId(token))")
+    guard (try? validatePairingEndpoint(endpoint)) != nil else { return nil }
+    return URL(string: "ws://\(endpoint)/ws?grant=\(pairingAdmissionId(token))")
 }
 
 private final class DirectionCipher {

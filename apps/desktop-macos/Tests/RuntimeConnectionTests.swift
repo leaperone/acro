@@ -56,7 +56,7 @@ final class RuntimeConnectionTests: XCTestCase {
 
         XCTAssertEqual(loadCount, 2)
         XCTAssertEqual(maxActiveLoads, 1)
-        XCTAssertEqual(connection.snapshotRevision, 2)
+        XCTAssertEqual(connection.snapshotRevision, 1)
     }
 
     @MainActor
@@ -70,6 +70,10 @@ final class RuntimeConnectionTests: XCTestCase {
         connection.connect(server: server)
         defer { connection.disconnect() }
         XCTAssertEqual(connection.state, .connecting)
+        XCTAssertTrue(connection.readinessTimeoutPending)
+
+        connection.handleAuthenticated(["deviceId": "device"])
+        XCTAssertTrue(connection.readinessTimeoutPending)
 
         connection.commitRefreshSnapshot(
             workspaceGroups: [], workspaces: [], sessions: [], focus: []
@@ -79,6 +83,55 @@ final class RuntimeConnectionTests: XCTestCase {
         XCTAssertTrue(connection.snapshotLoaded)
         XCTAssertEqual(connection.snapshotRevision, 1)
         XCTAssertEqual(connection.reconnectAttempt, 0)
+        XCTAssertFalse(connection.readinessTimeoutPending)
+        XCTAssertEqual(connection.recoveryState, .idle)
+    }
+
+    @MainActor
+    func testInvalidLegacyServerConfigExposesARecoverableError() {
+        let connection = RuntimeConnection()
+        connection.connect(server: ServerEntry(
+            localId: "server", name: "Server", deviceId: "device", token: "token",
+            pub: "invalid", endpoints: ["127.0.0.1:8790"]
+        ))
+        defer { connection.disconnect() }
+
+        XCTAssertEqual(connection.state, .disconnected)
+        XCTAssertEqual(connection.lastConnectionError, "服务器公钥无效,请重新配对")
+        XCTAssertEqual(connection.reconnectAttempt, 0)
+        XCTAssertEqual(connection.recoveryState, .configurationError)
+    }
+
+    @MainActor
+    func testAllInvalidEndpointsBlockWithoutRetrying() {
+        let connection = RuntimeConnection()
+        connection.connect(server: ServerEntry(
+            localId: "server", name: "Server", deviceId: "device", token: "token",
+            pub: Data(repeating: 1, count: 32).base64EncodedString(), endpoints: ["not an endpoint"]
+        ))
+        defer { connection.disconnect() }
+
+        XCTAssertEqual(connection.state, .disconnected)
+        XCTAssertEqual(connection.recoveryState, .configurationError)
+        XCTAssertEqual(connection.reconnectAttempt, 0)
+        XCTAssertFalse(connection.readinessTimeoutPending)
+    }
+
+    @MainActor
+    func testReadinessExpiryDisconnectsAndSchedulesOneRetry() {
+        let connection = RuntimeConnection()
+        connection.connect(server: ServerEntry(
+            localId: "server", name: "Server", deviceId: "device", token: "token",
+            pub: Data(repeating: 1, count: 32).base64EncodedString(), endpoints: ["127.0.0.1:1"]
+        ))
+        defer { connection.disconnect() }
+
+        connection.expireReadiness()
+
+        XCTAssertEqual(connection.state, .disconnected)
+        XCTAssertEqual(connection.recoveryState, .retrying)
+        XCTAssertEqual(connection.reconnectAttempt, 1)
+        XCTAssertFalse(connection.readinessTimeoutPending)
     }
 
     @MainActor

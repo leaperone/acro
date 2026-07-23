@@ -37,6 +37,41 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+async function waitUntil(condition: () => boolean, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await sleep(50);
+  }
+  return condition();
+}
+
+async function stopChild(child: ChildProcess): Promise<void> {
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  if (exited()) return;
+  child.kill("SIGTERM");
+  if (await waitUntil(exited, 5000)) return;
+  child.kill("SIGKILL");
+  if (!(await waitUntil(exited, 2000))) throw new Error("runtime did not exit");
+}
+
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function stopPid(pid: number): Promise<void> {
+  if (!pidIsAlive(pid)) return;
+  process.kill(pid, "SIGTERM");
+  if (await waitUntil(() => !pidIsAlive(pid), 5000)) return;
+  process.kill(pid, "SIGKILL");
+  if (!(await waitUntil(() => !pidIsAlive(pid), 2000))) throw new Error(`process ${pid} did not exit`);
+}
+
 function makeFixtureRepo(): string {
   const repo = path.join(projectsRoot, "demo");
   fs.mkdirSync(repo);
@@ -173,8 +208,7 @@ async function main(): Promise<void> {
     await client.rpc("session.kill", { sessionId: initialSession!.id });
     await sleep(500);
     client.close();
-    runtime.kill("SIGTERM");
-    await sleep(800);
+    await stopChild(runtime);
     runtime = startRuntime();
     await waitHealthy();
     client = new Client();
@@ -437,8 +471,7 @@ async function main(): Promise<void> {
     await assert.rejects(removingRecoveryWorkspace);
     fs.rmSync(workspaceStateTmp, { recursive: true, force: true });
     client.close();
-    runtime.kill("SIGTERM");
-    await sleep(800);
+    await stopChild(runtime);
     runtime = startRuntime();
     await waitHealthy();
     client = new Client();
@@ -743,8 +776,7 @@ async function main(): Promise<void> {
 
     // Runtime 重启:daemon 独立存活,会话不受影响
     client2.close();
-    runtime.kill("SIGTERM");
-    await sleep(800);
+    await stopChild(runtime);
     runtime = startRuntime();
     await waitHealthy();
     const client3 = new Client();
@@ -837,8 +869,7 @@ async function main(): Promise<void> {
 
     // 拔掉 runtime 再拉起:CLI 必须自己重连并恢复输入输出
     client3.close();
-    runtime.kill("SIGTERM");
-    await sleep(800);
+    await stopChild(runtime);
     runtime = startRuntime();
     await waitHealthy();
     const reconnectedDeadline = Date.now() + 30000;
@@ -929,11 +960,11 @@ async function main(): Promise<void> {
     console.log("\nE2E PASS ✅  配对/Workspace/项目/会话/断线重连/Runtime重启存活 全部通过");
   } finally {
     for (const socket of unauthenticatedSockets) socket.terminate();
-    runtime.kill("SIGTERM");
+    await stopChild(runtime);
     // 杀掉测试 daemon
     try {
       const meta = JSON.parse(fs.readFileSync(path.join(stateDir, "daemon.meta.json"), "utf8"));
-      process.kill(meta.pid, "SIGTERM");
+      await stopPid(meta.pid);
     } catch {
       // daemon 没起来或已退出
     }

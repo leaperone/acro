@@ -11,6 +11,13 @@ struct FileBrowserView: View {
 
     // 跟随聚焦终端:根 = 聚焦终端的实时 cwd。没有聚焦终端时落到 runtime home。
     private var focusedSessionId: String? { model.selectedSession?.id }
+    private var followContext: FollowContext {
+        FollowContext(
+            serverId: model.selectedServerId,
+            runtime: ObjectIdentifier(runtime),
+            sessionId: focusedSessionId
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,8 +28,8 @@ struct FileBrowserView: View {
         }
         // 聚焦终端变化即重启该 task:先重置跟随基线,再立即拉一次实时 cwd,
         // 之后每 4s 轮询跟随终端的 cd。切到别的侧栏模式时视图消失,task 自动取消、停止轮询。
-        .task(id: focusedSessionId) {
-            browser.resetFollow()
+        .task(id: followContext) {
+            browser.beginFollow(sessionId: focusedSessionId, runtime: runtime)
             guard let sessionId = focusedSessionId else {
                 browser.sync(root: "", runtime: runtime)   // 无聚焦终端:列 home
                 return
@@ -32,6 +39,13 @@ struct FileBrowserView: View {
                 try? await Task.sleep(for: .seconds(4))
             }
         }
+        .onDisappear { browser.cancelAll() }
+    }
+
+    private struct FollowContext: Hashable {
+        let serverId: String?
+        let runtime: ObjectIdentifier
+        let sessionId: String?
     }
 
     private var searchBar: some View {
@@ -315,9 +329,7 @@ private struct FilePreviewView: View {
 
     @ViewBuilder
     private func imagePreview(_ preview: FileContent) -> some View {
-        if let base64 = preview.base64,
-           let data = Data(base64Encoded: base64),
-           let image = NSImage(data: data) {
+        if let image = browser.previewImage {
             ScrollView([.horizontal, .vertical]) {
                 Image(nsImage: image)
                     .resizable()

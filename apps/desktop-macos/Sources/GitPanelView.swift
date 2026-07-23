@@ -1,6 +1,7 @@
 // 右侧栏 Git 面板:分支 + 改动文件列表(状态角标)+ 单文件 diff。
 // 只读——展示 Mac mini 上仓库的状态,不做 stage/commit/push(那归终端 Agent)。
 
+import AppKit
 import SwiftUI
 
 struct GitPanelView: View {
@@ -8,7 +9,14 @@ struct GitPanelView: View {
     @ObservedObject var runtime: RuntimeConnection
     @StateObject private var git = GitPanelModel()
 
-    private var rootPath: String { model.selectedSession?.cwd ?? "" }
+    private var selectedSessionId: String? { model.selectedSession?.id }
+    private var followContext: FollowContext {
+        FollowContext(
+            serverId: model.selectedServerId,
+            runtime: ObjectIdentifier(runtime),
+            sessionId: selectedSessionId
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,8 +24,24 @@ struct GitPanelView: View {
             Divider()
             content
         }
-        .onAppear { git.sync(root: rootPath, runtime: runtime) }
-        .onChange(of: rootPath) { _, newValue in git.sync(root: newValue, runtime: runtime) }
+        .task(id: followContext) {
+            git.beginFollow(sessionId: selectedSessionId, runtime: runtime)
+            guard let sessionId = selectedSessionId else {
+                git.sync(root: "", runtime: runtime)
+                return
+            }
+            while !Task.isCancelled {
+                await git.follow(sessionId: sessionId, runtime: runtime)
+                try? await Task.sleep(for: .seconds(4))
+            }
+        }
+        .onDisappear { git.cancelAll() }
+    }
+
+    private struct FollowContext: Hashable {
+        let serverId: String?
+        let runtime: ObjectIdentifier
+        let sessionId: String?
     }
 
     private var header: some View {
@@ -177,30 +201,71 @@ private struct GitFileRow: View {
     }
 }
 
-// 简单的 diff 上色:+ 绿、- 红、@@ 蓝、其余次要色。
-private struct DiffText: View {
+// 单个原生文本存储承载大 diff,避免为每一行创建一棵 SwiftUI 子树。
+private struct DiffText: NSViewRepresentable {
     let diff: String
 
-    var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
-                    Text(line.isEmpty ? " " : String(line))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(color(for: line))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(8)
-            .textSelection(.enabled)
-        }
+    final class Coordinator {
+        var renderedDiff: String?
     }
 
-    private func color(for line: Substring) -> Color {
-        if line.hasPrefix("+++") || line.hasPrefix("---") { return .secondary }
-        if line.hasPrefix("+") { return .green }
-        if line.hasPrefix("-") { return .red }
-        if line.hasPrefix("@@") { return .blue }
-        return .primary
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.hasHorizontalScroller = true
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+
+        let text = NSTextView()
+        text.isEditable = false
+        text.isSelectable = true
+        text.drawsBackground = false
+        text.isHorizontallyResizable = true
+        text.isVerticallyResizable = true
+        text.textContainerInset = NSSize(width: 8, height: 8)
+        text.textContainer?.widthTracksTextView = false
+        text.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        scroll.documentView = text
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard context.coordinator.renderedDiff != diff,
+              let text = scroll.documentView as? NSTextView else { return }
+        context.coordinator.renderedDiff = diff
+        text.textStorage?.setAttributedString(Self.attributed(diff))
+    }
+
+    private static func attributed(_ diff: String) -> NSAttributedString {
+        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let output = NSMutableAttributedString(
+            string: diff,
+            attributes: [.font: font, .foregroundColor: NSColor.textColor]
+        )
+        let source = diff as NSString
+        var index = 0
+        while index < source.length {
+            let range = source.lineRange(for: NSRange(location: index, length: 0))
+            let line = source.substring(with: range)
+            let color: NSColor? = if line.hasPrefix("+++") || line.hasPrefix("---") {
+                .secondaryLabelColor
+            } else if line.hasPrefix("+") {
+                .systemGreen
+            } else if line.hasPrefix("-") {
+                .systemRed
+            } else if line.hasPrefix("@@") {
+                .systemBlue
+            } else {
+                nil
+            }
+            if let color { output.addAttribute(.foregroundColor, value: color, range: range) }
+            index = NSMaxRange(range)
+        }
+        return output
     }
 }

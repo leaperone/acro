@@ -16,6 +16,33 @@ export function daemonClientBufferExceeded(bufferedBytes: number, nextBytes: num
   return bufferedBytes + nextBytes > MAX_DAEMON_CLIENT_BUFFER_BYTES;
 }
 
+// 空队列允许一个大快照入队；已有积压时必须守住水位，避免慢 Runtime
+// 让 daemon 的 socket 写队列继续无界增长。
+export function daemonClientWriteAllowed(bufferedBytes: number, nextBytes: number): boolean {
+  return bufferedBytes === 0 || !daemonClientBufferExceeded(bufferedBytes, nextBytes);
+}
+
+export interface DaemonWritableClient {
+  readonly destroyed: boolean;
+  readonly writableLength: number;
+  write(buffer: Buffer): unknown;
+  destroy(): unknown;
+}
+
+export function writeDaemonClient(client: DaemonWritableClient, buffer: Buffer): boolean {
+  if (client.destroyed || !daemonClientWriteAllowed(client.writableLength, buffer.byteLength)) {
+    client.destroy();
+    return false;
+  }
+  try {
+    client.write(buffer);
+    return true;
+  } catch {
+    client.destroy();
+    return false;
+  }
+}
+
 export function daemonSessionCapacityExceeded(liveSessions: number): boolean {
   return liveSessions >= MAX_LIVE_SESSIONS;
 }

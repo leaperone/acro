@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   daemonClientBufferExceeded,
+  daemonClientWriteAllowed,
   daemonRequestCapacityExceeded,
   daemonRequestExpired,
   daemonSessionCapacityExceeded,
@@ -11,6 +12,7 @@ import {
   PARSE_BACKLOG_HIGH_CHARS,
   PARSE_BACKLOG_LOW_CHARS,
   shouldPausePty,
+  writeDaemonClient,
 } from "./backpressure.ts";
 
 test("pty flow control uses high and low watermarks", () => {
@@ -23,6 +25,25 @@ test("pty flow control uses high and low watermarks", () => {
 test("daemon clients are dropped before their write queue exceeds the limit", () => {
   assert.equal(daemonClientBufferExceeded(0, MAX_DAEMON_CLIENT_BUFFER_BYTES), false);
   assert.equal(daemonClientBufferExceeded(1, MAX_DAEMON_CLIENT_BUFFER_BYTES), true);
+  assert.equal(daemonClientWriteAllowed(0, MAX_DAEMON_CLIENT_BUFFER_BYTES * 2), true);
+  assert.equal(daemonClientWriteAllowed(1, MAX_DAEMON_CLIENT_BUFFER_BYTES), false);
+});
+
+test("daemon clients are dropped when socket.write throws synchronously", () => {
+  let destroyed = false;
+  const client = {
+    destroyed: false,
+    writableLength: 0,
+    write: () => {
+      throw new Error("sync write failed");
+    },
+    destroy: () => {
+      destroyed = true;
+    },
+  };
+
+  assert.equal(writeDaemonClient(client, Buffer.from("response")), false);
+  assert.equal(destroyed, true);
 });
 
 test("daemon rejects new PTYs after reaching the live session limit", () => {

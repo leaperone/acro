@@ -155,6 +155,12 @@ final class RuntimeConnection: ObservableObject {
         case connected
     }
 
+    enum RecoveryState: Equatable {
+        case idle
+        case retrying
+        case configurationError
+    }
+
     struct RefreshSnapshot {
         let workspaceGroups: [WorkspaceGroup]
         let workspaces: [Workspace]
@@ -171,6 +177,8 @@ final class RuntimeConnection: ObservableObject {
     @Published private(set) var snapshotLoaded = false
     @Published private(set) var snapshotRevision = 0
     @Published private(set) var reconnectAttempt = 0
+    @Published private(set) var lastConnectionError: String?
+    @Published private(set) var recoveryState: RecoveryState = .idle
     // 当前实际连上的入口(设置页展示用)
     @Published private(set) var connectedEndpoint: String?
 
@@ -178,11 +186,13 @@ final class RuntimeConnection: ObservableObject {
     var deviceId: String { server?.deviceId ?? "" }
 
     var connected: Bool { state == .connected }
+    var readinessTimeoutPending: Bool { readinessTimeoutTask != nil }
 
     private var server: ServerEntry?
     private var task: URLSessionWebSocketTask?
     private var session: E2eeSession?
     private var handshake: E2eeClientHandshake?
+    private var attemptedEndpoint: String?
     private var endpointIndex = 0
     private var generation = 0
     private var nextId = 1
@@ -210,8 +220,10 @@ final class RuntimeConnection: ObservableObject {
     private var probeTimer: Timer?
     private var probeOutstanding = false
     private var reconnectTask: Task<Void, Never>?
+    private var readinessTimeoutTask: Task<Void, Never>?
     private var initialRefreshTask: Task<Void, Never>?
     private let initialRefreshDelays: [TimeInterval]
+    private let readinessTimeout: TimeInterval
     var onTerminalFrame: ((UInt32, UInt32, Data) -> Void)?
 
     // orca RECONNECT_DELAYS_MS 的等价物,尾项为稳态重试间隔
@@ -219,10 +231,12 @@ final class RuntimeConnection: ObservableObject {
 
     init(
         refreshSnapshotProvider: (@MainActor () async throws -> RefreshSnapshot)? = nil,
-        initialRefreshDelays: [TimeInterval]? = nil
+        initialRefreshDelays: [TimeInterval]? = nil,
+        readinessTimeout: TimeInterval = 10
     ) {
         self.refreshSnapshotProvider = refreshSnapshotProvider
         self.initialRefreshDelays = initialRefreshDelays ?? Self.reconnectDelays
+        self.readinessTimeout = readinessTimeout
     }
 
     func connect(server: ServerEntry) {
@@ -230,12 +244,15 @@ final class RuntimeConnection: ObservableObject {
         cancelRefreshJobs()
         reconnectTask?.cancel()
         reconnectTask = nil
+        readinessTimeoutTask?.cancel()
+        readinessTimeoutTask = nil
         generation += 1
         failPending(RpcError(message: "reconnecting"))
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session = nil
         handshake = nil
+        attemptedEndpoint = nil
         state = .disconnected
         connectedEndpoint = nil
         probeTimer?.invalidate()
@@ -244,6 +261,8 @@ final class RuntimeConnection: ObservableObject {
         self.server = server
         endpointIndex = 0
         reconnectAttempt = 0
+        lastConnectionError = nil
+        recoveryState = .idle
         openSocket()
     }
 
@@ -251,14 +270,19 @@ final class RuntimeConnection: ObservableObject {
         cancelInitialRefresh()
         reconnectTask?.cancel()
         reconnectTask = nil
+        readinessTimeoutTask?.cancel()
+        readinessTimeoutTask = nil
         server = nil
         generation += 1
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session = nil
         handshake = nil
+        attemptedEndpoint = nil
         state = .disconnected
         reconnectAttempt = 0
+        lastConnectionError = nil
+        recoveryState = .idle
         connectedEndpoint = nil
         probeTimer?.invalidate()
         probeTimer = nil
@@ -268,18 +292,36 @@ final class RuntimeConnection: ObservableObject {
     }
 
     private func openSocket() {
-        guard let server, !server.endpoints.isEmpty else { return }
-        let ordered = server.orderedEndpoints
-        let endpoint = ordered[endpointIndex % ordered.count]
-        guard let url = pairingWebSocketURL(endpoint: endpoint, token: server.token),
-              let handshake = try? E2eeClientHandshake(expectedServerPubB64: server.pub)
-        else { return }
+        guard let server else { return }
+        guard !server.endpoints.isEmpty else {
+            state = .disconnected
+            lastConnectionError = "服务器没有可用入口,请编辑连接设置"
+            recoveryState = .configurationError
+            return
+        }
+        let candidates = server.orderedEndpoints.compactMap { endpoint in
+            pairingWebSocketURL(endpoint: endpoint, token: server.token).map { (endpoint, $0) }
+        }
+        guard !candidates.isEmpty else {
+            state = .disconnected
+            lastConnectionError = "服务器入口格式无效: \(server.orderedEndpoints[0])"
+            recoveryState = .configurationError
+            return
+        }
+        let (endpoint, url) = candidates[endpointIndex % candidates.count]
+        guard let handshake = try? E2eeClientHandshake(expectedServerPubB64: server.pub) else {
+            state = .disconnected
+            lastConnectionError = "服务器公钥无效,请重新配对"
+            recoveryState = .configurationError
+            return
+        }
         generation += 1
         let generation = generation
         failPending(RpcError(message: "reconnecting"))
         task?.cancel(with: .goingAway, reason: nil)
         session = nil
         self.handshake = handshake
+        attemptedEndpoint = endpoint
 
         state = .connecting
         let task = URLSession.shared.webSocketTask(with: url)
@@ -288,11 +330,14 @@ final class RuntimeConnection: ObservableObject {
         // 明文 hello 开启握手;之后的一切都在加密信道内
         task.send(.string(handshake.helloJSON())) { [weak self] error in
             if error != nil {
-                Task { @MainActor in self?.handleDisconnect(generation: generation) }
+                Task { @MainActor in
+                    self?.handleDisconnect(generation: generation, error: "无法发送握手")
+                }
             }
         }
         receiveLoop(generation: generation)
         startProbe(generation: generation)
+        startReadinessTimeout(generation: generation)
     }
 
     // ---- 断线检测与重连 ----
@@ -307,12 +352,29 @@ final class RuntimeConnection: ObservableObject {
         probeTimer = timer
     }
 
+    private func startReadinessTimeout(generation: Int) {
+        readinessTimeoutTask?.cancel()
+        let timeout = readinessTimeout
+        readinessTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard !Task.isCancelled, let self, self.generation == generation else { return }
+            self.expireReadiness(generation: generation)
+        }
+    }
+
+    func expireReadiness(generation: Int? = nil) {
+        handleDisconnect(
+            generation: generation ?? self.generation,
+            error: "握手或认证超时"
+        )
+    }
+
     private func probeTick(generation: Int) {
         guard self.generation == generation, let task else { return }
         if probeOutstanding {
             // 上一发 ping 未在整个间隔内得到 pong:半开连接,主动断开重连
             task.cancel(with: .abnormalClosure, reason: nil)
-            handleDisconnect(generation: generation)
+            handleDisconnect(generation: generation, error: "连接心跳超时")
             return
         }
         probeOutstanding = true
@@ -324,15 +386,19 @@ final class RuntimeConnection: ObservableObject {
         }
     }
 
-    private func handleDisconnect(generation: Int) {
+    private func handleDisconnect(generation: Int, error: String = "连接中断") {
         guard self.generation == generation, state != .disconnected else { return }
         cancelInitialRefresh()
         cancelRefreshJobs()
+        readinessTimeoutTask?.cancel()
+        readinessTimeoutTask = nil
         self.generation += 1
         state = .disconnected
+        lastConnectionError = error
         connectedEndpoint = nil
         session = nil
         handshake = nil
+        attemptedEndpoint = nil
         task?.cancel(with: .abnormalClosure, reason: nil)
         task = nil
         probeTimer?.invalidate()
@@ -346,6 +412,7 @@ final class RuntimeConnection: ObservableObject {
 
     private func scheduleReconnect() {
         guard server != nil, reconnectTask == nil else { return }
+        recoveryState = .retrying
         let delay = Self.reconnectDelays[min(reconnectAttempt, Self.reconnectDelays.count - 1)]
         reconnectAttempt += 1
         reconnectTask = Task { [weak self] in
@@ -441,20 +508,7 @@ final class RuntimeConnection: ObservableObject {
         else { return }
         switch obj["t"] as? String {
         case "authed":
-            // 认证完成:补写 deviceId(首次配对)。按 token 定位条目(token 每授权唯一,
-            // 名称可改);active 只在缺省时设置,不抢已有默认
-            if var server, let deviceId = obj["deviceId"] as? String, server.deviceId != deviceId {
-                if var config = ClientConfig.load(),
-                   let idx = config.servers.firstIndex(where: { $0.token == server.token }) {
-                    config.servers[idx].deviceId = deviceId
-                    if config.active == nil { config.active = config.servers[idx].id }
-                    config.save()
-                }
-                server.deviceId = deviceId
-                self.server = server
-            }
-            connectedEndpoint = server.map { $0.orderedEndpoints[endpointIndex % $0.orderedEndpoints.count] }
-            startInitialRefresh()
+            handleAuthenticated(obj)
         case "res":
             guard let id = obj["id"] as? Int else { return }
             if obj["ok"] as? Bool == true {
@@ -476,41 +530,92 @@ final class RuntimeConnection: ObservableObject {
         }
     }
 
+    func handleAuthenticated(_ obj: [String: Any]) {
+        // 认证完成:补写 deviceId(首次配对)。按 token 定位条目(token 每授权唯一,
+        // 名称可改);active 只在缺省时设置,不抢已有默认。readiness deadline
+        // 继续覆盖首份快照，只有 commitRefreshSnapshot 才取消。
+        if var server, let deviceId = obj["deviceId"] as? String, server.deviceId != deviceId {
+            if var config = ClientConfig.load(),
+               let idx = config.servers.firstIndex(where: { $0.token == server.token }) {
+                config.servers[idx].deviceId = deviceId
+                if config.active == nil { config.active = config.servers[idx].id }
+                config.save()
+            }
+            server.deviceId = deviceId
+            self.server = server
+        }
+        connectedEndpoint = attemptedEndpoint
+        startInitialRefresh()
+    }
+
     @discardableResult
     func applyIncrementalEvent(_ event: String, payload: Any?) -> Bool {
-        guard event == "session.title",
-              let payload = payload as? [String: Any],
-              let sessionId = payload["sessionId"] as? String,
-              let index = sessions.firstIndex(where: { $0.id == sessionId })
-        else { return false }
+        guard let payload = payload as? [String: Any] else { return false }
+        switch event {
+        case "session.title":
+            guard let sessionId = payload["sessionId"] as? String,
+                  let index = sessions.firstIndex(where: { $0.id == sessionId })
+            else { return false }
 
-        let title: String?
-        switch payload["title"] {
-        case let value as String:
-            title = value
-        case is NSNull:
-            title = nil
+            let title: String?
+            switch payload["title"] {
+            case let value as String:
+                title = value
+            case is NSNull:
+                title = nil
+            default:
+                return false
+            }
+
+            let current = sessions[index]
+            guard current.title != title else { return true }
+            var updated = sessions
+            updated[index] = Session(
+                id: current.id,
+                cwd: current.cwd,
+                command: current.command,
+                cols: current.cols,
+                rows: current.rows,
+                createdAt: current.createdAt,
+                alive: current.alive,
+                exitCode: current.exitCode,
+                title: title,
+                agent: current.agent
+            )
+            sessions = updated
+            return true
+
+        case "session.focusChanged":
+            guard let sessionId = payload["sessionId"] as? String else { return false }
+            var updated = focusOwners
+            if let deviceId = payload["deviceId"] as? String,
+               let deviceName = payload["deviceName"] as? String {
+                updated[sessionId] = SessionFocus(
+                    sessionId: sessionId,
+                    deviceId: deviceId,
+                    deviceName: deviceName
+                )
+            } else if payload["deviceId"] is NSNull,
+                      payload["deviceName"] is NSNull {
+                updated.removeValue(forKey: sessionId)
+            } else {
+                return false
+            }
+            if updated != focusOwners { focusOwners = updated }
+            return true
+
+        case "browser.controlChanged", "computer.controlChanged":
+            // 当前桌面端没有这两类控制权状态;不要为无消费者事件刷新终端四张表。
+            return true
+
         default:
             return false
         }
+    }
 
-        let current = sessions[index]
-        guard current.title != title else { return true }
-        var updated = sessions
-        updated[index] = Session(
-            id: current.id,
-            cwd: current.cwd,
-            command: current.command,
-            cols: current.cols,
-            rows: current.rows,
-            createdAt: current.createdAt,
-            alive: current.alive,
-            exitCode: current.exitCode,
-            title: title,
-            agent: current.agent
-        )
-        sessions = updated
-        return true
+    func commitFocusSnapshot(_ focus: [SessionFocus]) {
+        let updated = Dictionary(uniqueKeysWithValues: focus.map { ($0.sessionId, $0) })
+        if updated != focusOwners { focusOwners = updated }
     }
 
     func rpc(_ method: String, _ params: [String: Any] = [:]) async throws -> Any {
@@ -520,19 +625,26 @@ final class RuntimeConnection: ObservableObject {
         let payload: [String: Any] = ["t": "req", "id": id, "method": method, "params": params]
         let data = try JSONSerialization.data(withJSONObject: payload)
         let sealed = try session.sealText(String(decoding: data, as: UTF8.self))
-        return try await withCheckedThrowingContinuation { cont in
-            let timeoutTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled else { return }
-                self?.completePending(id, .failure(RpcError(message: "rpc timeout: \(method)")))
-            }
-            pending[id] = PendingRpc(continuation: cont, timeoutTask: timeoutTask)
-            Task {
-                do {
-                    try await task.send(.data(sealed))
-                } catch {
-                    completePending(id, .failure(error))
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { cont in
+                let timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(30))
+                    guard !Task.isCancelled else { return }
+                    self?.completePending(id, .failure(RpcError(message: "rpc timeout: \(method)")))
                 }
+                pending[id] = PendingRpc(continuation: cont, timeoutTask: timeoutTask)
+                Task {
+                    do {
+                        try await task.send(.data(sealed))
+                    } catch {
+                        completePending(id, .failure(error))
+                    }
+                }
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.completePending(id, .failure(CancellationError()))
             }
         }
     }
@@ -694,14 +806,24 @@ final class RuntimeConnection: ObservableObject {
         sessions: [Session],
         focus: [SessionFocus]
     ) {
-        self.workspaceGroups = workspaceGroups
-        self.workspaces = workspaces
-        self.sessions = sessions
-        focusOwners = Dictionary(uniqueKeysWithValues: focus.map { ($0.sessionId, $0) })
-        snapshotLoaded = true
-        snapshotRevision &+= 1
+        let nextFocusOwners = Dictionary(uniqueKeysWithValues: focus.map { ($0.sessionId, $0) })
+        let changed = !snapshotLoaded
+            || self.workspaceGroups != workspaceGroups
+            || self.workspaces != workspaces
+            || self.sessions != sessions
+            || focusOwners != nextFocusOwners
+        if self.workspaceGroups != workspaceGroups { self.workspaceGroups = workspaceGroups }
+        if self.workspaces != workspaces { self.workspaces = workspaces }
+        if self.sessions != sessions { self.sessions = sessions }
+        if focusOwners != nextFocusOwners { focusOwners = nextFocusOwners }
+        if !snapshotLoaded { snapshotLoaded = true }
+        if changed { snapshotRevision &+= 1 }
         if state == .connecting {
+            readinessTimeoutTask?.cancel()
+            readinessTimeoutTask = nil
             state = .connected
+            lastConnectionError = nil
+            recoveryState = .idle
             reconnectAttempt = 0
             endpointIndex = 0
         }

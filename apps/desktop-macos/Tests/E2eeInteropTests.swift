@@ -76,6 +76,25 @@ final class E2eeInteropTests: XCTestCase {
         XCTAssertEqual(Data(base64Encoded: offer.pub), expectedServerPub)
     }
 
+    func testPairingOfferRejectsInvalidConnectionMaterial() throws {
+        func encoded(_ json: String) -> String {
+            Data(json.utf8).base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+
+        XCTAssertThrowsError(try PairingOffer.decode(encoded(
+            #"{"v":1,"endpoints":[],"token":"01234567890123456789012345678901","pub":"AA=="}"#
+        )))
+        XCTAssertThrowsError(try PairingOffer.decode(encoded(
+            #"{"v":1,"endpoints":["not a host"],"token":"01234567890123456789012345678901","pub":"AA=="}"#
+        )))
+        XCTAssertThrowsError(try PairingOffer.decode(encoded(
+            #"{"v":1,"endpoints":["localhost:8790"],"token":"short","pub":"AA=="}"#
+        )))
+    }
+
     func testPairingAdmissionHintDoesNotExposeToken() throws {
         let admissionId = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         XCTAssertEqual(pairingAdmissionId("abc"), admissionId)

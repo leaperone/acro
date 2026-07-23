@@ -12,7 +12,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            GeneralSettingsPane(hub: hub, model: model)
+            GeneralSettingsPane(hub: hub, model: model, runtime: model.runtime)
                 .tabItem { Label("通用", systemImage: "gearshape") }
             RemoteSettingsPane(hub: hub)
                 .tabItem { Label("远程", systemImage: "antenna.radiowaves.left.and.right") }
@@ -30,11 +30,12 @@ struct SettingsView: View {
 private struct GeneralSettingsPane: View {
     @ObservedObject var hub: RuntimeHub
     @ObservedObject var model: WorkbenchModel
+    @ObservedObject var runtime: RuntimeConnection
     @AppStorage(WorkbenchModel.confirmCloseTabKey) private var confirmCloseTab = true
     @State private var showingRestartConfirm = false
 
     private var liveSessionCount: Int {
-        model.runtime.sessions.count { $0.alive }
+        runtime.sessions.count { $0.alive }
     }
 
     var body: some View {
@@ -50,7 +51,7 @@ private struct GeneralSettingsPane: View {
                     }
                 }
                 LabeledContent("当前查看", value: hub.server(for: model.selectedServerId)?.name ?? "-")
-                LabeledContent("工作区 / 终端", value: "\(model.runtime.workspaces.count) / \(model.runtime.sessions.count { $0.alive })")
+                LabeledContent("工作区 / 终端", value: "\(runtime.workspaces.count) / \(runtime.sessions.count { $0.alive })")
             } header: {
                 Text("Runtime 连接")
             } footer: {
@@ -75,7 +76,7 @@ private struct GeneralSettingsPane: View {
                 } label: {
                     Label("重启终端服务…", systemImage: "arrow.clockwise")
                 }
-                .disabled(!model.runtime.connected)
+                .disabled(!runtime.connected)
             } header: {
                 Text("终端服务")
             } footer: {
@@ -480,6 +481,11 @@ private struct EndpointsSection: View {
     private func add(_ field: Binding<String>, expected: EndpointKind, hint: String) {
         let endpoint = field.wrappedValue.trimmingCharacters(in: .whitespaces)
         guard !endpoint.isEmpty else { return }
+        guard (try? validatePairingEndpoint(endpoint)) != nil else {
+            addError = "服务器入口必须是 host:port"
+            addErrorKind = expected
+            return
+        }
         guard EndpointKind.classify(endpoint) == expected else {
             addError = hint
             addErrorKind = expected
