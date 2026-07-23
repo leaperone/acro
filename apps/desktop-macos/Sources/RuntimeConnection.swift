@@ -506,7 +506,8 @@ final class RuntimeConnection: ObservableObject {
             createdAt: current.createdAt,
             alive: current.alive,
             exitCode: current.exitCode,
-            title: title
+            title: title,
+            agent: current.agent
         )
         sessions = updated
         return true

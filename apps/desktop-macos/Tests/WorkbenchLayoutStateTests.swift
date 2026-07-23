@@ -409,7 +409,8 @@ final class WorkbenchLayoutStateTests: XCTestCase {
             createdAt: "2026-07-18T00:00:00Z",
             alive: true,
             exitCode: nil,
-            title: nil
+            title: nil,
+            agent: nil
         )
         model.selectedServerId = "server-a"
         model.pendingSessionTermination = session

@@ -3,6 +3,17 @@
 
 import Foundation
 
+struct AgentSession: Codable, Equatable, Hashable, Sendable {
+    let provider: String
+    let state: String
+    let providerSessionId: String?
+    let codexHome: String?
+    let accountFingerprint: String?
+    let managed: Bool
+    let interrupted: Bool
+    let updatedAt: String
+}
+
 struct Device: Codable, Identifiable, Equatable, Hashable, Sendable {
     let id: String
     let name: String
@@ -36,6 +47,7 @@ struct Session: Codable, Identifiable, Equatable, Hashable, Sendable {
     let alive: Bool
     let exitCode: Int?
     let title: String?
+    let agent: AgentSession?
 }
 
 struct SessionFocus: Codable, Equatable, Hashable, Sendable {

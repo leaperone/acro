@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   Image,
   Linking,
@@ -14,7 +15,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import * as SecureStore from "expo-secure-store";
 import { WebView } from "react-native-webview";
-import type { Session } from "@acro/protocol";
+import type { Session, Workspace } from "@acro/protocol";
 import { encodeInFrame, FRAME_BROWSER, FRAME_OUT, FRAME_SIM } from "@acro/protocol";
 import {
   MobileClient,
@@ -215,6 +216,27 @@ interface SimInfo {
   runtime: string;
 }
 
+type HomeItem =
+  | { kind: "workspace"; workspace: Workspace }
+  | { kind: "session"; session: Session; workspace: Workspace | null }
+  | { kind: "section"; id: string; title: string };
+
+function sessionStatusLabel(session: Session): string {
+  const agent = session.agent;
+  if (!agent) return session.alive ? "attach" : `exit ${session.exitCode ?? "?"}`;
+  if (agent.interrupted) {
+    return agent.managed && agent.providerSessionId ? "可恢复" : "已中断";
+  }
+  const status = {
+    starting: "启动中",
+    working: "工作中",
+    waiting: "等待输入",
+    done: session.alive ? "等待指令" : agent.managed && agent.providerSessionId ? "可恢复" : "已结束",
+    error: session.alive ? "异常" : agent.managed && agent.providerSessionId ? "可恢复" : "异常",
+  }[agent.state];
+  return session.alive && !agent.managed ? `${status} · 不可恢复` : status;
+}
+
 function HomeScreen({
   client,
   onOpen,
@@ -223,10 +245,38 @@ function HomeScreen({
   onOpen: (route: Route) => void;
 }) {
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [sims, setSims] = useState<SimInfo[]>([]);
+  const [agentProviders, setAgentProviders] = useState<Array<"codex" | "claude">>([]);
+  const [agentCapability, setAgentCapability] = useState<"loading" | "ready" | "unsupported" | "unavailable">("loading");
+  const [error, setError] = useState("");
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [resumingSessionId, setResumingSessionId] = useState<string | null>(null);
 
-  const refreshSessions = useCallback(() => {
-    void client.rpc("session.list", {}).then(setSessions).catch(() => {});
+  const refreshSessions = useCallback(async () => {
+    try {
+      const [nextSessions, nextWorkspaces] = await Promise.all([
+        client.rpc("session.list", {}),
+        client.rpc("workspace.list", {}),
+      ]);
+      setSessions(nextSessions);
+      setWorkspaces(nextWorkspaces);
+      setError("");
+    } catch (reason) {
+      setError(`刷新失败：${reason instanceof Error ? reason.message : String(reason)}`);
+    }
+  }, [client]);
+
+  const refreshAgentProviders = useCallback(async () => {
+    try {
+      const { providers } = await client.rpc("agent.capabilities", {});
+      setAgentProviders(providers);
+      setAgentCapability(providers.length > 0 ? "ready" : "unavailable");
+    } catch (reason) {
+      setAgentProviders([]);
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setAgentCapability(message.includes("unknown_method") ? "unsupported" : "unavailable");
+    }
   }, [client]);
 
   const refreshSimulators = useCallback(() => {
@@ -234,52 +284,224 @@ function HomeScreen({
   }, [client]);
 
   useEffect(() => {
-    refreshSessions();
+    void refreshSessions();
     refreshSimulators();
-    return client.subscribeEvent((event) => {
-      if (event === "session.created" || event === "session.exit" || event === "session.removed") {
-        refreshSessions();
+    void refreshAgentProviders();
+    const unsubscribeEvent = client.subscribeEvent((event) => {
+      if (
+        event === "session.created" ||
+        event === "session.exit" ||
+        event === "session.removed" ||
+        event === "session.agentChanged" ||
+        event === "session.title"
+      ) {
+        void refreshSessions();
       }
     });
-  }, [client, refreshSessions, refreshSimulators]);
+    const appState = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void refreshSessions();
+        void refreshAgentProviders();
+      }
+    });
+    return () => {
+      unsubscribeEvent();
+      appState.remove();
+    };
+  }, [client, refreshSessions, refreshSimulators, refreshAgentProviders]);
 
-  const createSession = (command?: string) => {
-    void client
-      .rpc("session.create", {
-        ...(command ? { command } : {}),
+  const createSession = (workspace: Workspace) => {
+    setError("");
+    void (async () => {
+      const inheritCwdFrom = workspace.sessionIds.find((id) =>
+        sessions.some((session) => session.id === id && session.alive),
+      );
+      const session = await client.rpc("session.create", {
+        workspaceId: workspace.id,
+        ...(inheritCwdFrom ? { inheritCwdFrom } : {}),
         cols: 80,
         rows: 24,
-      })
-      .then((s) => onOpen({ name: "terminal", session: s }))
-      .catch(() => {});
+      });
+      onOpen({ name: "terminal", session });
+    })().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   };
+
+  const createAgent = (
+    source: Session,
+    workspace: Workspace | null,
+    agent: "codex" | "claude",
+  ) => {
+    setError("");
+    void (async () => {
+      if (!source.alive) throw new Error("来源终端已经结束");
+      if (!agentProviders.includes(agent)) throw new Error("请先升级 Mac 上的 Acro Runtime");
+      const session = await client.rpc("session.create", {
+        ...(workspace ? { workspaceId: workspace.id } : {}),
+        inheritCwdFrom: source.id,
+        agent,
+        cols: 80,
+        rows: 24,
+      });
+      onOpen({ name: "terminal", session });
+    })().catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+  };
+
+  const createFirstWorkspace = () => {
+    setCreatingWorkspace(true);
+    setError("");
+    void (async () => {
+      const workspace = await client.rpc("workspace.create", {});
+      setWorkspaces((current) =>
+        current.some((candidate) => candidate.id === workspace.id)
+          ? current
+          : [...current, workspace],
+      );
+      const session = await client.rpc("session.create", {
+        workspaceId: workspace.id,
+        cols: 80,
+        rows: 24,
+      });
+      onOpen({ name: "terminal", session });
+    })()
+      .catch((reason) => {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        void refreshSessions();
+      })
+      .finally(() => setCreatingWorkspace(false));
+  };
+
+  const openSession = (session: Session) => {
+    if (session.alive) {
+      onOpen({ name: "terminal", session });
+      return;
+    }
+    if (!session.agent?.managed || !session.agent.providerSessionId) return;
+    setError("");
+    setResumingSessionId(session.id);
+    void client
+      .rpc("session.resumeAgent", { sessionId: session.id })
+      .then((resumed) => onOpen({ name: "terminal", session: resumed }))
+      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setResumingSessionId(null));
+  };
+
+  const assignedSessionIds = new Set(workspaces.flatMap((workspace) => workspace.sessionIds));
+  const items: HomeItem[] = workspaces.flatMap((workspace) => [
+    { kind: "workspace" as const, workspace },
+    ...workspace.sessionIds.flatMap((sessionId) => {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      return session ? [{ kind: "session" as const, session, workspace }] : [];
+    }),
+  ]);
+  const orphanSessions = sessions.filter((session) => !assignedSessionIds.has(session.id));
+  if (orphanSessions.length > 0) {
+    items.push(
+      { kind: "section", id: "other-sessions", title: "其他会话" },
+      ...orphanSessions.map((session) => ({ kind: "session" as const, session, workspace: null })),
+    );
+  }
 
   return (
     <View style={styles.flex}>
       <Text style={styles.header}>Acro</Text>
+      {error ? (
+        <View style={styles.homeNotice}>
+          <Text style={styles.error}>{error}</Text>
+          <Pressable
+            onPress={() => {
+              void refreshSessions();
+              void refreshAgentProviders();
+            }}
+          >
+            <Text style={styles.buttonGhostText}>重试</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      {agentCapability === "unsupported" ? (
+        <Text style={styles.capabilityNotice}>请升级 Mac 上的 Acro Runtime，才能管理 Agent。</Text>
+      ) : agentCapability === "unavailable" ? (
+        <Text style={styles.capabilityNotice}>Mac 当前无法管理 Agent，请检查终端服务和 CLI。</Text>
+      ) : null}
       <FlatList
-        data={sessions}
-        keyExtractor={(s) => s.id}
+        data={items}
+        keyExtractor={(item) =>
+          item.kind === "workspace"
+            ? `workspace-${item.workspace.id}`
+            : item.kind === "session"
+              ? `session-${item.session.id}`
+              : item.id
+        }
         ListHeaderComponent={
           <View>
-            <Pressable style={styles.row} onPress={() => createSession()}>
-              <Text style={styles.rowText}>新建终端</Text>
-              <Text style={styles.dim}>打开</Text>
-            </Pressable>
-            <Text style={styles.section}>会话</Text>
+            {workspaces.length === 0 ? (
+              <Pressable
+                style={styles.row}
+                disabled={creatingWorkspace}
+                onPress={createFirstWorkspace}
+              >
+                <Text style={styles.rowText}>
+                  {creatingWorkspace ? "正在创建…" : "创建 Workspace"}
+                </Text>
+                <Text style={styles.dim}>开始</Text>
+              </Pressable>
+            ) : null}
           </View>
         }
-        renderItem={({ item: s }) => (
-          <Pressable
-            style={styles.row}
-            onPress={() => s.alive && onOpen({ name: "terminal", session: s })}
-          >
-            <Text style={[styles.rowText, !s.alive && styles.dead]} numberOfLines={1}>
-              {s.command}
-            </Text>
-            <Text style={styles.dim}>{s.alive ? "attach" : `exit ${s.exitCode ?? "?"}`}</Text>
-          </Pressable>
-        )}
+        renderItem={({ item }) => {
+          if (item.kind === "section") {
+            return <Text style={styles.section}>{item.title}</Text>;
+          }
+          if (item.kind === "workspace") {
+            const workspace = item.workspace;
+            return (
+              <View>
+                <Text style={styles.section}>{workspace.name}</Text>
+                <Pressable style={styles.row} onPress={() => createSession(workspace)}>
+                  <Text style={styles.rowText}>新建终端</Text>
+                  <Text style={styles.dim}>打开</Text>
+                </Pressable>
+              </View>
+            );
+          }
+          const s = item.session;
+          const canResume = !s.alive && Boolean(s.agent?.managed && s.agent.providerSessionId);
+          const disabled = !s.alive && !canResume;
+          return (
+            <View>
+              <Pressable
+                style={[styles.row, disabled && styles.disabledRow]}
+                disabled={disabled || resumingSessionId === s.id}
+                onPress={() => openSession(s)}
+              >
+                <Text style={[styles.rowText, !s.alive && styles.dead]} numberOfLines={1}>
+                  {s.title?.trim() ||
+                    (s.agent ? (s.agent.provider === "codex" ? "Codex" : "Claude") : s.command)}
+                </Text>
+                <Text style={styles.dim}>
+                  {resumingSessionId === s.id
+                    ? "恢复中…"
+                    : sessionStatusLabel(s)}
+                </Text>
+              </Pressable>
+              {s.alive && item.workspace && agentProviders.length > 0 ? (
+                <View style={styles.agentActions}>
+                  <Text style={styles.dim}>从此目录启动</Text>
+                  {agentProviders.map((provider) => (
+                    <Pressable
+                      key={provider}
+                      style={styles.agentAction}
+                      onPress={() => createAgent(s, item.workspace, provider)}
+                    >
+                      <Text style={styles.buttonGhostText}>
+                        {provider === "codex" ? "Codex" : "Claude"}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+            </View>
+          );
+        }}
         ListFooterComponent={
           <View>
             <Text style={styles.section}>模拟器</Text>
@@ -336,6 +558,7 @@ function TerminalScreen({
   const webRef = useRef<WebView>(null);
   const channelRef = useRef<number | null>(null);
   const terminalDocumentActiveRef = useRef(true);
+  const terminalSizeRef = useRef({ cols: 80, rows: 24 });
   // 合帧缓冲提到组件级:attach(含 WebView 重载后的重挂)要能丢弃清屏前残留的旧帧,
   // 否则它们会在下个 rAF 被 flush 到新 snapshot 之后,污染画面。
   const pendingFramesRef = useRef<Uint8Array[]>([]);
@@ -350,6 +573,7 @@ function TerminalScreen({
   }));
   // 终端占用锁:被其他设备占用时显示遮罩,显式接管才恢复输入
   const [occupant, setOccupant] = useState<string | null>(null);
+  const [attachError, setAttachError] = useState("");
 
   const inject = useCallback((js: string) => {
     if (terminalDocumentActiveRef.current) {
@@ -359,6 +583,7 @@ function TerminalScreen({
 
   const attach = useCallback(
     async (cols: number, rows: number) => {
+      setAttachError("");
       const res = await client.rpc("session.attach", { sessionId: session.id });
       // 清屏前先丢弃残留的旧帧并取消挂起的 flush,避免旧字节落到新 snapshot 之后
       pendingFramesRef.current = [];
@@ -460,6 +685,21 @@ function TerminalScreen({
           {session.command}
         </Text>
       </View>
+      {attachError ? (
+        <View style={styles.terminalError}>
+          <Text style={styles.error}>{attachError}</Text>
+          <Pressable
+            onPress={() => {
+              const { cols, rows } = terminalSizeRef.current;
+              void attach(cols, rows).catch((reason) =>
+                setAttachError(reason instanceof Error ? reason.message : String(reason)),
+              );
+            }}
+          >
+            <Text style={styles.buttonGhostText}>重试连接</Text>
+          </Pressable>
+        </View>
+      ) : null}
       <WebView
         ref={webRef}
         source={terminalSource}
@@ -483,7 +723,10 @@ function TerminalScreen({
           );
           if (!msg) return;
           if (msg.type === "ready") {
-            void attach(msg.cols, msg.rows).catch(() => {});
+            terminalSizeRef.current = { cols: msg.cols, rows: msg.rows };
+            void attach(msg.cols, msg.rows).catch((reason) =>
+              setAttachError(reason instanceof Error ? reason.message : String(reason)),
+            );
           } else if (msg.type === "input") {
             const channel = channelRef.current;
             if (channel !== null) client.sendBinary(encodeInFrame(channel, b64ToBytes(msg.dataB64)));
@@ -664,8 +907,21 @@ const styles = StyleSheet.create({
   },
   rowText: { color: "#cdd6f4", fontSize: 15, flexShrink: 1 },
   dead: { color: "#585b70" },
+  disabledRow: { opacity: 0.55 },
   dim: { color: "#7f849c", fontSize: 13 },
   sub: { backgroundColor: "#181825" },
+  homeNotice: { paddingHorizontal: 16, paddingVertical: 8, gap: 6 },
+  capabilityNotice: { color: "#f9e2af", paddingHorizontal: 16, paddingVertical: 6 },
+  agentActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    backgroundColor: "#181825",
+  },
+  agentAction: { paddingVertical: 4, paddingHorizontal: 6 },
   pairBox: { flex: 1, justifyContent: "center", padding: 24, gap: 12 },
   input: {
     backgroundColor: "#1e1e2e",
@@ -696,6 +952,15 @@ const styles = StyleSheet.create({
   },
   barAction: { color: "#89b4fa", fontSize: 16 },
   barTitle: { color: "#cdd6f4", fontSize: 15, fontWeight: "600", flexShrink: 1 },
+  terminalError: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: "#181825",
+  },
   accessory: {
     flexDirection: "row",
     backgroundColor: "#181825",

@@ -46,7 +46,7 @@ Mac mini Acro Runtime
 
 - 浏览 Runtime 文件系统并保存用户显式注册的项目目录、Workspace Group 与 Workspace。项目选择默认从 Runtime 的用户主目录开始，也可切换到根目录或直接输入路径；不扫描固定的 `~/project` 目录。
 - 管理持久终端。终端由独立 terminal daemon 进程持有：node-pty 驱动 PTY，服务端 headless 终端维护屏幕状态，checkpoint 落盘。Runtime 升级或崩溃不影响会话。daemon 实现大量取用 orca（MIT）的代码。
-- 运行 Codex、Claude Code、开发服务器和普通命令。
+- 运行 Codex、Claude Code、开发服务器和普通命令。Acro 创建的 Agent 通过 provider hook 上报状态与 provider session id；terminal daemon 中断后，Runtime 使用 provider 原生 resume 命令恢复同一个 Acro Session。Acro 不解析终端输出，也不编排 Agent 内部工具或 Git 工作流。
 - 使用 Playwright 管理运行在 Mac mini 上的 Chromium。
 - 调用 Swift helper 完成窗口发现、截图、输入和应用唤醒。
 - 调用 `xcrun simctl` 管理 Apple 模拟器。
@@ -104,7 +104,7 @@ Machine
 - `Workspace Group`：用户创建的界面组织层，只负责聚合 Workspace；它不对应仓库、分支或 Worktree，解散分组不会删除 Workspace。
 - `Workspace`：用户创建的工作上下文，引用项目并持有会话和布局。
 - `Project`：项目目录引用，只用于选择终端工作目录；Acro 不保存分支或 Worktree 状态。
-- `Session`：可持久运行和重连的任务会话。
+- `Session`：可持久运行和重连的任务会话；Acro 管理的 Codex / Claude Session 可附带 provider 状态、恢复身份和中断标记。
 - `Surface`：终端、浏览器、模拟器或 Computer Use 画面。
 
 ## 通信与安全
@@ -141,6 +141,13 @@ Machine
 2. Runtime 保持终端和后台进程运行。
 3. 客户端重连后获取当前快照，再补齐后续事件。
 4. 客户端布局可以不同，但引用相同的服务端 Session。
+
+### Agent 冷恢复
+
+1. Provider hook 把 Codex / Claude 的 session id 和状态写入终端 Session checkpoint。
+2. Runtime 重启但 terminal daemon 存活时，客户端继续 attach 原 PTY，不启动新 Agent。
+3. terminal daemon 或主机重启时，checkpoint 中原本存活的受管 Agent 标记为中断。
+4. Runtime 使用 `codex resume <id>` 或 `claude --resume <id>`，复用原 Acro Session ID 建立新 PTY。
 
 ## 首个可用闭环
 

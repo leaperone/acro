@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
-import type { Session, Workspace } from "@acro/protocol";
+import type { AgentSession, Session, Workspace } from "@acro/protocol";
 import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
@@ -30,6 +30,7 @@ import { Gateway, removeSurfaceChannels, type Conn, type Handlers } from "./ws.t
 import { ensureStateDirs, paths } from "./paths.ts";
 import { acquireProcessLock } from "./process-lock.ts";
 import { ExclusiveRunner } from "./exclusive.ts";
+import { AgentManager, type AgentProvider } from "./agent.ts";
 
 interface SnapshotResult {
   handle: number;
@@ -42,6 +43,7 @@ interface SnapshotResult {
 const UNTRACKED_SESSION_CLEANUP_GRACE_MS = Number(
   process.env.ACRO_TEST_SESSION_CLEANUP_GRACE_MS ?? 120_000,
 );
+const AGENT_RECOVERY_BUDGET_MS = 12_000;
 
 function daemonMayHaveCreatedSession(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -64,6 +66,14 @@ async function main(): Promise<void> {
   let localOffer = ensureLocalOffer(registry, identity, config.port);
   const needsBootstrap = !registry.list().some((device) => device.lastSeenAt !== null);
   const daemon = await DaemonClient.connect();
+  const agents = new AgentManager(async (update) => {
+    await daemon.request("session.updateAgent", update);
+  });
+  try {
+    await agents.start();
+  } catch (error) {
+    console.warn(`[runtime] Agent hooks unavailable: ${(error as Error).message}`);
+  }
   const browsers = new BrowserManager();
   const simulators = new SimulatorManager();
   const helper = new HelperClient();
@@ -74,10 +84,14 @@ async function main(): Promise<void> {
     task: () => T | Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> => exclusive.run(`workspace:${workspaceId}`, task, signal);
-  for (const workspace of workspaces.listPendingRemovals()) {
-    await removeDaemonSessions(daemon, workspace.sessionIds);
-    workspaces.remove(workspace.id);
-  }
+  const runSessionExclusive = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
+    exclusive.run(`session:${sessionId}`, task);
+  const replayPendingWorkspaceRemovals = async (): Promise<void> => {
+    for (const workspace of workspaces.listPendingRemovals()) {
+      await removeDaemonSessions(daemon, workspace.sessionIds);
+      workspaces.remove(workspace.id);
+    }
+  };
   const creatingSessionIds = new Set<string>();
   const sessionCleanupTimers = new Map<string, NodeJS.Timeout>();
   const sessionIsTracked = (sessionId: string): boolean =>
@@ -111,6 +125,140 @@ async function main(): Promise<void> {
       scheduleUntrackedSessionCleanup(sessionId);
     }
     return sessions;
+  };
+  const recoveryDaemonOptions = (deadline?: number) =>
+    deadline === undefined ? undefined : { deadline, stallOnTimeout: false };
+  const requireAgentDaemon = async (deadline?: number): Promise<void> => {
+    const info = await daemon.request<{ features?: { agentSessions?: boolean } }>(
+      "daemon.info",
+      undefined,
+      undefined,
+      recoveryDaemonOptions(deadline),
+    );
+    if (info.features?.agentSessions !== true) {
+      throw new Error(
+        "terminal daemon is outdated; close existing terminals, then restart the server Mac",
+      );
+    }
+  };
+  const resumeAgentSession = (
+    sessionId: string,
+    options: { deadline?: number; tracking?: boolean } = {},
+  ): Promise<Session> =>
+    runSessionExclusive(sessionId, async () => {
+      await requireAgentDaemon(options.deadline);
+      const sessions = await daemon.request<Session[]>(
+        "session.list",
+        undefined,
+        undefined,
+        recoveryDaemonOptions(options.deadline),
+      );
+      const previous = sessions.find((session) => session.id === sessionId);
+      if (!previous) throw new Error("session not found");
+      if (previous.alive) return previous;
+      const agent = previous.agent;
+      if (!agent?.managed || !agent.providerSessionId) throw new Error("agent is not resumable");
+      const launch = await agents.launch(
+        agent.provider,
+        sessionId,
+        previous.cwd,
+        agent.providerSessionId,
+        agent.codexHome ?? undefined,
+        agent.accountFingerprint ?? undefined,
+        options,
+      );
+      const resumedAgent: AgentSession | null = launch.tracked
+        ? {
+            ...agent,
+            state: "starting",
+            accountFingerprint: launch.accountFingerprint ?? null,
+            managed: launch.managed,
+            interrupted: false,
+            updatedAt: new Date().toISOString(),
+          }
+        : null;
+      const { session } = await daemon.request<{ session: Session; handle: number }>(
+        "session.reviveOwned",
+        {
+          id: sessionId,
+          cwd: previous.cwd,
+          cols: previous.cols,
+          rows: previous.rows,
+          command: launch.command,
+          executable: launch.executable,
+          args: launch.args,
+          env: launch.env,
+          agent: resumedAgent,
+        },
+        undefined,
+        recoveryDaemonOptions(options.deadline),
+      );
+      return session;
+    });
+  const recoverInterruptedAgents = async (): Promise<void> => {
+    const tracked = new Set(
+      workspaces
+        .list()
+        .filter((workspace) => !workspaces.isRemovalPending(workspace.id))
+        .flatMap((workspace) => workspace.sessionIds),
+    );
+    const sessions = (await daemon.request<Session[]>("session.list")).filter(
+      (session) =>
+        tracked.has(session.id) &&
+        !session.alive &&
+        session.agent?.managed &&
+        session.agent.interrupted &&
+        session.agent.providerSessionId,
+    );
+    const groups = new Map<string, Session[]>();
+    for (const session of sessions) {
+      const agent = session.agent!;
+      const key =
+        agent.provider === "codex"
+          ? `codex:${agent.codexHome ?? ""}:${agent.accountFingerprint ?? ""}`
+          : `claude:${agent.accountFingerprint ?? ""}`;
+      const group = groups.get(key) ?? [];
+      group.push(session);
+      groups.set(key, group);
+    }
+    const queue = [...groups.values()];
+    const deadline = Date.now() + AGENT_RECOVERY_BUDGET_MS;
+    let skipped = 0;
+    const recoverGroup = async (): Promise<void> => {
+      for (;;) {
+        const group = queue.shift();
+        if (!group) return;
+        const provider = group[0]!.agent!.provider;
+        if (Date.now() >= deadline) {
+          skipped += group.length;
+          continue;
+        }
+        let tracking = true;
+        for (let index = 0; index < group.length; index += 1) {
+          const session = group[index]!;
+          if (Date.now() >= deadline) {
+            skipped += group.length - index;
+            break;
+          }
+          try {
+            const resumed = await resumeAgentSession(session.id, { deadline, tracking });
+            tracking = resumed.agent !== null;
+          } catch (error) {
+            console.warn(
+              `[runtime] failed to resume ${provider} session ${session.id}: ${(error as Error).message}`,
+            );
+            skipped += group.length - index - 1;
+            break;
+          }
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(4, queue.length) }, () => recoverGroup()),
+    );
+    if (skipped > 0) {
+      console.warn(`[runtime] skipped automatic recovery for ${skipped} Agent sessions`);
+    }
   };
   const ensureLiveWorkspaceSession = async (): Promise<void> => {
     const hasTrackedLiveSession = (
@@ -165,7 +313,13 @@ async function main(): Promise<void> {
       if (restored) return;
     }
   };
-  await ensureLiveWorkspaceSession();
+  const restoreDaemonState = async (): Promise<void> => {
+    await replayPendingWorkspaceRemovals();
+    await recoverInterruptedAgents();
+    await ensureLiveWorkspaceSession();
+  };
+  let daemonReady = restoreDaemonState();
+  await daemonReady;
   // 终端占用:sessionId -> 占用设备。内存态即可,runtime 重启后由客户端重新认领
   const focusOwners = new Map<string, { deviceId: string; deviceName: string }>();
   const pendingFocusClaims = new Map<string, symbol>();
@@ -175,7 +329,7 @@ async function main(): Promise<void> {
   const runBrowserControl = <T>(browserId: string, task: () => T | Promise<T>): Promise<T> =>
     exclusive.run(`browser:${browserId}`, task);
   const runSessionControl = <T>(sessionId: string, task: () => T | Promise<T>): Promise<T> =>
-    exclusive.run(`session:${sessionId}`, task);
+    runSessionExclusive(sessionId, task);
   const runWorkspaceMutation = <T>(
     conn: Conn,
     workspaceId: string,
@@ -290,6 +444,14 @@ async function main(): Promise<void> {
     });
 
   const handlers: Handlers = {
+    "agent.capabilities": async () => {
+      try {
+        await requireAgentDaemon();
+        return { providers: await agents.capabilities() };
+      } catch {
+        return { providers: [] };
+      }
+    },
     "device.list": () => registry.list(),
     "device.share": (_conn, { name, extraEndpoints }) =>
       createShareOffer(registry, identity, config.port, name, extraEndpoints),
@@ -399,6 +561,7 @@ async function main(): Promise<void> {
         return { removed: true };
       }),
     "session.create": async (conn, params) => {
+      await daemonReady;
       const create = async (): Promise<Session> => {
         const workspace = params.workspaceId ? workspaces.get(params.workspaceId) : null;
         if (params.workspaceId && !workspace) throw new Error("workspace not found");
@@ -419,7 +582,7 @@ async function main(): Promise<void> {
           }
           if (!cwd) throw new Error("source terminal working directory is unavailable");
         }
-        const { workspaceId, inheritCwdFrom, ...daemonParams } = params;
+        const { workspaceId, inheritCwdFrom, agent: provider, ...daemonParams } = params;
         const sessionId = crypto.randomUUID();
         let associated = false;
         creatingSessionIds.add(sessionId);
@@ -428,10 +591,36 @@ async function main(): Promise<void> {
             workspaces.addSession(workspaceId, sessionId);
             associated = true;
           }
+          const resolvedCwd = cwd ?? os.homedir();
+          const launch = provider
+            ? await agents.launch(provider as AgentProvider, sessionId, resolvedCwd)
+            : null;
+          if (launch) await requireAgentDaemon();
+          const agent: AgentSession | null = provider && launch?.tracked
+            ? {
+                provider,
+                state: "starting",
+                providerSessionId: null,
+                codexHome: launch?.codexHome ?? null,
+                accountFingerprint: launch.accountFingerprint ?? null,
+                managed: launch.managed,
+                interrupted: false,
+                updatedAt: new Date().toISOString(),
+              }
+            : null;
           const daemonCreateParams = {
             ...daemonParams,
             id: sessionId,
-            cwd: cwd ?? os.homedir(),
+            cwd: resolvedCwd,
+            ...(launch
+              ? {
+                  command: launch.command,
+                  executable: launch.executable,
+                  args: launch.args,
+                  env: launch.env,
+                  agent,
+                }
+              : {}),
           };
           const { session } = await daemon.request<{ session: Session; handle: number }>(
             "session.createOwned",
@@ -456,7 +645,10 @@ async function main(): Promise<void> {
         ? runWorkspaceMutation(conn, params.workspaceId, create)
         : create();
     },
-    "session.list": () => daemon.request<Session[]>("session.list"),
+    "session.list": async () => {
+      await daemonReady;
+      return daemon.request<Session[]>("session.list");
+    },
     "session.claimFocus": (conn, { sessionId, force }) =>
       runSessionControl(sessionId, async () => {
         const device = requireActiveDevice(conn);
@@ -503,8 +695,9 @@ async function main(): Promise<void> {
       }),
     "session.focusList": () =>
       [...focusOwners].map(([sessionId, owner]) => ({ sessionId, ...owner })),
-    "session.attach": (conn, { sessionId }) =>
-      runSessionControl(sessionId, async () => {
+    "session.attach": async (conn, { sessionId }) => {
+      await daemonReady;
+      return runSessionControl(sessionId, async () => {
         const snap = await daemon.request<SnapshotResult>(
           "session.snapshot",
           { sessionId },
@@ -520,7 +713,8 @@ async function main(): Promise<void> {
           cols: snap.cols,
           rows: snap.rows,
         };
-      }),
+      });
+    },
     "session.detach": async (conn, { sessionId }) => {
       await reconcileSessionConnection(
         conn,
@@ -563,6 +757,10 @@ async function main(): Promise<void> {
       cancelScheduledSessionCleanup(sessionId);
       workspaces.removeSessions(new Set([sessionId]));
       return { removed };
+    },
+    "session.resumeAgent": async (_conn, { sessionId }) => {
+      await daemonReady;
+      return resumeAgentSession(sessionId);
     },
     "browser.open": async (conn, params) => {
       requireActiveDevice(conn);
@@ -749,8 +947,9 @@ async function main(): Promise<void> {
   };
   daemon.on("frame", (frame) => gateway.forwardFrame(frame));
   daemon.on("up", () => {
-    void ensureLiveWorkspaceSession().catch((error) => {
-      console.warn(`[runtime] failed to restore terminal session: ${error.message}`);
+    daemonReady = restoreDaemonState();
+    void daemonReady.catch((error) => {
+      console.warn(`[runtime] failed to restore terminal sessions: ${error.message}`);
     });
   });
   daemon.on("lateResponsesDrained", (methods: string[]) => {

@@ -82,6 +82,47 @@ test("daemon requests time out, stall new work, and recover after late responses
   assert.deepEqual(await recovered, { ok: true });
 });
 
+test("daemon requests honor an earlier caller deadline", async () => {
+  const client = new DaemonClient(1000, 1);
+  let writes = 0;
+  (
+    client as unknown as {
+      socket: net.Socket;
+    }
+  ).socket = {
+    write: (_data: Buffer, callback?: (error?: Error | null) => void) => {
+      writes += 1;
+      callback?.();
+      return true;
+    },
+  } as unknown as net.Socket;
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    client.request("expired", undefined, undefined, {
+      deadline: startedAt - 1,
+      stallOnTimeout: false,
+    }),
+    /daemon timeout: expired/,
+  );
+  assert.equal(writes, 0);
+  await assert.rejects(
+    client.request("budgeted", undefined, undefined, {
+      deadline: startedAt + 20,
+      stallOnTimeout: false,
+    }),
+    /daemon timeout: budgeted/,
+  );
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(writes, 1);
+
+  const recovered = client.request("recovered");
+  (client as unknown as { onData(chunk: Buffer): void }).onData(
+    packJson({ t: "res", id: 3, ok: true, result: { ok: true } }),
+  );
+  assert.deepEqual(await recovered, { ok: true });
+});
+
 test("daemon write failures close the broken socket and release pending work", async () => {
   const client = new DaemonClient(1000, 1);
   let destroyed = false;

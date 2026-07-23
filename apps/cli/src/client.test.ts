@@ -14,6 +14,7 @@ function session(id: string): Session {
     alive: true,
     exitCode: null,
     title: null,
+    agent: null,
   };
 }
 
