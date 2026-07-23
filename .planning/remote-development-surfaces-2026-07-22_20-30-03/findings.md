@@ -4,6 +4,104 @@
 - 创建时间：2026-07-22_20-30-03
 - 调研方式：仓库源码、现有测试、蓝图、只读参考源码、本机已安装工具与 npm 元数据
 
+## 2026-07-23 Acro 与 Orca 差异复核
+
+复核基线：
+
+- Acro：`a6d6fd46f6ac7bb6b1ccc8a943ce43e6a79c074c`。
+- Orca：用户要求更新后，`.tmp/orca` 的 `main/origin/main` 均为 `88b7e69ba115de060a9cc5a354ae3d3f5538166f`。
+- 只按用户可独立进入、查看或操作的功能域统计，不按源码目录或文件数量统计。
+- 只有 Runtime、协议和客户端入口形成可达闭环时才算完成；只有后端代码记为底座。
+
+28 个用户可感知模块的结论：
+
+| 分类 | 数量 | 结论 |
+|---|---:|---|
+| 已覆盖或由不同架构覆盖 | 10 | 远端 Runtime、多主机配对、持久终端、分屏布局、移动终端、只读文件/Git/端口、命令面板、设置更新 |
+| 当前产品边界内应补齐 | 9 | CLI、浏览器表面、浏览器语义控制、iOS Simulator、Computer Use、移动 Workspace、Agent 状态/会话定位、通知未读、诊断兼容 |
+| Acro 内部规格冲突 | 1 | Workspace 是否必须引用 Project |
+| 明确不复制 | 6 | Worktree/Git 写入、内置编辑器、账号/用量/Native Chat、自动化/多 Agent、任务平台、插件/Provider 管理 |
+| 可选扩展 | 2 | 快捷命令/语音；Windows/Linux 桌面、Android 和完整多语言 |
+
+核心判断：Acro 与 Orca 有 18 个模块差异，但只有 9 个是当前 Acro 核心欠账。若用户仍要求显式 Project 归属，核心欠账变为 10 个。
+
+### 28 模块总账
+
+| # | 用户能力 | Acro 当前事实 | 分类 | 本计划处理 |
+|---:|---|---|---|---|
+| 1 | 远端 Runtime 持有真实状态 | Runtime + 独立 terminal daemon | 已覆盖 | 保持 |
+| 2 | 配对、多入口、多主机、远程安装 | E2EE、RuntimeHub、acro ssh | 不同实现覆盖 | 保持 |
+| 3 | Workspace 与 Project 归属 | 文档要求 Project，代码明确删除 | 规格冲突 | 阶段 -1 裁决 |
+| 4 | 持久终端、快照、滚动历史、重连 | Desktop/Mobile/CLI 已接入 | 已覆盖 | 回归保护 |
+| 5 | 标签、分屏、布局、快捷键、外观 | 原生 Ghostty + Bonsplit | 已覆盖 | 扩展到混合 Surface |
+| 6 | 完整 CLI 控制面 | 只有 pair/ssh/endpoints/sessions/run/attach | 核心缺口 | 阶段 7 |
+| 7 | 移动终端和跨设备输入权 | xterm WebView + 显式接管 | 已覆盖 | 回归保护 |
+| 8 | 文件浏览、搜索和预览 | Desktop 只读文本/图片 | 按边界覆盖 | 不增加写入 |
+| 9 | 内置编辑器、文件写入、丰富预览 | 无编辑器；丰富预览有限 | 不复制 | 只读 Markdown/PDF 可另行确认 |
+| 10 | Git 状态与 diff | Desktop 只读 | 按边界覆盖 | 不增加 Git 写入 |
+| 11 | Worktree、stage、commit、PR、diff 评论 | 无 | 不复制 | 排除 |
+| 12 | 端口发现 | ports.list + Desktop 面板 | 已覆盖 | CLI 补查询入口 |
+| 13 | Browser 可见 Surface | Runtime 有底座，正式入口断裂 | 核心缺口 | 阶段 2、3、6 |
+| 14 | Browser 语义控制与 Design Mode | 只有坐标输入，没有 snapshot/ref | 核心缺口 | 阶段 3、7；完整 Design Mode 不单独承诺 |
+| 15 | Simulator / Emulator | Mobile 可 boot/view，约 1fps，无输入 | 核心缺口 | 阶段 4、6、7 |
+| 16 | Computer Use | Runtime/helper 有底座，客户端零入口 | 核心缺口 | 阶段 5、6、7 |
+| 17 | Mobile Workspace 工作台 | 主页平铺全局 Session | 核心缺口 | 阶段 2 |
+| 18 | 通用 Agent 状态和会话定位 | 无协议与入口 | 核心缺口 | 阶段 7A |
+| 19 | 通知、未读和断线补齐 | 无持久通知；事件无回放 | 核心缺口 | 阶段 7B |
+| 20 | Agent 账号、用量、历史、Native Chat | 无 | 不复制 | 排除供应商专用控制面 |
+| 21 | 定时自动化、多 Agent 编排、任务 DAG | 无 | 不复制 | 排除 |
+| 22 | GitHub、Linear、Jira 等任务源 | 无 | 不复制 | 排除 |
+| 23 | 快捷命令、语音输入 | 无 | 可选扩展 | 不进入核心验收 |
+| 24 | Skills、Provider Profile、插件管理 | 无产品管理面 | 不复制 | 仅随 CLI 打包必要 skills |
+| 25 | Quick Open / 命令面板 | 命令、Workspace、Session 已可搜 | 已覆盖但较浅 | 保持最小范围 |
+| 26 | 设置、快捷键、主题、更新 | Desktop 已交付 | 已覆盖 | 回归保护 |
+| 27 | 诊断、引导、协议兼容 | 只有重连横幅 | 核心缺口 | 阶段 1、7C |
+| 28 | Windows/Linux Desktop、Android、完整多语言 | Runtime 有 Linux/WSL，客户端仍 Apple 优先 | 可选扩展 | 不进入核心验收 |
+
+### 当前 Acro 的可验证覆盖
+
+- 协议定义 53 个 RPC 和 8 个声明事件；53 个 RPC 都有 Runtime 处理器。
+- 37 个 RPC 已有 Desktop、Mobile 或 CLI 正式调用；16 个没有完整客户端入口。
+- 16 个无入口 RPC 由 6 个 Browser 管理方法、simulator.shutdown 和 9 个 Computer Use 方法组成。
+- Desktop 工作台当前只承载终端窗格；右侧栏只有上下文、文件、Git 和端口。
+- Mobile 主页只列全局 Session 和 Simulator。Browser Surface 组件存在，但没有 browser.open/list 产生可达 browserId。
+- CLI 当前只有 pair、ssh、endpoints、sessions、run 和 attach。
+
+### Orca 当前对照能力
+
+- Orca README 明确交付移动伴侣、并行 Worktree、终端分屏、Design Mode、GitHub/Linear、SSH Worktree、diff 评论、编辑器和 CLI。
+- Orca CLI specs 已覆盖 project、file、automation、browser、orchestration、computer、diagnostics、environment、Linear、VM、emulator 和 skills。
+- Browser CLI 支持 accessibility snapshot、ref click、fill、wait、eval、drag、upload 等语义操作。
+- Computer Use CLI 支持应用/窗口枚举、accessibility snapshot、元素动作、滚动、拖拽、输入、快捷键和 set-value。
+- Emulator CLI 同时覆盖 iOS 与 Android，并提供 tap、gesture、install、launch、permissions、AX 和 logcat。
+- Orca Mobile 已有 Source Control、Agent History、Changes、PR、通知和故障排查路由。
+
+这些 Orca 能力只用于判断差异。违反 Acro 已确认边界的 Worktree、Git 写入、编辑器、任务平台和供应商编排不能自动转化为 Acro 需求。
+
+## Project / Workspace 规格冲突
+
+当前事实互相矛盾：
+
+- AGENTS.md 与蓝图描述 Workspace 引用用户加入的 Project。
+- `packages/protocol/src/models.ts` 明确写着 Workspace 是纯分组与界面容器，只持 sessionIds 和 layout。
+- `apps/runtime/src/workspaces.ts` 创建 Workspace 时不保存路径或项目。
+- RPC 方法表没有 `project.*`。
+- Git 历史已有 `feat!: drop the project entity, inherit terminal cwd from established fact`，说明删除不是遗漏，而是一次显式架构变更。
+
+Planning 不能在这两套契约之间暗自选择。阶段 -1 必须让用户确认唯一契约：保持纯 Workspace 容器时同步修正文档；恢复 Project 时补齐对外数据模型、迁移已有 Workspace，并同步协议、鉴权、codegen 和全部客户端。不得只在某个客户端补一个项目选择器。
+
+## Agent 状态与通知的根因设计
+
+Acro 不能复制 Orca 的供应商深度编排，也不能解析普通 PTY 输出猜状态。最小根本方案是：
+
+1. 供应商适配器在 Agent 已有 hook 中生成带 Acro namespace 的版本化 OSC 消息。
+2. terminal daemon 只解析这类显式消息，把只含 idle、working、needs_user、done、error 的 AgentActivity 绑定到 sessionId，并随会话快照保留最新事实。
+3. daemon 对相同状态去重，并把高频切换合并为最新事实。Runtime 从 daemon 拉取和镜像状态，负责广播与通知；Runtime 重启不会把存活 Session 的状态清空。
+4. needs_user 只负责通知和定位会话。客户端不从 OSC 生成审批按钮、候选回答或 terminal input；用户必须进入真实终端完成输入。
+5. 没有适配器的 Agent 安全降级成普通终端，不产生推测状态。
+
+在线事件无法满足 iOS 后台与断线通知。Runtime 必须持久化通知和按设备未读。客户端为每个配对 Server 生成独立随机 pushRouteId，Push 只携带 pushRouteId 和 opaque notificationId；App 先用本地映射选中 Runtime，再经 E2EE 拉取真实内容。这样既解决多服务器相同 notificationId 的路由歧义，也不向推送服务泄露 serverId 或地址。由于同一 PTY 内进程可以伪造 needs_user，通知必须按 Session 去重，后台 Push 必须按设备与 Session 限频；超限事件仍留在 Runtime，不依赖第三方送达。
+
 ## 需求事实
 
 - Acro 的真实进程、浏览器、Simulator 和系统权限都在 Mac mini。客户端只显示、输入和控制。
@@ -18,13 +116,13 @@
 
 ### Browser
 
-1. 客户端调用 browser.open。
+1. 协议和 Runtime 已实现 browser.open/list/claimControl/controlList/navigate/attach/detach/input/close。
 2. apps/runtime/src/index.ts 把请求交给 BrowserManager。
 3. apps/runtime/src/browser.ts 使用 playwright-core 启动持久 Chromium context，在 Mac mini 创建 Page。
 4. browser.attach 返回连接内 channel，并启动 Page.startScreencast。
 5. CDP Page.screencastFrame 产生 JPEG。Runtime 经 FRAME_BROWSER 和 E2EE WebSocket 发给订阅客户端。
-6. 客户端通过 browser.input 发送点击、移动、滚轮、按键和文字。
-7. Runtime 用设备级 Browser control owner 阻止非持有者输入。
+6. Mobile 只有在已知 browserId 时才能 attach 和发送坐标点击；Desktop 与 CLI 没有 Browser 正式入口。
+7. 当前三个正式客户端都没有 browser.open/list/claimControl/controlList/navigate/close 调用，因此用户无法创建或选择 browserId。
 
 当前缺口：
 
@@ -36,11 +134,12 @@
 
 ### Simulator
 
-1. 客户端调用 simulator.list、boot、shutdown。
+1. 协议和 Runtime 已实现 simulator.list、boot、shutdown、attach、detach。
 2. apps/runtime/src/simulator.ts 通过 xcrun simctl 管理设备。
 3. simulator.attach 启动 simctl io screenshot 轮询。
 4. 每次截图生成 PNG，并经 FRAME_SIM 与 E2EE WebSocket 发送。
 5. apps/mobile/App.tsx 把字节转成 base64 data URI 后交给 React Native Image。
+6. 正式客户端只有 Mobile 调用 list、boot、attach 和 detach；shutdown 没有 Desktop、Mobile 或 CLI 入口。
 
 当前缺口：
 
@@ -52,11 +151,12 @@
 
 ### Computer Use
 
-1. 客户端调用 computer.permissions、capture、windows 或动作 RPC。
+1. 协议和 Runtime 已实现 claimControl、controlOwner、permissions、capture、windows、click、type、key 和 activate。
 2. apps/runtime/src/index.ts 校验 Computer control owner。
 3. apps/runtime/src/computer.ts 通过 Unix socket 向 helper 发送 NDJSON。
 4. apps/helper-macos/Sources/main.swift 使用 CoreGraphics 和 Accessibility 执行截图与动作。
 5. capture 把 PNG 作为 base64 放进 JSON RPC 返回。
+6. Desktop、Mobile 和 CLI 对全部 computer.* 都没有正式调用，当前只有测试与 E2E 脚本能触达底座。
 
 当前缺口：
 
@@ -65,6 +165,18 @@
 - 没有 snapshotId、元素 ref、缓存生命周期和可验证动作。
 - 截图经本机 base64 JSON 再经远程 JSON，内存和协议开销过大。
 - helper 错误是字符串，客户端无法稳定处理权限、过期引用和无效状态。
+
+### RPC 可达性账本
+
+扫描范围：`apps/desktop-macos/Sources`、`apps/mobile`、`apps/cli/src`，排除测试、构建产物和依赖目录。当前 53 个 RPC 中有 16 个没有正式客户端入口：
+
+| 领域 | 无入口方法 | 计划补齐阶段 |
+|---|---|---|
+| Browser | browser.open、browser.list、browser.claimControl、browser.controlList、browser.navigate、browser.close | 阶段 2、3、6、7 |
+| Simulator | simulator.shutdown | 阶段 2、4、6、7 |
+| Computer Use | computer.claimControl、controlOwner、permissions、capture、windows、click、type、key、activate | 阶段 2、5、6、7 |
+
+自动化脚本能调用 RPC 不等于用户入口。实现完成时，每个目标方法必须至少存在一个 Desktop、Mobile 或 CLI 可达路径，并有对应 UI/CLI 测试。方法总数和无入口列表必须在每次协议变更后重新生成，不能把本次数字永久写死成守门条件。
 
 ### Desktop Workspace
 
@@ -186,6 +298,11 @@
 - 多设备控制权释放不能只依赖显式 detach。连接关闭、设备撤销和 Surface 关闭都必须清理。
 - 旧 Runtime 的 method_not_found 是正常兼容路径，不能显示成服务端崩溃。
 - Browser Surface 当前不跨 Runtime 进程重启。客户端必须清理失效引用，不能显示空白旧标签。
+- Agent OSC 可以被同一 PTY 内其他进程伪造，因此它只能影响状态展示和会话定位，不能直接授予权限或执行命令。必须限制版本、长度、频率和 schema。
+- iOS 后台可靠通知依赖 APNs/Expo Push 和发布凭证。推送不可用时必须保留 Runtime 通知，不能把第三方交付当作唯一真相源。
+- Expo Push 必须接收 Expo push token，启用访问保护时还需要 Expo access token；两者是第三方凭证边界，必须安全存储、轮换、撤销并从日志脱敏，不能与 Acro 配对认证 token 混为一谈。
+- 通知记录可能关联敏感会话。Runtime 必须限制保留量，推送和普通日志不得包含正文、serverId 或地址。
+- Workspace / Project 契约未裁决前，移动工作台的数据模型和鉴权范围都不稳定，阶段 0 与阶段 2 不得开始。
 - 新 worktree 不包含被忽略的 .tmp 参考目录。实现者必须从主 checkout 只读参考，不能把参考源码误加进 Git。
 - 移动端实现前必须遵守 apps/mobile/AGENTS.md，读取 Expo 57 精确版本文档。
 
@@ -235,5 +352,12 @@
 - .tmp/orca/src/main/emulator/serve-sim-runtime-materializer.ts
 - .tmp/orca/src/main/computer/macos-native-provider-client.ts
 - .tmp/orca/native/computer-use-macos
+- .tmp/orca/README.md
+- .tmp/orca/src/cli/specs/index.ts
+- .tmp/orca/src/cli/specs/browser-basic.ts
+- .tmp/orca/src/cli/specs/computer.ts
+- .tmp/orca/src/cli/specs/emulator.ts
+- .tmp/orca/mobile/app/h/_layout.tsx
+- .tmp/orca/mobile/app/troubleshoot.tsx
 - .tmp/cmux/Packages/macOS/CmuxBrowser
 - .tmp/cmux/Packages/iOS/CmuxMobileBrowser
