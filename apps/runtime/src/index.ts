@@ -695,9 +695,9 @@ async function main(): Promise<void> {
       }),
     "session.focusList": () =>
       [...focusOwners].map(([sessionId, owner]) => ({ sessionId, ...owner })),
-    "session.attach": async (conn, { sessionId }) => {
-      await daemonReady;
-      return runSessionControl(sessionId, async () => {
+    "session.attach": (conn, { sessionId }) =>
+      runSessionControl(sessionId, async () => {
+        await daemonReady;
         const snap = await daemon.request<SnapshotResult>(
           "session.snapshot",
           { sessionId },
@@ -713,8 +713,7 @@ async function main(): Promise<void> {
           cols: snap.cols,
           rows: snap.rows,
         };
-      });
-    },
+      }),
     "session.detach": async (conn, { sessionId }) => {
       await reconcileSessionConnection(
         conn,

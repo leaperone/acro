@@ -22,7 +22,7 @@
 
 ## 进行中
 
-- 无代码实现或验证事项；等待 Git、PR、preflight、合并和清理。
+- 无代码实现或验证事项；等待修复提交、PR、preflight、合并和清理。
 
 ## 修改文件
 
@@ -50,6 +50,7 @@
 | Hook 初始化失败 smoke | Runtime 继续工作，受管 Agent capability 关闭 | 通过 |
 | daemon 恢复 smoke | 正常退出不误恢复；失败 revive 保留旧身份；成功 revive 同 ID | 通过 |
 | 自动恢复 deadline / daemon timeout 回归 | 过期请求不发包；预算超时不冻结共享客户端；revive 在 daemon 内 fail-closed 回滚 | 通过 |
+| 合并后 attach / detach 竞态回归 | `session.attach` 先进入 Session 串行队列，再等待 `daemonReady`；Runtime E2E 通过 | 通过 |
 | 应用内浏览器 | 没有可用目标，未做真实 UI 验证 | 未验证 |
 
 ## 错误与恢复

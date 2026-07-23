@@ -69,3 +69,9 @@
 
 - Agent Hook、协议/daemon 持久化和手机端三条独立复核均未发现剩余 Critical / High / Medium。
 - 应用内浏览器没有可用目标，本轮未做真实 UI 验收；这不阻断代码交付。
+
+## 合并后 CI 发现
+
+- PR #112 已合并，但 `desktop-macos` job 的 Runtime E2E 在 attach / detach 竞态断言失败。
+- 根因是 `session.attach` 在进入 `runSessionControl` 前先等待 `daemonReady`；即使 Promise 已 resolved，也会让出执行权，使后发 detach 先进入同一 Session 队列。
+- 根治是让 attach 先进入 Session 串行队列，再在队列内部等待 `daemonReady`，恢复原有请求顺序保证。
