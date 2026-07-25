@@ -33,6 +33,7 @@ struct SidebarFooterIconButtonStyle: ButtonStyle {
     private struct Content: View {
         let configuration: ButtonStyleConfiguration
         @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var hovered = false
 
         private var fillOpacity: Double {
@@ -43,13 +44,16 @@ struct SidebarFooterIconButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
+                .frame(minWidth: 32, minHeight: 32)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Color.primary.opacity(fillOpacity))
                 )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
                 .onHover { hovered = $0 }
                 .animation(.easeOut(duration: 0.12), value: hovered)
-                .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+                .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
         }
     }
 }
