@@ -31,6 +31,17 @@ final class ShortcutSettingsTests: XCTestCase {
         )))
     }
 
+    func testEqualizeSplitsDefaultMatchesCmux() throws {
+        let shortcut = try XCTUnwrap(ShortcutStore.defaults[.equalizeSplits])
+
+        XCTAssertTrue(shortcut.matches(keyEvent(
+            modifiers: [.command, .control],
+            charactersIgnoringModifiers: "=",
+            keyCode: 24
+        )))
+        XCTAssertEqual(shortcut.displayString, "⌃⌘=")
+    }
+
     func testRepeatedAppShortcutStaysReserved() {
         let repeatedControlTab = keyEvent(modifiers: [.control], isARepeat: true)
 
