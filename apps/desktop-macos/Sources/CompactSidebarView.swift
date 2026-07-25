@@ -133,7 +133,6 @@ struct SidebarPresentationMenuButton: View {
 struct CompactSidebarView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var hub: RuntimeHub
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var connectSheetPresented = false
 
     private static let palette: [Color] = [
@@ -169,7 +168,6 @@ struct CompactSidebarView: View {
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity)
                 }
-                .scrollIndicators(.never)
                 .onChange(of: selectedWorkspaceScrollId, initial: true) { _, _ in
                     scrollToSelection(proxy)
                 }
@@ -209,13 +207,7 @@ struct CompactSidebarView: View {
 
     private func scrollToSelection(_ proxy: ScrollViewProxy) {
         guard let selectedWorkspaceScrollId else { return }
-        if reduceMotion {
-            proxy.scrollTo(selectedWorkspaceScrollId, anchor: .center)
-        } else {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                proxy.scrollTo(selectedWorkspaceScrollId, anchor: .center)
-            }
-        }
+        proxy.scrollTo(selectedWorkspaceScrollId)
     }
 
     private func workspaceScrollId(serverId: String, workspaceId: String) -> String {
@@ -257,7 +249,13 @@ struct CompactSidebarView: View {
                         )
                     }
                 }
-                .padding(.top, index == 0 ? 0 : 6)
+                .padding(.top, index == 0 ? 0 : 12)
+                .overlay(alignment: .top) {
+                    if index > 0 {
+                        Divider()
+                            .frame(width: 18)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -307,7 +305,7 @@ struct CompactSidebarView: View {
             Button {
                 model.requestCreateWorkspace()
             } label: {
-                Image(systemName: "plus")
+                Image(systemName: "square.stack.3d.up.badge.plus")
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(SidebarFooterIconButtonStyle())
@@ -378,10 +376,10 @@ private struct CompactSidebarServerButton: View, Equatable {
                 height: CompactSidebarLayout.serverIconSize
             )
             .overlay(alignment: .topTrailing) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 7, height: 7)
-                    .overlay(Circle().stroke(.bar, lineWidth: 1.5))
+                statusIndicator
+                    .frame(width: 6, height: 6)
+                    .padding(1.5)
+                    .background(.bar, in: Circle())
                     .offset(x: 2, y: -2)
             }
         }
@@ -390,6 +388,7 @@ private struct CompactSidebarServerButton: View, Equatable {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(snapshot.name)
         .accessibilityValue(statusLabel)
+        .accessibilityAddTraits(snapshot.isSelected ? [.isSelected] : [])
         .contextMenu {
             Button("新建工作区", action: createWorkspace)
                 .disabled(snapshot.state != .connected)
@@ -398,11 +397,18 @@ private struct CompactSidebarServerButton: View, Equatable {
         }
     }
 
-    private var statusColor: Color {
+    @ViewBuilder
+    private var statusIndicator: some View {
         switch snapshot.state {
-        case .connected: .green
-        case .connecting: .orange
-        case .disconnected: .secondary
+        case .connected:
+            Circle().fill(Color.green)
+        case .connecting:
+            ZStack {
+                Circle().stroke(Color.orange, lineWidth: 1.5)
+                Circle().fill(Color.orange).frame(width: 2.5, height: 2.5)
+            }
+        case .disconnected:
+            Circle().stroke(Color.secondary, lineWidth: 1.5)
         }
     }
 
@@ -465,7 +471,8 @@ private struct CompactSidebarWorkspaceButton: View, Equatable {
         .help(helpText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(snapshot.name)
-        .accessibilityValue("\(snapshot.serverName)，\(snapshot.sessionCount) 个活跃会话")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAddTraits(snapshot.isSelected ? [.isSelected] : [])
         .contextMenu {
             Button("新建终端", action: newTerminal)
                 .disabled(!snapshot.canCreateTerminal)
@@ -479,6 +486,13 @@ private struct CompactSidebarWorkspaceButton: View, Equatable {
             .compactMap { $0 }
             .joined(separator: " / ")
         return "\(location)\n\(snapshot.sessionCount) 个活跃会话"
+    }
+
+    private var accessibilityValue: String {
+        let location = [snapshot.serverName, snapshot.groupName]
+            .compactMap { $0 }
+            .joined(separator: " / ")
+        return "\(location)，\(snapshot.sessionCount) 个活跃会话"
     }
 }
 
