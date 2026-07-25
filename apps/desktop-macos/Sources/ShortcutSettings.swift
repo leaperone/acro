@@ -174,7 +174,7 @@ final class ShortcutStore: ObservableObject {
         .toggleInspector: StoredShortcut(key: "l", command: true),
         .splitRight: StoredShortcut(key: "d", command: true),
         .splitDown: StoredShortcut(key: "d", command: true, shift: true),
-        .equalizeSplits: StoredShortcut(key: "=", command: true, option: true),
+        .equalizeSplits: StoredShortcut(key: "=", command: true, control: true),
         .focusPaneLeft: StoredShortcut(key: "h", command: true, shift: true),
         .focusPaneDown: StoredShortcut(key: "j", command: true, shift: true),
         .focusPaneUp: StoredShortcut(key: "k", command: true, shift: true),
