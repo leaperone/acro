@@ -43,7 +43,16 @@
 
 - 滚动和视觉层级没有现成单元测试 API，以 Swift 编译、现有 Compact 投影测试和真实 UI 边界说明覆盖。
 - 不删除 Compact 底部动作，不调整图标颜色算法；这些都需要额外用户证据。
-- 本轮不发布；安装的 beta.13 不会自动包含修改。
+- 初始任务不含发布；用户后续明确追加 Beta 发布要求，因此扩展范围并发布 beta.14。
+
+## 发布真相
+
+- PR `#115` squash merge 为 `5a6258c`，main push CI `30170340052` 成功。
+- 新 Beta 为 `desktop-v0.0.8-beta.14`，tag 指向 `5a6258c`。
+- release run `30170521910` 的 verify / package / publish 全部成功，两道 `desktop-release` environment 已自动批准。
+- GitHub Release 为 Pre-release，包含 DMG、ZIP、从 `0.0.7` 和 `0.0.8-beta.13` 升级的两个 delta。
+- appcast 顶部为 `0.0.8-beta.14`，数字 build `44`，带 `beta` channel、EdDSA 签名和两个 delta。
+- CI 写回 appcast 的 main commit 为 `b09b9ed`，本地 main 已 fast-forward 同步。
 
 ## 参考指针
 

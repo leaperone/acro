@@ -54,8 +54,8 @@
 - [x] 完成只读探索并确认真实调用链
 - [x] 完成实现
 - [x] 完成验证
-- [ ] 完成 Git 收尾
-- [ ] 完成 Desktop Beta 发布与发布后验证
+- [x] 完成 Git 收尾
+- [x] 完成 Desktop Beta 发布与发布后验证
 
 ## 决策
 
@@ -72,3 +72,4 @@
 |---|---:|---|
 | 从 `origin/main` 创建 worktree 时 GitHub DNS 解析失败 | 1 | 初始检查已确认本地 `main` 与 `origin/main` 同一 SHA，改用本地 `main` 创建。 |
 | 新 worktree 首次 Swift 测试缺少忽略的 `ghostty.h` | 1 | 运行仓库 `setup-ghostty.sh` 恢复固定版本资源，重跑通过。 |
+| HTTPS Git 无法解析 `github.com` | 3 | 使用 GitHub 官方 `ssh.github.com:443` 一次性 URL 映射完成 push / fetch，未修改 remote 配置。 |
