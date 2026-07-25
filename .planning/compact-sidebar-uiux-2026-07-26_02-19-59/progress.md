@@ -2,7 +2,7 @@
 
 - 任务 ID：`compact-sidebar-uiux-2026-07-26_02-19-59`
 - 创建时间：`2026-07-26_02-19-59`
-- 当前状态：`in_progress`
+- 当前状态：`complete`
 
 ## 已完成
 
@@ -21,10 +21,15 @@
 - 用户追加明确要求：发布新 Desktop Beta。
 - 分支已 rebase 到当前 `main@2e51070`，无冲突。
 - rebase 后重跑完整 Swift 测试、`pnpm check`、`pnpm build` 与 diff 检查，全部通过。
+- PR `#115` 已 squash merge 为 `5a6258c`，main CI 成功。
+- 已清理 `fix/compact-sidebar-uiux` worktree、本地分支和远端分支。
+- 已发布 `desktop-v0.0.8-beta.14`，受信任 release run `30170521910` 全绿。
+- GitHub Release、DMG、ZIP、两个 delta、Beta appcast、EdDSA 签名和 build `44` 已验证。
+- 本地 main 已同步 CI appcast commit `b09b9ed`。
 
 ## 进行中
 
-- 更新验证后 push、开 PR、preflight 合并，再触发并监督 Desktop Beta 发布。
+- 无。
 
 ## 修改文件
 
@@ -47,6 +52,11 @@
 | `pnpm build` | CLI / Runtime 构建通过；只有既有 esbuild `import.meta` 警告 | passed |
 | Base merge probe | 分支已成功 rebase 到当前 `main@2e51070` | passed |
 | preflight 代码审查 | 无 critical/high；1 个 medium 减少动效问题已修复，1 个 planning low 状态已校正 | passed |
+| PR `#115` | typescript / desktop-macos CI 成功，squash merge `5a6258c` | passed |
+| main push CI `30170340052` | merge commit 的 main CI 成功 | passed |
+| release run `30170521910` | verify / package / publish 全部成功 | passed |
+| GitHub Release | Beta.14 Pre-release，DMG / ZIP / 2 delta 资产齐全 | passed |
+| appcast | 顶部 Beta.14，build 44，channel / edSignature / deltas 齐全 | passed |
 
 ## 错误与恢复
 
@@ -56,3 +66,4 @@
 | 只读 UI 子任务误启 helper，旧 Unix socket 失效 | 1 | `launchctl kickstart -k gui/501/one.leaper.acro.helper`，再用 `ping` RPC 确认恢复。 |
 | Swift 测试找不到 `GhosttyKit/ghostty.h` | 1 | 使用 `apps/desktop-macos/scripts/setup-ghostty.sh` 恢复忽略资源，重跑后全部通过。 |
 | push / fetch 无法解析 `github.com` | 2 | 已完成所有可用本地预检；保留干净分支和 worktree，不伪造 PR / merge 状态。 |
+| HTTPS Git DNS 持续失败 | 3 | 改用可达的 `ssh.github.com:443` 一次性映射，push、fetch、tag 全部完成。 |
