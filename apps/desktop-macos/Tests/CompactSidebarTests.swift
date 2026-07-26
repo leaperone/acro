@@ -5,6 +5,11 @@ final class CompactSidebarTests: XCTestCase {
     func testLayoutUsesFixedWidthThatContainsTrafficLights() {
         XCTAssertEqual(CompactSidebarLayout.width, 64)
         XCTAssertGreaterThanOrEqual(CompactSidebarLayout.width, 62)
+        XCTAssertEqual(CompactSidebarLayout.serverSectionWidth, 56)
+        XCTAssertEqual(
+            CompactSidebarLayout.width - CompactSidebarLayout.serverSectionWidth,
+            8
+        )
     }
 
     func testMinimumWindowHasRoomForEverySidebarPresentation() {
@@ -25,10 +30,10 @@ final class CompactSidebarTests: XCTestCase {
         )
     }
 
-    func testIdentityUsesFirstVisibleCharacter() {
-        XCTAssertEqual(CompactSidebarIdentity.initial(for: "  acro"), "A")
-        XCTAssertEqual(CompactSidebarIdentity.initial(for: " 工作区"), "工")
-        XCTAssertEqual(CompactSidebarIdentity.initial(for: " \n "), "•")
+    func testIdentityUsesUpToTwoVisibleCharacters() {
+        XCTAssertEqual(CompactSidebarIdentity.mark(for: "  acro"), "AC")
+        XCTAssertEqual(CompactSidebarIdentity.mark(for: " 工作区"), "工作")
+        XCTAssertEqual(CompactSidebarIdentity.mark(for: " \n "), "•")
     }
 
     func testIdentityColorIsStable() {

@@ -8,14 +8,17 @@ enum CompactSidebarLayout {
     static let headerHeight: CGFloat = 38
     static let itemWidth: CGFloat = 52
     static let itemHeight: CGFloat = 44
-    static let serverIconSize: CGFloat = 32
-    static let workspaceIconSize: CGFloat = 36
+    static let serverSectionWidth: CGFloat = 56
+    static let serverSectionSpacing: CGFloat = 10
+    static let serverSectionCornerRadius: CGFloat = 12
+    static let serverIconSize: CGFloat = 36
+    static let workspaceIconSize: CGFloat = 32
 }
 
 enum CompactSidebarIdentity {
-    static func initial(for name: String) -> String {
+    static func mark(for name: String) -> String {
         let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.first.map { String($0).uppercased() } ?? "•"
+        return value.isEmpty ? "•" : String(value.prefix(2)).uppercased()
     }
 
     static func colorIndex(for id: String, paletteCount: Int = 8) -> Int {
@@ -148,7 +151,7 @@ struct CompactSidebarView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 12) {
+                    LazyVStack(spacing: CompactSidebarLayout.serverSectionSpacing) {
                         if hub.entries.isEmpty {
                             Image(systemName: "wifi.exclamationmark")
                                 .foregroundStyle(.secondary)
@@ -219,17 +222,19 @@ struct CompactSidebarView: View {
             groups: entry.connection.workspaceGroups,
             workspaces: entry.connection.workspaces
         )
+        let color = Self.palette[CompactSidebarIdentity.colorIndex(for: entry.id)]
+        let isSelected = model.selectedServerId == entry.id
         return VStack(spacing: 6) {
             CompactSidebarServerButton(
                 snapshot: CompactSidebarServerSnapshot(
                     id: entry.id,
                     name: entry.server.name,
-                    initial: CompactSidebarIdentity.initial(for: entry.server.name),
+                    initial: CompactSidebarIdentity.mark(for: entry.server.name),
                     isLocal: entry.server.isLocal,
-                    isSelected: model.selectedServerId == entry.id,
+                    isSelected: isSelected,
                     state: entry.connection.state
                 ),
-                color: Self.palette[CompactSidebarIdentity.colorIndex(for: entry.id)],
+                color: color,
                 select: { model.activate(serverId: entry.id) },
                 createWorkspace: {
                     model.activate(serverId: entry.id)
@@ -258,7 +263,22 @@ struct CompactSidebarView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .frame(width: CompactSidebarLayout.serverSectionWidth)
+        .background(
+            color.opacity(isSelected ? 0.10 : 0.06),
+            in: RoundedRectangle(
+                cornerRadius: CompactSidebarLayout.serverSectionCornerRadius,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: CompactSidebarLayout.serverSectionCornerRadius,
+                style: .continuous
+            )
+            .stroke(color.opacity(isSelected ? 0.55 : 0.28), lineWidth: isSelected ? 1.5 : 1)
+        }
     }
 
     private func compactWorkspaceButton(
@@ -268,12 +288,11 @@ struct CompactSidebarView: View {
     ) -> some View {
         let sessions = model.sessions(in: workspace, on: entry.connection)
         let scopedId = workspaceScrollId(serverId: entry.id, workspaceId: workspace.id)
-        let colorIndex = CompactSidebarIdentity.colorIndex(for: scopedId)
         return CompactSidebarWorkspaceButton(
             snapshot: CompactSidebarWorkspaceSnapshot(
                 id: scopedId,
                 name: workspace.name,
-                initial: CompactSidebarIdentity.initial(for: workspace.name),
+                initial: CompactSidebarIdentity.mark(for: workspace.name),
                 serverName: entry.server.name,
                 groupName: groupName,
                 sessionCount: sessions.count,
@@ -281,7 +300,6 @@ struct CompactSidebarView: View {
                     && model.selectedWorkspaceId == workspace.id,
                 canCreateTerminal: entry.connection.connected
             ),
-            color: Self.palette[colorIndex],
             select: {
                 model.activate(serverId: entry.id)
                 model.selectWorkspace(workspace)
@@ -362,7 +380,7 @@ private struct CompactSidebarServerButton: View, Equatable {
         Button(action: select) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(color.opacity(snapshot.isSelected ? 0.30 : 0.20))
+                    .fill(color.opacity(0.22))
                 if snapshot.isLocal {
                     Image(systemName: "desktopcomputer")
                         .font(.system(size: 13, weight: .semibold))
@@ -383,7 +401,7 @@ private struct CompactSidebarServerButton: View, Equatable {
                     .offset(x: 2, y: -2)
             }
         }
-        .buttonStyle(CompactSidebarItemButtonStyle(selected: snapshot.isSelected))
+        .buttonStyle(CompactSidebarItemButtonStyle(selected: false))
         .help("\(snapshot.name)\n\(statusLabel)")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(snapshot.name)
@@ -434,7 +452,6 @@ struct CompactSidebarWorkspaceSnapshot: Equatable {
 
 private struct CompactSidebarWorkspaceButton: View, Equatable {
     let snapshot: CompactSidebarWorkspaceSnapshot
-    let color: Color
     let select: () -> Void
     let newTerminal: () -> Void
     let showInWideSidebar: () -> Void
@@ -445,9 +462,9 @@ private struct CompactSidebarWorkspaceButton: View, Equatable {
         Button(action: select) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(color.opacity(snapshot.isSelected ? 0.30 : 0.20))
+                    .fill(Color.primary.opacity(0.08))
                 Text(snapshot.initial)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
             }
             .frame(
                 width: CompactSidebarLayout.workspaceIconSize,
@@ -515,14 +532,6 @@ private struct CompactSidebarItemButtonStyle: ButtonStyle {
                     height: CompactSidebarLayout.itemHeight
                 )
                 .background(background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .overlay(alignment: .leading) {
-                    if selected {
-                        Capsule()
-                            .fill(Color.accentColor)
-                            .frame(width: 3, height: 22)
-                            .padding(.leading, 1)
-                    }
-                }
                 .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .onHover { hovered = $0 }
                 .animation(.easeOut(duration: 0.10), value: hovered)
