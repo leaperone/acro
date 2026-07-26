@@ -2,7 +2,7 @@
 
 - 任务 ID：`desktop-top-tab-chrome-2026-07-27_05-39-08`
 - 创建时间：`2026-07-27_05-39-08`
-- 当前状态：`in_progress`
+- 当前状态：`complete`
 
 ## 已完成
 
@@ -17,10 +17,11 @@
 - 启动模式和真实窗口拖拽两项针对性测试转绿。
 - 在最新 `origin/main` 上完成全量 Desktop、TypeScript 和打包脚本验证。
 - 交付审查发现新增测试共享 `UserDefaults.standard`，将 AppKit 交互 suite 串行化，避免并发恢复 presentation key 产生随机失败。
+- 独立代码审查无问题，与最新 main 合并探测无冲突，PR #131 最终代码 CI 全绿。
 
 ## 进行中
 
-- 推送重写后的分支，等待最终 CI 并执行 preflight。
+- 无。
 
 ## 修改文件
 
@@ -45,6 +46,9 @@
 | `pnpm check` | TypeScript 与 15 项 Node 测试 | 已通过 |
 | `pnpm build` | CLI/runtime 构建；仅现有 import.meta 警告 | 已通过 |
 | Desktop release scripts | 7 项通过 | 已通过 |
+| Base merge probe | 与最新 `origin/main` 无冲突 | 已通过 |
+| 独立代码审查 | 无 critical/high/medium/low 问题 | 已通过 |
+| PR #131 CI | TypeScript、desktop-macos 全绿 | 已通过 |
 
 ## 错误与恢复
 

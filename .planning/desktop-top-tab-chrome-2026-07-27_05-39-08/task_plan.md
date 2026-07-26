@@ -39,10 +39,10 @@
 
 ## 验收标准
 
-- [ ] Acro 启动后 Bonsplit 读取到 `workspacePresentationMode=minimal`。
-- [ ] 真实窗口中标签栏顶边与内容顶边对齐，无额外空区。
-- [ ] minimal 模式下标签拖拽可重排并持久化。
-- [ ] 标签后方空白 chrome 采用 minimal 的窗口拖动/双击语义，按钮按 minimal 规则显示。
+- [x] Acro 启动后 Bonsplit 读取到 `workspacePresentationMode=minimal`。
+- [x] 真实窗口中标签栏顶边与内容顶边对齐，无额外空区。
+- [x] minimal 模式下标签拖拽可重排并持久化。
+- [x] 标签后方空白 chrome 采用 minimal 的窗口拖动/双击语义，按钮按 minimal 规则显示。
 
 ## 未确认事项
 
@@ -55,7 +55,7 @@
 - [x] 完成只读探索并确认真实调用链
 - [x] 完成实现
 - [x] 完成验证
-- [ ] 完成交付前收敛检查
+- [x] 完成交付前收敛检查
 
 ## 决策
 
