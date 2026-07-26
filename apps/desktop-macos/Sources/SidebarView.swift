@@ -7,6 +7,17 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+extension UTType {
+    static let acroSidebarWorkspace = UTType(exportedAs: "one.leaper.acro.sidebar-workspace")
+    static let acroSidebarServer = UTType(exportedAs: "one.leaper.acro.sidebar-server")
+}
+
+enum SidebarServerProjection {
+    static func entries(_ entries: [RuntimeHub.Entry]) -> [RuntimeHub.Entry] {
+        entries.filter { $0.server.isLocal } + entries.filter { !$0.server.isLocal }
+    }
+}
+
 struct SidebarRowSurface: ViewModifier {
     let selected: Bool
     @State private var hovered = false
@@ -222,7 +233,7 @@ struct WorkspaceGroupRow: View, Equatable {
             Button("解散分组", role: .destructive, action: actions.dissolve)
         }
         .onDrop(
-            of: [UTType.text],
+            of: [.acroSidebarWorkspace],
             delegate: SidebarRowDropDelegate(
                 isTargeted: Binding(get: { dropTargeted }, set: { dropTargeted = $0 }),
                 canAccept: actions.acceptWorkspaceDrop,
@@ -334,7 +345,7 @@ struct WorkspaceRow: View, Equatable {
         }
         .onDrag(actions.beginDrag)
         .onDrop(
-            of: [UTType.text],
+            of: [.acroSidebarWorkspace],
             delegate: SidebarWorkspaceRowDropDelegate(
                 edge: Binding(get: { dropEdge }, set: { dropEdge = $0 }),
                 height: snapshot.pathLabel == nil ? 32 : 40,
@@ -418,7 +429,7 @@ private struct SidebarRowDropDelegate: DropDelegate {
     }
 }
 
-private struct SidebarWorkspaceRowDropDelegate: DropDelegate {
+struct SidebarWorkspaceRowDropDelegate: DropDelegate {
     let edge: Binding<SidebarWorkspaceDropEdge?>
     let height: CGFloat
     let canAccept: (SidebarWorkspaceDropEdge) -> Bool
@@ -458,8 +469,20 @@ private struct SidebarWorkspaceRowDropDelegate: DropDelegate {
 }
 
 // SwiftUI onDrag 没有结束回调;provider 销毁时清理 ESC 取消和拖出窗口的残留状态。
-private final class WorkspaceDragItemProvider: NSItemProvider {
+final class SidebarDragItemProvider: NSItemProvider {
     var onEnd: (() -> Void)?
+
+    func registerItem(_ value: String, type: UTType) {
+        let data = Data(value.utf8)
+        registerDataRepresentation(
+            forTypeIdentifier: type.identifier,
+            visibility: .ownProcess
+        ) { completion in
+            completion(data, nil)
+            return nil
+        }
+    }
+
     deinit { onEnd?() }
 }
 
@@ -494,16 +517,16 @@ struct SidebarView: View {
             Color.clear
                 .frame(height: 24)
                 .contentShape(Rectangle())
-                .onDrop(of: [UTType.text], isTargeted: nil) { _ in
+                .onDrop(of: [.acroSidebarWorkspace], isTargeted: nil) { _ in
                     guard let payload = model.draggingWorkspace,
                           let entry = hub.entries.first(where: { $0.id == payload.serverId })
                     else { return false }
                     model.draggingWorkspace = nil
-                    model.activate(serverId: payload.serverId)
                     model.requestReorderWorkspace(
                         payload.workspaceId,
                         toGroup: nil,
-                        index: model.ungroupedWorkspaces(on: entry.connection).count
+                        index: model.ungroupedWorkspaces(on: entry.connection).count,
+                        on: entry.connection
                     )
                     return true
                 }
@@ -600,8 +623,9 @@ struct SidebarView: View {
     // 每台远程服务器一个手风琴段。接入/编辑服务器都在这里完成。
     @ViewBuilder
     private var content: some View {
-        let locals = hub.entries.filter { $0.server.isLocal }
-        let remotes = hub.entries.filter { !$0.server.isLocal }
+        let entries = SidebarServerProjection.entries(hub.entries)
+        let locals = entries.filter { $0.server.isLocal }
+        let remotes = entries.filter { !$0.server.isLocal }
         if hub.entries.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text("本机 Runtime 未就绪")
@@ -832,11 +856,15 @@ struct SidebarView: View {
                 },
                 performWorkspaceDrop: {
                     guard let payload = model.draggingWorkspace,
-                          payload.serverId == entry.id else { return false }
+                          payload.serverId == entry.id,
+                          let currentGroup = entry.connection.workspaceGroups.first(where: {
+                              $0.id == group.id
+                          })
+                    else { return false }
                     model.draggingWorkspace = nil
-                    model.activate(serverId: entry.id)
                     model.requestReorderWorkspace(
-                        payload.workspaceId, toGroup: group.id, index: group.workspaceIds.count)
+                        payload.workspaceId, toGroup: currentGroup.id,
+                        index: currentGroup.workspaceIds.count, on: entry.connection)
                     return true
                 }
             )
@@ -922,16 +950,20 @@ struct SidebarView: View {
                     model.requestMoveWorkspace(workspace, to: target)
                 },
                 beginDrag: {
+                    model.draggingServer = nil
                     let payload = WorkspaceDragPayload(workspaceId: workspace.id, serverId: entry.id)
                     model.draggingWorkspace = payload
-                    let provider = WorkspaceDragItemProvider(object: workspace.id as NSString)
+                    let provider = SidebarDragItemProvider()
+                    provider.registerItem(workspace.id, type: .acroSidebarWorkspace)
                     provider.onEnd = { Task { @MainActor in model.endWorkspaceDrag(payload) } }
                     return provider
                 },
                 acceptDrop: { edge in
                     guard let payload = model.draggingWorkspace,
                           payload.serverId == entry.id else { return false }
-                    let container = group.map { model.workspaces(in: $0, on: connection) }
+                    let targetGroup = model.workspaceGroup(
+                        containing: workspace.id, on: connection)
+                    let container = targetGroup.map { model.workspaces(in: $0, on: connection) }
                         ?? model.ungroupedWorkspaces(on: connection)
                     return SidebarWorkspaceDropPlanner.insertionIndex(
                         draggedWorkspaceId: payload.workspaceId,
@@ -943,7 +975,9 @@ struct SidebarView: View {
                 performDrop: { edge in
                     guard let payload = model.draggingWorkspace,
                           payload.serverId == entry.id else { return false }
-                    let container = group.map { model.workspaces(in: $0, on: connection) }
+                    let targetGroup = model.workspaceGroup(
+                        containing: workspace.id, on: connection)
+                    let container = targetGroup.map { model.workspaces(in: $0, on: connection) }
                         ?? model.ungroupedWorkspaces(on: connection)
                     guard let index = SidebarWorkspaceDropPlanner.insertionIndex(
                         draggedWorkspaceId: payload.workspaceId,
@@ -952,9 +986,9 @@ struct SidebarView: View {
                         edge: edge
                     ) else { return false }
                     model.draggingWorkspace = nil
-                    model.activate(serverId: entry.id)
                     model.requestReorderWorkspace(
-                        payload.workspaceId, toGroup: group?.id, index: index)
+                        payload.workspaceId, toGroup: targetGroup?.id,
+                        index: index, on: connection)
                     return true
                 }
             )

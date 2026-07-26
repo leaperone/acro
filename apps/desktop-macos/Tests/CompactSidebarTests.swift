@@ -68,9 +68,11 @@ final class CompactSidebarTests: XCTestCase {
         )
 
         XCTAssertEqual(sections.map(\.id), ["group:group-a", "ungrouped"])
+        XCTAssertEqual(sections[0].groupId, "group-a")
         XCTAssertEqual(sections[0].name, "A")
         XCTAssertEqual(sections[0].workspaces.map(\.id), [second.id, first.id])
         XCTAssertNil(sections[1].name)
+        XCTAssertNil(sections[1].groupId)
         XCTAssertEqual(sections[1].workspaces.map(\.id), [third.id])
     }
 
@@ -83,7 +85,8 @@ final class CompactSidebarTests: XCTestCase {
             groupName: nil,
             sessionCount: 1,
             isSelected: true,
-            canCreateTerminal: false
+            canCreateTerminal: false,
+            shortcutHint: "⌘1"
         )
         let connected = CompactSidebarWorkspaceSnapshot(
             id: base.id,
@@ -93,7 +96,8 @@ final class CompactSidebarTests: XCTestCase {
             groupName: base.groupName,
             sessionCount: base.sessionCount,
             isSelected: base.isSelected,
-            canCreateTerminal: true
+            canCreateTerminal: true,
+            shortcutHint: base.shortcutHint
         )
 
         XCTAssertNotEqual(base, connected)
