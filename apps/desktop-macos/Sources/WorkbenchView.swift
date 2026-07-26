@@ -60,6 +60,11 @@ struct WorkbenchView: View {
                                 maxWidth: .infinity,
                                 maxHeight: .infinity
                             )
+                            .background(
+                                model.terminalChromeAppearance.usesSharedBackdrop
+                                    ? Color(nsColor: model.terminalChromeAppearance.backgroundColor)
+                                    : Color.clear
+                            )
                             .layoutPriority(1)
 
                         if model.inspectorVisible,

@@ -719,6 +719,59 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func terminalThemeChromeUpdatesEveryCachedWorkspace() throws {
+        let model = WorkbenchModel(hub: RuntimeHub())
+        let keys = [
+            ScopedResourceID(serverId: "server", resourceId: "one"),
+            ScopedResourceID(serverId: "server", resourceId: "two"),
+        ]
+        model.selectedServerId = "server"
+        model.selectedWorkspaceId = keys[0].resourceId
+        for key in keys {
+            model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+                root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+            )
+        }
+
+        let opaque = TerminalChromeAppearance(red: 0x12, green: 0x34, blue: 0x56, opacity: 1)
+        model.applyTerminalChromeAppearance(opaque)
+        let lateKey = ScopedResourceID(serverId: "server", resourceId: "three")
+        model.workspaceLayouts[lateKey] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+        )
+
+        #expect(model.terminalChromeAppearance == opaque)
+        for key in keys + [lateKey] {
+            let appearance = try #require(
+                model.terminalPaneControllers[key]?.controller.configuration.appearance
+            )
+            #expect(appearance.chromeColors.backgroundHex == "#123456")
+            #expect(appearance.chromeColors.tabBarBackgroundHex == "#00000000")
+            #expect(appearance.chromeColors.splitButtonBackdropHex == "#00000000")
+            #expect(appearance.chromeColors.paneBackgroundHex == "#00000000")
+            #expect(appearance.usesSharedBackdrop)
+            #expect(appearance.splitButtonBackdropEffect?.fadeWidth == 99.75)
+        }
+
+        let translucent = TerminalChromeAppearance(
+            red: 0x12,
+            green: 0x34,
+            blue: 0x56,
+            opacity: 0.5
+        )
+        model.applyTerminalChromeAppearance(translucent)
+
+        for key in keys + [lateKey] {
+            let appearance = try #require(
+                model.terminalPaneControllers[key]?.controller.configuration.appearance
+            )
+            #expect(!appearance.usesSharedBackdrop)
+            #expect(appearance.chromeColors.tabBarBackgroundHex == appearance.chromeColors.backgroundHex)
+            #expect(appearance.chromeColors.tabBarBackgroundHex != "#00000000")
+        }
+    }
+
+    @Test
     func productionFileDropFailsClosedWithoutAnAuthenticatedRuntime() {
         let model = WorkbenchModel(hub: RuntimeHub())
 

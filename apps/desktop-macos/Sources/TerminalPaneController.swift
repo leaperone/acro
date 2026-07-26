@@ -16,6 +16,7 @@ final class TerminalPaneController: BonsplitDelegate {
     @ObservationIgnored private var tabIdsBySessionId: [String: TabID] = [:]
     @ObservationIgnored private var forcedCloseTabIds: Set<TabID> = []
     @ObservationIgnored private var trafficLightClearance: Bool
+    @ObservationIgnored private var terminalChromeAppearance: TerminalChromeAppearance
     @ObservationIgnored private let fileDropHandler: @MainActor (ScopedResourceID, [URL]) -> Bool
 
     init(
@@ -23,15 +24,20 @@ final class TerminalPaneController: BonsplitDelegate {
         key: ScopedResourceID,
         layout: WorkspaceTerminalLayout,
         trafficLightClearance: Bool,
+        terminalChromeAppearance: TerminalChromeAppearance = .fallback,
         fileDropHandler: @escaping @MainActor (ScopedResourceID, [URL]) -> Bool
     ) {
         self.model = model
         self.key = key
         self.representedLayout = layout
         self.trafficLightClearance = trafficLightClearance
+        self.terminalChromeAppearance = terminalChromeAppearance
         self.fileDropHandler = fileDropHandler
         self.controller = BonsplitController(
-            configuration: Self.configuration(trafficLightClearance: trafficLightClearance)
+            configuration: Self.configuration(
+                trafficLightClearance: trafficLightClearance,
+                terminalChromeAppearance: terminalChromeAppearance
+            )
         )
         restore(layout)
     }
@@ -56,6 +62,12 @@ final class TerminalPaneController: BonsplitDelegate {
         } else {
             refreshTabMetadata()
         }
+    }
+
+    func applyTerminalChromeAppearance(_ appearance: TerminalChromeAppearance) {
+        guard terminalChromeAppearance != appearance else { return }
+        terminalChromeAppearance = appearance
+        Self.applyTerminalChromeAppearance(appearance, to: &controller.configuration.appearance)
     }
 
     func deactivate() {
@@ -270,8 +282,11 @@ final class TerminalPaneController: BonsplitDelegate {
         false
     }
 
-    private static func configuration(trafficLightClearance: Bool) -> BonsplitConfiguration {
-        let appearance = BonsplitConfiguration.Appearance(
+    private static func configuration(
+        trafficLightClearance: Bool,
+        terminalChromeAppearance: TerminalChromeAppearance
+    ) -> BonsplitConfiguration {
+        var appearance = BonsplitConfiguration.Appearance(
             tabBarHeight: 28,
             dividerHitExpansion: 5,
             showSplitButtons: true,
@@ -295,6 +310,7 @@ final class TerminalPaneController: BonsplitDelegate {
             ),
             enableAnimations: false
         )
+        applyTerminalChromeAppearance(terminalChromeAppearance, to: &appearance)
         return BonsplitConfiguration(
             allowSplits: true,
             allowCloseTabs: true,
@@ -311,13 +327,39 @@ final class TerminalPaneController: BonsplitDelegate {
         )
     }
 
+    private static func applyTerminalChromeAppearance(
+        _ terminal: TerminalChromeAppearance,
+        to appearance: inout BonsplitConfiguration.Appearance
+    ) {
+        let surfaceHex = terminal.backgroundHex
+        appearance.chromeColors = terminal.usesSharedBackdrop
+            ? .init(
+                backgroundHex: surfaceHex,
+                tabBarBackgroundHex: "#00000000",
+                splitButtonBackdropHex: "#00000000",
+                paneBackgroundHex: "#00000000",
+                borderHex: terminal.borderHex
+            )
+            : .init(
+                backgroundHex: surfaceHex,
+                tabBarBackgroundHex: surfaceHex,
+                splitButtonBackdropHex: surfaceHex,
+                paneBackgroundHex: "#00000000",
+                borderHex: terminal.borderHex
+            )
+        appearance.usesSharedBackdrop = terminal.usesSharedBackdrop
+    }
+
     private func restore(_ layout: WorkspaceTerminalLayout) {
         controller.isInteractive = false
         controller.delegate = nil
         controller.onTabCloseRequest = nil
         controller.onFileDrop = nil
         let restoredController = BonsplitController(
-            configuration: Self.configuration(trafficLightClearance: trafficLightClearance)
+            configuration: Self.configuration(
+                trafficLightClearance: trafficLightClearance,
+                terminalChromeAppearance: terminalChromeAppearance
+            )
         )
         controller = restoredController
         sessionIdsByTabId.removeAll()

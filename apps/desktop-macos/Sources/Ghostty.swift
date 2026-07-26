@@ -4,12 +4,104 @@
 import AppKit
 import GhosttyKit
 
+struct TerminalChromeAppearance: Equatable {
+    let red: UInt8
+    let green: UInt8
+    let blue: UInt8
+    let opacity: Double
+
+    init(red: UInt8, green: UInt8, blue: UInt8, opacity: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+        self.opacity = min(1, max(0, opacity.isFinite ? opacity : 1))
+    }
+
+    static var fallback: TerminalChromeAppearance {
+        let color = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
+        return TerminalChromeAppearance(
+            red: UInt8((color.redComponent * 255).rounded()),
+            green: UInt8((color.greenComponent * 255).rounded()),
+            blue: UInt8((color.blueComponent * 255).rounded()),
+            opacity: 1
+        )
+    }
+
+    var backgroundColor: NSColor {
+        NSColor(
+            red: CGFloat(red) / 255,
+            green: CGFloat(green) / 255,
+            blue: CGFloat(blue) / 255,
+            alpha: 1
+        )
+    }
+
+    var usesSharedBackdrop: Bool { opacity >= 0.999 }
+
+    var backgroundHex: String {
+        Self.hex(chromeBackgroundColor)
+    }
+
+    private var chromeBackgroundColor: NSColor {
+        if usesSharedBackdrop { return backgroundColor }
+        let foreground = backgroundColor
+        let background = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) ?? .windowBackgroundColor
+        let amount = CGFloat(opacity)
+        return NSColor(
+            red: foreground.redComponent * amount + background.redComponent * (1 - amount),
+            green: foreground.greenComponent * amount + background.greenComponent * (1 - amount),
+            blue: foreground.blueComponent * amount + background.blueComponent * (1 - amount),
+            alpha: 1
+        )
+    }
+
+    var borderHex: String {
+        let resolved = chromeBackgroundColor.usingColorSpace(.sRGB) ?? chromeBackgroundColor
+        let luminance = 0.299 * resolved.redComponent
+            + 0.587 * resolved.greenComponent
+            + 0.114 * resolved.blueComponent
+        let light = luminance > 0.5
+        let adjustment: CGFloat = light ? -0.12 : 0.16
+        let adjusted = NSColor(
+            red: min(1, max(0, resolved.redComponent + adjustment)),
+            green: min(1, max(0, resolved.greenComponent + adjustment)),
+            blue: min(1, max(0, resolved.blueComponent + adjustment)),
+            alpha: light ? 0.26 : 0.36
+        )
+        return Self.hex(adjusted, includeAlpha: true)
+    }
+
+    private static func hex(_ color: NSColor, includeAlpha: Bool = false) -> String {
+        let resolved = color.usingColorSpace(.sRGB) ?? color
+        return hex(
+            red: UInt8((resolved.redComponent * 255).rounded()),
+            green: UInt8((resolved.greenComponent * 255).rounded()),
+            blue: UInt8((resolved.blueComponent * 255).rounded()),
+            alpha: UInt8((resolved.alphaComponent * 255).rounded()),
+            includeAlpha: includeAlpha
+        )
+    }
+
+    private static func hex(
+        red: UInt8,
+        green: UInt8,
+        blue: UInt8,
+        alpha: UInt8 = 255,
+        includeAlpha: Bool = false
+    ) -> String {
+        includeAlpha
+            ? String(format: "#%02X%02X%02X%02X", red, green, blue, alpha)
+            : String(format: "#%02X%02X%02X", red, green, blue)
+    }
+}
+
 @MainActor
 final class Ghostty {
     static let shared = Ghostty()
 
     private(set) var app: ghostty_app_t?
     private(set) var config: ghostty_config_t?
+    private(set) var chromeAppearance = TerminalChromeAppearance.fallback
 
     private init() {
         Self.setupResourcesDir()
@@ -67,6 +159,7 @@ final class Ghostty {
             ghostty_config_free(cfg)
             return
         }
+        chromeAppearance = Self.chromeAppearance(from: cfg)
         app = created
         config = cfg
     }
@@ -116,8 +209,34 @@ final class Ghostty {
     func reloadConfig() {
         guard let app, let cfg = Self.makeConfig() else { return }
         ghostty_app_update_config(app, cfg)
+        chromeAppearance = Self.chromeAppearance(from: cfg)
         if let config { ghostty_config_free(config) }
         config = cfg
+    }
+
+    static func chromeAppearance(from config: ghostty_config_t) -> TerminalChromeAppearance {
+        var color = ghostty_config_color_s()
+        let colorKey = "background"
+        guard ghostty_config_get(
+            config,
+            &color,
+            colorKey,
+            UInt(colorKey.lengthOfBytes(using: .utf8))
+        ) else { return .fallback }
+        var opacity = 1.0
+        let opacityKey = "background-opacity"
+        _ = ghostty_config_get(
+            config,
+            &opacity,
+            opacityKey,
+            UInt(opacityKey.lengthOfBytes(using: .utf8))
+        )
+        return TerminalChromeAppearance(
+            red: color.r,
+            green: color.g,
+            blue: color.b,
+            opacity: opacity
+        )
     }
 
     // 资源目录:env 覆盖 > .app bundle > 包目录(swift build 布局)

@@ -1,4 +1,5 @@
 import XCTest
+import GhosttyKit
 @testable import AcroDesktop
 
 // Acro 的 ghostty 叠加层配置行生成:字体覆盖语义 + CJK 回退。
@@ -35,5 +36,31 @@ final class TerminalAppearanceTests: XCTestCase {
         let lines = TerminalAppearance.confLines(fontFamily: "", fontSize: 0, theme: "")
         XCTAssertFalse(lines.contains { $0.hasPrefix("font-size") })
         XCTAssertFalse(lines.contains { $0.hasPrefix("theme") })
+    }
+
+    @MainActor
+    func testFinalizedGhosttyConfigDrivesChromeAppearance() throws {
+        _ = Ghostty.shared
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config")
+        try "background = 123456\nbackground-opacity = 0.5\n".write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let config = try XCTUnwrap(ghostty_config_new())
+        defer { ghostty_config_free(config) }
+        configURL.path.withCString { ghostty_config_load_file(config, $0) }
+        ghostty_config_finalize(config)
+
+        let appearance = Ghostty.chromeAppearance(from: config)
+
+        XCTAssertEqual(appearance.red, 0x12)
+        XCTAssertEqual(appearance.green, 0x34)
+        XCTAssertEqual(appearance.blue, 0x56)
+        XCTAssertEqual(appearance.opacity, 0.5, accuracy: 0.0001)
     }
 }

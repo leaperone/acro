@@ -162,6 +162,7 @@ final class WorkbenchModel: ObservableObject {
         return pendingRuntime
     }
     @Published var errorMessage: String?
+    @Published private(set) var terminalChromeAppearance = TerminalChromeAppearance.fallback
 
     // ---- 项目目录选择器 ----
 
@@ -381,6 +382,14 @@ final class WorkbenchModel: ObservableObject {
         return terminalPaneControllers[key]
     }
 
+    func applyTerminalChromeAppearance(_ appearance: TerminalChromeAppearance) {
+        guard terminalChromeAppearance != appearance else { return }
+        terminalChromeAppearance = appearance
+        for paneController in terminalPaneControllers.values {
+            paneController.applyTerminalChromeAppearance(appearance)
+        }
+    }
+
     var selectedWorkspace: Workspace? {
         runtime.workspaces.first { $0.id == selectedWorkspaceId }
     }
@@ -528,6 +537,7 @@ final class WorkbenchModel: ObservableObject {
                     key: key,
                     layout: layout,
                     trafficLightClearance: leftSidebarPresentation == .hidden,
+                    terminalChromeAppearance: terminalChromeAppearance,
                     fileDropHandler: { [weak self] sessionKey, urls in
                         self?.handleTerminalFileDrop(
                             urls,
