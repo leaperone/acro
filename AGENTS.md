@@ -53,10 +53,14 @@ Acro 是团队内部使用的远程开发控制台。它管理工作区、项目
 
 步骤：
 
-1. **重新打包**（会 `rm -rf dist` 再 release 构建；正在跑的 PTY 有各自打开的文件句柄，不受影响）：
+1. **使用稳定身份重新打包**（会 `rm -rf dist` 再 release 构建；正在跑的 PTY 有各自打开的文件句柄，不受影响）：
    ```bash
-   bash apps/desktop-macos/scripts/package-app.sh <version> <build>   # 如 0.0.8-beta.9 39
+   ACRO_SIGN_IDENTITY="Developer ID Application: Zhuhai Zhiwei Network Technology Co., Ltd. (5UAHRS482C)" \
+     bash apps/desktop-macos/scripts/package-app.sh <version> <build>
+   codesign -dvv --requirements - apps/desktop-macos/dist/Acro.app 2>&1 \
+     | grep -E "TeamIdentifier=|designated"
    ```
+   验证输出必须包含 `TeamIdentifier=5UAHRS482C`，且 designated requirement 不得只绑定 `cdhash`。不要用 ad-hoc 签名做日常热替换：每次构建都会改变 TCC 身份，导致 macOS 反复询问 App Data 等权限。
 2. **定位进程**：
    ```bash
    ps -Ao pid,ppid,pgid,command | grep -E "AcroDesktop|runtime/runtime.cjs|runtime/daemon.cjs" | grep -v grep
