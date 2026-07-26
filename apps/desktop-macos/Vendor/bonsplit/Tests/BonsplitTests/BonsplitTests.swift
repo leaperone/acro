@@ -1935,6 +1935,43 @@ final class BonsplitTests: XCTestCase {
     }
 
     @MainActor
+    func testTabContextMenuAllowlistDoesNotTreatMoveDestinationIdsAsActions() throws {
+        let state = TabContextMenuState(
+            isPinned: false,
+            isUnread: false,
+            isBrowser: false,
+            isAudioMuted: false,
+            isTerminal: true,
+            hasCustomTitle: false,
+            canCloseToLeft: false,
+            canCloseToRight: false,
+            canCloseOthers: false,
+            canMoveToNewWorkspace: false,
+            canMoveToLeftPane: false,
+            canMoveToRightPane: false,
+            forkConversationDefaultAction: .forkConversationRight,
+            isZoomed: false,
+            hasSplits: false,
+            shortcuts: [:]
+        )
+        let menu = TabContextMenuBuilder.makeMenu(
+            snapshot: TabContextMenuSnapshot(
+                tabId: UUID(),
+                state: state,
+                moveDestinationsProvider: {
+                    [TabContextMoveDestination(id: "togglePin", title: "Workspace")]
+                },
+                forkConversationAvailabilityProvider: { .hidden },
+                allowedActions: [.move]
+            ),
+            target: TabContextMenuActionTarget()
+        )
+        let moveItem = try XCTUnwrap(menu.items.first(where: { $0.title == "Move Tab" }))
+
+        XCTAssertEqual(moveItem.submenu?.items.map(\.title), ["Workspace"])
+    }
+
+    @MainActor
     func testBrowserTabContextMenuCreatesAudioMuteToggle() throws {
         let target = TabContextMenuActionTarget()
         var selectedAction: TabContextAction?

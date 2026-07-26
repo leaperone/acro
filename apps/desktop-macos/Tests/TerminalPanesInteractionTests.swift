@@ -738,8 +738,8 @@ struct TerminalPanesInteractionTests {
             .closeOthers,
             .moveToLeftPane,
             .moveToRightPane,
-            .newTerminalToRight,
             .toggleZoom,
+            .toggleFullWidthTab,
         ])
     }
 
@@ -781,6 +781,80 @@ struct TerminalPanesInteractionTests {
         #expect(Set(model.pendingSessionTerminations.map(\.id)) == [sessions[0].id, sessions[2].id])
         #expect(model.pendingSessionTermination == nil)
         #expect(paneController.controller.allTabIds.count == 3)
+    }
+
+    @Test
+    func batchTerminationClosesOnlySuccessfulSessionsAndRefreshesOnce() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let removed = makeSession(id: UUID().uuidString)
+        let failed = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [removed.id, failed.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        var refreshCount = 0
+        var removedSessionIds: [String] = []
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                refreshCount += 1
+                return .init(
+                    workspaceGroups: [],
+                    workspaces: [Workspace(
+                        id: workspace.id,
+                        name: workspace.name,
+                        sessionIds: [failed.id],
+                        createdAt: workspace.createdAt,
+                        layout: nil,
+                        layoutRev: nil
+                    )],
+                    sessions: [failed],
+                    focus: []
+                )
+            },
+            rpcProvider: { method, params in
+                let sessionId = params["sessionId"] as? String
+                if method == "session.remove", sessionId == failed.id {
+                    throw RpcError(message: "remove failed")
+                }
+                if method == "session.remove", let sessionId {
+                    removedSessionIds.append(sessionId)
+                }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [removed, failed],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [removed.id, failed.id]))
+        )
+
+        await model.terminateSessions([removed, failed], on: runtime)
+
+        #expect(removedSessionIds == [removed.id])
+        #expect(refreshCount == 1)
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [failed.id])
+        #expect(model.errorMessage == "remove failed")
     }
 
     @Test

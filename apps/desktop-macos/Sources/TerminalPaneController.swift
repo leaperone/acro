@@ -271,6 +271,40 @@ final class TerminalPaneController: BonsplitDelegate {
         createTerminal(in: pane)
     }
 
+    func splitTabBar(
+        _ controller: BonsplitController,
+        didRequestTabContextAction action: TabContextAction,
+        for tab: Bonsplit.Tab,
+        inPane pane: PaneID
+    ) {
+        switch action {
+        case .closeToLeft, .closeToRight, .closeOthers:
+            let tabs = controller.tabs(inPane: pane)
+            guard let anchor = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+            let targets: [Bonsplit.Tab] = switch action {
+            case .closeToLeft:
+                Array(tabs[..<anchor])
+            case .closeToRight:
+                Array(tabs.dropFirst(anchor + 1))
+            case .closeOthers:
+                tabs.filter { $0.id != tab.id }
+            default:
+                []
+            }
+            model?.requestKillTabs(targets.compactMap { sessionIdsByTabId[$0.id] }, for: key)
+        case .moveToLeftPane, .moveToRightPane:
+            let direction: NavigationDirection = action == .moveToLeftPane ? .left : .right
+            guard let destination = controller.adjacentPane(to: pane, direction: direction) else {
+                return
+            }
+            _ = controller.moveTab(tab.id, toPane: destination, atIndex: nil)
+        case .toggleZoom:
+            _ = controller.requestTabZoomToggle(for: tab.id, inPane: pane)
+        default:
+            break
+        }
+    }
+
     func splitTabBar(_ controller: BonsplitController, didChangeGeometry snapshot: LayoutSnapshot) {
         persist(markDirty: true)
     }
@@ -317,7 +351,16 @@ final class TerminalPaneController: BonsplitDelegate {
             allowCloseLastPane: false,
             allowTabReordering: true,
             allowCrossPaneTabMove: true,
-            allowsTabContextMenu: false,
+            allowsTabContextMenu: true,
+            allowedTabContextActions: [
+                .closeToLeft,
+                .closeToRight,
+                .closeOthers,
+                .moveToLeftPane,
+                .moveToRightPane,
+                .toggleZoom,
+                .toggleFullWidthTab,
+            ],
             autoCloseEmptyPanes: true,
             contentViewLifecycle: .keepAllAlive,
             newTabPosition: .current,
