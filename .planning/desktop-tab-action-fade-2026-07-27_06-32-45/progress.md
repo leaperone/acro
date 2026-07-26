@@ -10,14 +10,17 @@
 - 确认标签高度、minimal、拖拽和 overflow 已一致。
 - 确认下一差距位于 `splitButtonBackdropEffect`。
 - 新增宿主配置回归；当前 effect 为 nil，按预期失败。
+- 在 Acro 单一 Bonsplit appearance 配置点接入 cmux 当前生产 effect。
+- 宿主配置回归从红转绿。
+- 全量 Desktop、TypeScript、构建和 release script 验证通过。
 
 ## 进行中
 
-- 提交红色测试，再接入 cmux 生产 effect。
+- 推送 PR 并执行 preflight。
 
 ## 修改文件
 
-- 预计修改 `TerminalPaneController.swift`、`TerminalPanesInteractionTests.swift`。
+- `TerminalPaneController.swift`、`TerminalPanesInteractionTests.swift`。
 
 ## 验证结果
 
@@ -25,6 +28,11 @@
 |---|---|---|
 | 源码对照 | Acro 使用默认 effect，cmux 使用显式生产值 | 已确认 |
 | `terminalTabsUseCmuxActionLaneFade` | effect 实际为 nil | 红色测试 |
+| `terminalTabsUseCmuxActionLaneFade` | cmux 生产参数逐字段一致 | 已通过 |
+| 全量 Desktop | 80 XCTest + 25 Swift Testing | 已通过 |
+| `pnpm check` | TypeScript 与 15 项 Node 测试 | 已通过 |
+| `pnpm build` | CLI/runtime 构建；仅现有 import.meta 警告 | 已通过 |
+| Desktop release scripts | 7 项通过 | 已通过 |
 
 ## 错误与恢复
 

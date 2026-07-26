@@ -276,6 +276,16 @@ final class TerminalPaneController: BonsplitDelegate {
             dividerHitExpansion: 5,
             showSplitButtons: true,
             splitButtons: [.newTerminal, .splitRight, .splitDown],
+            splitButtonBackdropEffect: .init(
+                fadeWidth: 99.75,
+                contentFadeWidth: 28.875,
+                solidWidth: 23.875,
+                solidSurfaceWidthAdjustment: -80,
+                separatorFadeWidth: 99.75,
+                fadeRampStartFraction: 0.60,
+                trailingOpacity: 0.8625,
+                contentOcclusionFraction: 0.6875
+            ),
             tabBarLeadingInset: trafficLightClearance ? 80 : 0,
             splitButtonTooltips: .init(
                 newTerminal: "新建终端",
