@@ -12,6 +12,8 @@
 - 新增真实 NSWindow/NSHostingView/NSEvent 标签拖拽测试。
 - 修正测试最初把整条标签栏背景算成第四个标签的问题。
 - 在当前 safe-area 补偿和禁用窗口隐式拖动条件下验证重排与持久化通过。
+- 根据 preflight 复核，将测试升级为真实 `WorkbenchView` 宿主，不再手工复制窗口参数。
+- 改为定向发送 NSEvent，并恢复原 key window，避免吞掉进程级鼠标事件。
 
 ## 进行中
 
@@ -20,6 +22,7 @@
 ## 修改文件
 
 - `.planning/tab-drag-input-chain-2026-07-27_03-37-55/*`
+- `apps/desktop-macos/Sources/RuntimeHub.swift`
 - 预计修改 `apps/desktop-macos/Tests/TerminalPanesInteractionTests.swift`
 
 ## 验证结果
@@ -30,6 +33,7 @@
 | 配置检查 | 重排与跨窗格移动均开启 | 通过 |
 | 真实桌面自动化 | Orca runtime 不可用 | 未执行 |
 | 真实 AppKit 鼠标链 | down/drag/up 将首标签移动到末尾并持久化 | 通过 |
+| 真实 Workbench 窗口配置 | fullSize/title hidden/transparent/isMovable=false 均由产品代码生效 | 通过 |
 | Acro Desktop 全量测试 | 79 XCTest 与全部 Swift Testing 通过 | 通过 |
 | `pnpm check` | protocol/runtime/cli/mobile 通过 | 通过 |
 | `pnpm build` | workspace build 通过，仅既有 `import.meta` 警告 | 通过 |
@@ -47,3 +51,4 @@
 | Orca runtime unavailable | 1 | 停止重试，改用 AppKit 真实事件测试 |
 | 首次测试识别到 4 个 hit region | 1 | 排除覆盖整条标签栏的背景 provider，只使用真实 tab item frame |
 | 新 worktree 缺少 `ghostty.h` | 1 | 运行仓库 `setup-ghostty.sh` 后测试正常编译 |
+| 首版测试复制宿主窗口参数 | 1 | 挂载真实 `WorkbenchView`，等待异步窗口配置后再发送事件 |

@@ -26,6 +26,7 @@
 
 ## 修改路径
 
+- `apps/desktop-macos/Sources/RuntimeHub.swift`
 - `apps/desktop-macos/Tests/TerminalPanesInteractionTests.swift`
 - 仅在测试证明真实断点时修改对应产品或 vendored Bonsplit 文件。
 
@@ -67,3 +68,4 @@
 | 错误 | 尝试 | 处理结果 |
 |---|---:|---|
 | Orca Computer Use runtime 未启动 | 1 | 按项目规则停止重试，使用真实 AppKit 事件与窗口验证 |
+| 首版测试手工复制窗口参数，未挂载真实 Workbench | 1 | 改为完整 `WorkbenchView`，由 `WindowConfigurator` 自己配置窗口 |

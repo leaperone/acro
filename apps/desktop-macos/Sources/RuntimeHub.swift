@@ -17,6 +17,10 @@ final class RuntimeHub: ObservableObject {
     @Published private(set) var entries: [Entry] = []
     private var cancellables: [String: AnyCancellable] = [:]
 
+    init(entries: [Entry] = []) {
+        self.entries = entries
+    }
+
     // 与磁盘配置对账:新增的服务器建连接,删除的断开,endpoints/凭据变了重连
     func reload() {
         let config = ClientConfig.load()

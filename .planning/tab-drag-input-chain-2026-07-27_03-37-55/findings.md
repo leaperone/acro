@@ -22,6 +22,9 @@
 - 新增的真实窗口测试已证明完整链路可用：本地 NSEvent monitor 收到 down/drag/up，Bonsplit 执行 targetIndex=3 的 drop，工作区布局持久化为 `2,3,1`。
 - 在 `fullSizeContentView`、`window.isMovable=false` 和 `-32pt` 顶部补偿同时存在时仍通过，因此 PR #122 没有造成标签 frame 与 window 坐标错位。
 - 当前产品实现不需要重写；保留一条宿主级回归测试即可防止未来退化成“API 能重排、鼠标不能重排”。
+- Preflight 复核指出首版测试手工复制 `-32pt`、full-size titlebar 和 `isMovable=false`，无法证明 `WorkbenchView` 自己的接入链。最终测试已改为直接挂载完整 `WorkbenchView`。
+- `RuntimeHub` 增加可注入初始 entries 的内部初始化入口，让测试使用真实服务器连接快照，不写本机 ClientConfig，也不增加测试专用全局状态。
+- 最终事件直接经 `NSApp.sendEvent` 定向发送到测试窗口，不再消费进程级鼠标队列；测试保存并恢复原 key window。
 
 ## 技术决策
 
@@ -34,7 +37,7 @@
 
 - Computer Use 当前不可用，不能声明完成了真实人工指针验收。
 - 测试必须使用标签真实 frame，不能硬编码假坐标后只验证数据层。
-- `BonsplitTabItemHitRegionProviding` 同时包含整条标签栏背景和单个标签区域；测试只选择窄于宿主一半的真实标签 item，避免把背景当作拖拽起点。
+- `BonsplitTabItemHitRegionProviding` 同时包含整条标签栏背景和单个标签区域；最终测试排除包含其他 hit region 的容器 provider，不依赖固定标签宽度。
 
 ## 参考指针
 

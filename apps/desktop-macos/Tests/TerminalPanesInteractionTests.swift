@@ -44,44 +44,79 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
-    func mouseDragBetweenRenderedTabsReordersAndPersists() throws {
-        let model = WorkbenchModel(hub: RuntimeHub())
+    func mouseDragBetweenRenderedTabsReordersAndPersists() async throws {
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
         let sessions = [UUID().uuidString, UUID().uuidString, UUID().uuidString]
+        let runtime = RuntimeConnection()
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: sessions,
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: sessions.map { id in
+                Session(
+                    id: id,
+                    cwd: "/tmp",
+                    command: "zsh",
+                    cols: 80,
+                    rows: 24,
+                    createdAt: "2026-07-27T00:00:00Z",
+                    alive: true,
+                    exitCode: nil,
+                    title: nil,
+                    agent: nil
+                )
+            },
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let hub = RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        let model = WorkbenchModel(hub: hub)
+        model.restoreLayoutIfNeeded()
         model.selectedServerId = key.serverId
         model.selectedWorkspaceId = key.resourceId
+        model.setLeftSidebarPresentation(.wide)
         model.workspaceLayouts[key] = WorkspaceTerminalLayout(
             root: .pane(PaneTabGroup(sessionIds: sessions))
         )
 
-        let runtime = RuntimeConnection()
-        let hostingView = NSHostingView(rootView:
-            TerminalPanesView(model: model, runtime: runtime)
-                .padding(.top, WorkbenchLayoutMetrics.terminalContentTopPadding(
-                    isFullScreen: false,
-                    nativeTitlebarHeight: 32,
-                    hostingSafeAreaTop: 32
-                ))
-                .ignoresSafeArea(.container, edges: .top)
-        )
+        let hostingView = NSHostingView(rootView: WorkbenchView(model: model, runtime: runtime))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
-        defer { window.orderOut(nil) }
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovable = false
-        hostingView.frame = window.contentView?.bounds ?? .zero
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        hostingView.frame = NSRect(x: 0, y: 0, width: 900, height: 500)
         hostingView.autoresizingMask = [.width, .height]
-        window.contentView?.addSubview(hostingView)
+        window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
 
         window.contentView?.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        try await Task.sleep(for: .milliseconds(150))
         window.contentView?.layoutSubtreeIfNeeded()
+
+        #expect(window.styleMask.contains(.fullSizeContentView))
+        #expect(window.titleVisibility == .hidden)
+        #expect(window.titlebarAppearsTransparent)
+        #expect(!window.isMovable)
 
         let tabViews = renderedTabItemHitRegions(in: hostingView)
             .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
@@ -99,9 +134,8 @@ struct TerminalPanesInteractionTests {
             try mouseEvent(.leftMouseDragged, at: destinationPoint, in: window),
             try mouseEvent(.leftMouseUp, at: destinationPoint, in: window),
         ] {
-            NSApp.postEvent(event, atStart: false)
+            NSApp.sendEvent(event)
         }
-        drainMouseEvents()
 
         #expect(model.workspaceLayouts[key]?.root?.sessionIds == [
             sessions[1], sessions[2], sessions[0],
@@ -319,17 +353,4 @@ private func mouseEvent(
         clickCount: 1,
         pressure: 1
     ))
-}
-
-@MainActor
-private func drainMouseEvents() {
-    let deadline = Date().addingTimeInterval(0.2)
-    while let event = NSApp.nextEvent(
-        matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp],
-        until: deadline,
-        inMode: .default,
-        dequeue: true
-    ) {
-        NSApp.sendEvent(event)
-    }
 }
