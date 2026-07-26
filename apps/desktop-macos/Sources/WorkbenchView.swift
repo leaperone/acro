@@ -188,7 +188,10 @@ struct WorkbenchView: View {
         }
         .confirmationDialog("关闭终端？", isPresented: terminationPresented) {
             Button("关闭", role: .destructive) {
-                if let session = model.pendingSessionTermination {
+                if !model.pendingSessionTerminations.isEmpty {
+                    let sessions = model.pendingSessionTerminations
+                    Task { await model.terminateSessions(sessions) }
+                } else if let session = model.pendingSessionTermination {
                     Task { await model.terminateSession(session) }
                 }
             }
@@ -308,8 +311,16 @@ struct WorkbenchView: View {
 
     private var terminationPresented: Binding<Bool> {
         Binding(
-            get: { model.pendingSessionTermination != nil },
-            set: { if !$0 { model.pendingSessionTermination = nil } }
+            get: {
+                model.pendingSessionTermination != nil
+                    || !model.pendingSessionTerminations.isEmpty
+            },
+            set: {
+                if !$0 {
+                    model.pendingSessionTermination = nil
+                    model.pendingSessionTerminations = []
+                }
+            }
         )
     }
 

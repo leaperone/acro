@@ -1245,6 +1245,7 @@ struct TabBarView: View {
             shortcutModifierSymbol: controlKeyMonitor.shortcutModifierSymbol,
             allowsClose: controller.configuration.allowCloseTabs,
             allowsContextMenu: controller.configuration.allowsTabContextMenu,
+            allowedContextActions: controller.configuration.allowedTabContextActions,
             contextMenuState: contextMenuState,
             moveDestinationsProvider: {
                 controller.tabContextMoveDestinationsProvider?(TabID(id: tab.id), pane.id) ?? []

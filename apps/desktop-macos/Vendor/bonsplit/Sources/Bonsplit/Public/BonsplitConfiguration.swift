@@ -65,6 +65,9 @@ public struct BonsplitConfiguration: Sendable {
     /// Whether tabs install and present their standard context menu.
     public var allowsTabContextMenu: Bool
 
+    /// Optional host allowlist for tab context-menu actions. `nil` preserves the full standard menu.
+    public var allowedTabContextActions: Set<TabContextAction>?
+
     /// Whether to automatically close empty panes
     public var autoCloseEmptyPanes: Bool
 
@@ -114,6 +117,7 @@ public struct BonsplitConfiguration: Sendable {
         allowTabReordering: Bool = true,
         allowCrossPaneTabMove: Bool = true,
         allowsTabContextMenu: Bool = true,
+        allowedTabContextActions: Set<TabContextAction>? = nil,
         autoCloseEmptyPanes: Bool = true,
         contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch,
         newTabPosition: NewTabPosition = .current,
@@ -127,6 +131,7 @@ public struct BonsplitConfiguration: Sendable {
         self.allowTabReordering = allowTabReordering
         self.allowCrossPaneTabMove = allowCrossPaneTabMove
         self.allowsTabContextMenu = allowsTabContextMenu
+        self.allowedTabContextActions = allowedTabContextActions
         self.autoCloseEmptyPanes = autoCloseEmptyPanes
         self.contentViewLifecycle = contentViewLifecycle
         self.newTabPosition = newTabPosition

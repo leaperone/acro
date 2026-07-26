@@ -719,6 +719,167 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func terminalTabsExposeOnlySupportedContextActions() throws {
+        let model = WorkbenchModel(hub: RuntimeHub())
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+        )
+        let configuration = try #require(
+            model.currentTerminalPaneController?.controller.configuration
+        )
+
+        #expect(configuration.allowsTabContextMenu)
+        #expect(configuration.allowedTabContextActions == [
+            .closeToLeft,
+            .closeToRight,
+            .closeOthers,
+            .moveToLeftPane,
+            .moveToRightPane,
+            .toggleZoom,
+            .toggleFullWidthTab,
+        ])
+    }
+
+    @Test
+    func closeOtherContextActionRequestsOneBatchConfirmation() throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let sessions = (0..<3).map { _ in makeSession(id: UUID().uuidString) }
+        let (_, hub) = makeRuntimeFixture(
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: sessions.map(\.id),
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: sessions
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(
+                sessionIds: sessions.map(\.id),
+                selectedSessionId: sessions[1].id
+            ))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+        let pane = try #require(paneController.controller.allPaneIds.first)
+        let anchor = try #require(paneController.controller.tabs(inPane: pane).dropFirst().first)
+
+        paneController.splitTabBar(
+            paneController.controller,
+            didRequestTabContextAction: .closeOthers,
+            for: anchor,
+            inPane: pane
+        )
+
+        #expect(Set(model.pendingSessionTerminations.map(\.id)) == [sessions[0].id, sessions[2].id])
+        #expect(model.pendingSessionTermination == nil)
+        #expect(paneController.controller.allTabIds.count == 3)
+    }
+
+    @Test
+    func batchTerminationClosesOnlySuccessfulSessionsAndRefreshesOnce() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let removed = makeSession(id: UUID().uuidString)
+        let failed = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [removed.id, failed.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        var refreshCount = 0
+        var removedSessionIds: [String] = []
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                refreshCount += 1
+                return .init(
+                    workspaceGroups: [],
+                    workspaces: [Workspace(
+                        id: workspace.id,
+                        name: workspace.name,
+                        sessionIds: [failed.id],
+                        createdAt: workspace.createdAt,
+                        layout: nil,
+                        layoutRev: nil
+                    )],
+                    sessions: [failed],
+                    focus: []
+                )
+            },
+            rpcProvider: { method, params in
+                let sessionId = params["sessionId"] as? String
+                if method == "session.remove", sessionId == failed.id {
+                    throw RpcError(message: "remove failed")
+                }
+                if method == "session.remove", let sessionId {
+                    removedSessionIds.append(sessionId)
+                }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [removed, failed],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [removed.id, failed.id]))
+        )
+
+        await model.terminateSessions([removed, failed], on: runtime)
+
+        #expect(removedSessionIds == [removed.id])
+        #expect(refreshCount == 1)
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [failed.id])
+        #expect(model.errorMessage == "remove failed")
+    }
+
+    @Test
+    func contextActionMovesTabToAdjacentPaneAndPersists() throws {
+        let fixture = makeSplitFixture()
+        let paneController = try #require(fixture.model.currentTerminalPaneController)
+        let panes = paneController.controller.allPaneIds
+        let left = try #require(panes.first)
+        let right = try #require(paneController.controller.adjacentPane(to: left, direction: .right))
+        let tab = try #require(paneController.controller.tabs(inPane: left).first)
+        let sessionId = try #require(paneController.sessionId(for: tab.id))
+
+        paneController.splitTabBar(
+            paneController.controller,
+            didRequestTabContextAction: .moveToRightPane,
+            for: tab,
+            inPane: left
+        )
+
+        #expect(paneController.controller.paneId(containing: tab.id) == right)
+        #expect(fixture.model.workspaceLayouts[fixture.key]?.root?.pane(withId: right.id.uuidString)?
+            .sessionIds.contains(sessionId) == true)
+    }
+
+    @Test
     func terminalThemeChromeUpdatesEveryCachedWorkspace() throws {
         let model = WorkbenchModel(hub: RuntimeHub())
         let keys = [

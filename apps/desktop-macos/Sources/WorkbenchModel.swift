@@ -138,6 +138,9 @@ final class WorkbenchModel: ObservableObject {
     @Published var pendingSessionTermination: Session? {
         didSet { capturePendingServerIfNeeded(pendingSessionTermination != nil) }
     }
+    @Published var pendingSessionTerminations: [Session] = [] {
+        didSet { capturePendingServerIfNeeded(!pendingSessionTerminations.isEmpty) }
+    }
     @Published var showingDaemonRestartConfirmation = false
     // 弹框/编辑器打开时的目标服务器:确认动作按它路由,
     // 避免弹框期间切换服务器把破坏性 RPC 发错目标
@@ -820,6 +823,32 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
+    func requestKillTabs(_ sessionIds: [String], for key: ScopedResourceID) {
+        guard let connection = hub.connection(for: key.serverId),
+              let workspace = connection.workspaces.first(where: { $0.id == key.resourceId })
+        else { return }
+        let targetIds = sessionIds.reduce(into: [String]()) { result, sessionId in
+            if !result.contains(sessionId) { result.append(sessionId) }
+        }
+        let liveSessions = targetIds.compactMap { sessionId -> Session? in
+            guard workspace.sessionIds.contains(sessionId),
+                  let session = connection.sessions.first(where: {
+                      $0.id == sessionId && $0.alive
+                  })
+            else {
+                closeTab(sessionId, workspaceId: key.resourceId, serverId: key.serverId)
+                return nil
+            }
+            return session
+        }
+        guard !liveSessions.isEmpty else { return }
+        if confirmCloseTab {
+            requestSessionTerminations(liveSessions, serverId: key.serverId)
+        } else {
+            Task { await terminateSessions(liveSessions, on: connection) }
+        }
+    }
+
     func requestKillFocusedTab() {
         guard let sessionId = currentTerminalPaneController?.focusedSessionId
             ?? currentLayout?.focusedSessionId else { return }
@@ -1018,11 +1047,7 @@ final class WorkbenchModel: ObservableObject {
         let targetServerId = serverId(for: connection)
         do {
             let workspaceId = connection.workspaces.first { $0.sessionIds.contains(session.id) }?.id
-            do {
-                _ = try await connection.rpc("session.remove", ["sessionId": session.id])
-            } catch where error.localizedDescription == "session.remove" {
-                _ = try await connection.rpc("session.kill", ["sessionId": session.id])
-            }
+            try await removeSessionFromRuntime(session.id, on: connection)
             pendingSessionTermination = nil
             if let workspaceId, let targetServerId {
                 closeTab(session.id, workspaceId: workspaceId, serverId: targetServerId)
@@ -1034,6 +1059,52 @@ final class WorkbenchModel: ObservableObject {
         } catch {
             pendingSessionTermination = nil
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func terminateSessions(
+        _ sessions: [Session], on explicitConnection: RuntimeConnection? = nil
+    ) async {
+        guard let connection = explicitConnection ?? requirePendingRuntime() else {
+            pendingSessionTerminations = []
+            return
+        }
+        let targetServerId = serverId(for: connection)
+        var firstError: Error?
+        var removedAny = false
+        for session in sessions {
+            let workspaceId = connection.workspaces.first {
+                $0.sessionIds.contains(session.id)
+            }?.id
+            do {
+                try await removeSessionFromRuntime(session.id, on: connection)
+                removedAny = true
+                if let workspaceId, let targetServerId {
+                    closeTab(session.id, workspaceId: workspaceId, serverId: targetServerId)
+                }
+                if let targetServerId {
+                    TerminalSurfaceCache.shared.evict(
+                        serverId: targetServerId,
+                        sessionId: session.id
+                    )
+                }
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        pendingSessionTerminations = []
+        if removedAny { await connection.refresh() }
+        if let firstError { errorMessage = firstError.localizedDescription }
+    }
+
+    private func removeSessionFromRuntime(
+        _ sessionId: String,
+        on connection: RuntimeConnection
+    ) async throws {
+        do {
+            _ = try await connection.rpc("session.remove", ["sessionId": sessionId])
+        } catch where error.localizedDescription == "session.remove" {
+            _ = try await connection.rpc("session.kill", ["sessionId": sessionId])
         }
     }
 
@@ -1156,7 +1227,25 @@ final class WorkbenchModel: ObservableObject {
             return
         }
         pendingServerOverride = serverId
+        pendingSessionTerminations = []
         pendingSessionTermination = session
+    }
+
+    func requestSessionTerminations(_ sessions: [Session], serverId: String) {
+        guard let connection = hub.connection(for: serverId) else {
+            errorMessage = "目标服务器已移除，操作已取消"
+            return
+        }
+        let targets = sessions.compactMap { requested in
+            connection.sessions.first(where: { $0.id == requested.id && $0.alive })
+        }
+        guard !targets.isEmpty else {
+            errorMessage = "目标终端已结束，操作已取消"
+            return
+        }
+        pendingServerOverride = serverId
+        pendingSessionTermination = nil
+        pendingSessionTerminations = targets
     }
 
     private func createWorkspace(

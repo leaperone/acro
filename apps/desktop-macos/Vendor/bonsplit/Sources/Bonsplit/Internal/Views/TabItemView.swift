@@ -283,6 +283,7 @@ struct TabItemView: View {
     let shortcutModifierSymbol: String
     let allowsClose: Bool
     let allowsContextMenu: Bool
+    let allowedContextActions: Set<TabContextAction>?
     let contextMenuState: TabContextMenuState
     let moveDestinationsProvider: () -> [TabContextMoveDestination]
     let forkConversationAvailabilityProvider: () -> TabContextForkConversationAvailability
@@ -314,6 +315,16 @@ struct TabItemView: View {
     @AppStorage(TabControlShortcutHintDebugSettings.xKey) private var controlShortcutHintXOffset = TabControlShortcutHintDebugSettings.defaultX
     @AppStorage(TabControlShortcutHintDebugSettings.yKey) private var controlShortcutHintYOffset = TabControlShortcutHintDebugSettings.defaultY
     @AppStorage(TabControlShortcutHintDebugSettings.alwaysShowKey) private var alwaysShowShortcutHints = TabControlShortcutHintDebugSettings.defaultAlwaysShow
+
+    private var contextMenuSnapshot: TabContextMenuSnapshot {
+        TabContextMenuSnapshot(
+            tabId: tab.id,
+            state: contextMenuState,
+            moveDestinationsProvider: moveDestinationsProvider,
+            forkConversationAvailabilityProvider: forkConversationAvailabilityProvider,
+            allowedActions: allowedContextActions
+        )
+    }
 
     var body: some View {
         tabContent
@@ -347,12 +358,7 @@ struct TabItemView: View {
         .background {
             if allowsContextMenu {
                 TabContextMenuPresenter(
-                    snapshot: TabContextMenuSnapshot(
-                        tabId: tab.id,
-                        state: contextMenuState,
-                        moveDestinationsProvider: moveDestinationsProvider,
-                        forkConversationAvailabilityProvider: forkConversationAvailabilityProvider
-                    ),
+                    snapshot: contextMenuSnapshot,
                     onContextAction: onContextAction,
                     onMoveDestination: onMoveDestination
                 )
@@ -1348,6 +1354,21 @@ struct TabContextMenuSnapshot {
     let state: TabContextMenuState
     let moveDestinationsProvider: () -> [TabContextMoveDestination]
     let forkConversationAvailabilityProvider: () -> TabContextForkConversationAvailability
+    let allowedActions: Set<TabContextAction>?
+
+    init(
+        tabId: UUID,
+        state: TabContextMenuState,
+        moveDestinationsProvider: @escaping () -> [TabContextMoveDestination],
+        forkConversationAvailabilityProvider: @escaping () -> TabContextForkConversationAvailability,
+        allowedActions: Set<TabContextAction>? = nil
+    ) {
+        self.tabId = tabId
+        self.state = state
+        self.moveDestinationsProvider = moveDestinationsProvider
+        self.forkConversationAvailabilityProvider = forkConversationAvailabilityProvider
+        self.allowedActions = allowedActions
+    }
 }
 
 final class TabContextMenuActionTarget: NSObject {
@@ -1581,6 +1602,9 @@ enum TabContextMenuBuilder {
             to: menu
         )
 
+        if let allowedActions = snapshot.allowedActions {
+            filter(menu: menu, allowedActions: allowedActions)
+        }
         return menu
     }
 
@@ -1595,6 +1619,7 @@ enum TabContextMenuBuilder {
             action: nil,
             keyEquivalent: ""
         )
+        item.representedObject = TabContextAction.move.rawValue
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         addAction(
@@ -1631,6 +1656,7 @@ enum TabContextMenuBuilder {
             action: nil,
             keyEquivalent: ""
         )
+        item.representedObject = TabContextAction.forkConversation.rawValue
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         let defaultAction = state.forkConversationDefaultAction.isForkConversationDestination
@@ -1789,6 +1815,31 @@ enum TabContextMenuBuilder {
     private static func applyShortcut(_ shortcut: KeyboardShortcut, to item: NSMenuItem) {
         item.keyEquivalent = String(shortcut.key.character).lowercased()
         item.keyEquivalentModifierMask = shortcut.modifiers.nsMenuModifierMask
+    }
+
+    private static func filter(menu: NSMenu, allowedActions: Set<TabContextAction>) {
+        for item in menu.items {
+            if let rawValue = item.representedObject as? String,
+               let action = TabContextAction(rawValue: rawValue),
+               (item.action == #selector(TabContextMenuActionTarget.performContextAction(_:))
+                   || item.submenu != nil),
+               !allowedActions.contains(action) {
+                menu.removeItem(item)
+                continue
+            }
+            if let submenu = item.submenu {
+                filter(menu: submenu, allowedActions: allowedActions)
+                if submenu.items.allSatisfy(\.isSeparatorItem) {
+                    menu.removeItem(item)
+                }
+            }
+        }
+        while menu.items.first?.isSeparatorItem == true { menu.removeItem(at: 0) }
+        while menu.items.last?.isSeparatorItem == true { menu.removeItem(at: menu.items.count - 1) }
+        for index in menu.items.indices.dropFirst().reversed()
+        where menu.items[index].isSeparatorItem && menu.items[index - 1].isSeparatorItem {
+            menu.removeItem(at: index)
+        }
     }
 
     private static func localized(_ key: String, defaultValue: String) -> String {
