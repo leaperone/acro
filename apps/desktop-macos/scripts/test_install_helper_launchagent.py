@@ -25,7 +25,21 @@ class InstallHelperLaunchAgentTests(unittest.TestCase):
 
             fake_codesign = fake_bin / "codesign"
             fake_codesign.write_text(
-                '#!/bin/bash\nprintf "%s\\n" "$*" >> "$ACRO_TEST_CODESIGN_LOG"\n'
+                """#!/bin/bash
+printf "%s\\n" "$*" >> "$ACRO_TEST_CODESIGN_LOG"
+[[ "${ACRO_TEST_CODESIGN_FAIL:-}" != "1" ]] || exit 1
+if [[ "$1" == "-dvv" ]]; then
+  if [[ "${ACRO_TEST_NON_DEVELOPER_ID:-}" == "1" ]]; then
+    echo 'Authority=Apple Development: Test (TEAM123)'
+    echo 'TeamIdentifier=TEAM123'
+    echo 'designated => identifier "one.leaper.acro.helper" and certificate leaf[subject.CN] = "Apple Development: Test (TEAM123)"'
+  else
+    echo 'Authority=Developer ID Application: Acro Test (TEAM123)'
+    echo 'TeamIdentifier=TEAM123'
+    echo 'designated => identifier "one.leaper.acro.helper" and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */'
+  fi
+fi
+"""
             )
             fake_codesign.chmod(0o755)
 
@@ -59,6 +73,21 @@ class InstallHelperLaunchAgentTests(unittest.TestCase):
             source.write_bytes(b"helper-v2")
             subprocess.run([INSTALLER], check=True, env=env)
             self.assertEqual(installed.read_bytes(), b"helper-v2")
+
+            env["ACRO_TEST_CODESIGN_FAIL"] = "1"
+            source.write_bytes(b"failed-signature")
+            failed = subprocess.run([INSTALLER], env=env, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(installed.read_bytes(), b"helper-v2")
+            del env["ACRO_TEST_CODESIGN_FAIL"]
+
+            env["ACRO_SIGN_IDENTITY"] = "Apple Development: Test (TEAM123)"
+            env["ACRO_TEST_NON_DEVELOPER_ID"] = "1"
+            source.write_bytes(b"development-signed-helper")
+            failed = subprocess.run([INSTALLER], env=env, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(installed.read_bytes(), b"helper-v2")
+            del env["ACRO_TEST_NON_DEVELOPER_ID"]
 
             env["ACRO_SIGN_IDENTITY"] = "-"
             source.write_bytes(b"unsigned-helper")

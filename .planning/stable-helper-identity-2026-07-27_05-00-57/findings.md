@@ -34,6 +34,8 @@
 
 - 第一次从 ad-hoc 迁移到正式身份时，macOS 可能要求重新授权一次。
 - release 尚未分发 helper；本轮只修 Mac mini 的仓库安装链，不改变桌面安装包结构。
+- 本机真实 Developer ID 签名结果为 identifier `one.leaper.acro.helper`、Team `5UAHRS482C`、hardened runtime；designated requirement 绑定 Apple anchor、Developer ID、Team 与 identifier，不含 cdhash。
+- 仅拒绝 ad-hoc 不足以保证身份稳定；Apple Development 证书也能通过 `codesign --verify`，但 requirement 会绑定具体开发证书。安装脚本必须校验实际 Authority、Team、identifier 与 Developer ID OID。
 
 ## 参考指针
 

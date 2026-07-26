@@ -54,6 +54,14 @@ install -m 755 "$SOURCE_BIN" "$STAGED_BIN"
 codesign --force --options runtime --timestamp \
   --identifier "$LABEL" --sign "$SIGN_IDENTITY" "$STAGED_BIN"
 codesign --verify --strict --verbose=2 "$STAGED_BIN"
+SIGN_INFO="$(codesign -dvv --requirements - "$STAGED_BIN" 2>&1)"
+if ! grep -Fq "Authority=Developer ID Application:" <<<"$SIGN_INFO" \
+  || ! grep -Eq '^TeamIdentifier=[A-Z0-9]+$' <<<"$SIGN_INFO" \
+  || ! grep -Fq "designated => identifier \"$LABEL\"" <<<"$SIGN_INFO" \
+  || ! grep -Fq 'certificate leaf[field.1.2.840.113635.100.6.1.13]' <<<"$SIGN_INFO"; then
+  echo "acro-helper 必须使用固定 identifier 的 Developer ID Application 身份签名。" >&2
+  exit 1
+fi
 
 plutil -create xml1 "$STAGED_PLIST"
 plutil -insert Label -string "$LABEL" "$STAGED_PLIST"
