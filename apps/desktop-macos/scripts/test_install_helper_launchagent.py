@@ -18,6 +18,7 @@ class InstallHelperLaunchAgentTests(unittest.TestCase):
             fake_bin = temp / "bin"
             source = temp / "acro-helper"
             codesign_log = temp / "codesign.log"
+            xattr_log = temp / "xattr.log"
             home.mkdir()
             fake_bin.mkdir()
             source.write_bytes(b"helper-v1")
@@ -42,6 +43,11 @@ fi
 """
             )
             fake_codesign.chmod(0o755)
+            fake_xattr = fake_bin / "xattr"
+            fake_xattr.write_text(
+                '#!/bin/bash\nprintf "%s\\n" "$*" >> "$ACRO_TEST_XATTR_LOG"\n'
+            )
+            fake_xattr.chmod(0o755)
 
             env = os.environ.copy()
             env.update(
@@ -51,6 +57,7 @@ fi
                     "ACRO_HELPER_SOURCE_BIN": str(source),
                     "ACRO_SIGN_IDENTITY": "Developer ID Application: Acro Test (TEAM123)",
                     "ACRO_TEST_CODESIGN_LOG": str(codesign_log),
+                    "ACRO_TEST_XATTR_LOG": str(xattr_log),
                 }
             )
 
@@ -64,6 +71,12 @@ fi
             self.assertEqual(plist["ProgramArguments"], [str(installed)])
             self.assertNotIn(str(ROOT), plist_path.read_text())
             self.assertNotIn(".build", plist_path.read_text())
+
+            provenance_removals = xattr_log.read_text().splitlines()
+            self.assertEqual(len(provenance_removals), 2)
+            self.assertTrue(
+                all(line.startswith("-d com.apple.provenance ") for line in provenance_removals)
+            )
 
             codesign_args = codesign_log.read_text()
             self.assertIn("--identifier one.leaper.acro.helper", codesign_args)
