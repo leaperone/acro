@@ -50,3 +50,4 @@
 | GitHub HTTPS DNS/连接失败 | 3 | 使用已认证 SSH 443；Bonsplit shallow checkout |
 | 新 worktree 缺少 GhosttyKit 头文件 | 1 | 运行仓库 `setup-ghostty.sh` 下载并校验固定版本产物 |
 | 首次最终热替换 `open` 返回 LaunchServices -600 | 1 | 确认旧 UI/runtime 已退出后重新启动成功，daemon 未受影响 |
+| GitHub desktop-macos 首轮找不到 Bonsplit `Bundle.module` | 1 | 根因是 desktop 级 `.gitignore` 忽略所有 `Resources`；强制跟踪上游 en/ja 本地化资源后重跑干净 Swift 构建 |
