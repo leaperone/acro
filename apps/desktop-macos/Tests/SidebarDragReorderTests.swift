@@ -66,4 +66,38 @@ final class SidebarDragReorderTests: XCTestCase {
             2
         )
     }
+
+    func testServerPlannerUsesTheSameRemoteOrderInBothSidebarViews() {
+        let ids = ["a", "b", "c"]
+
+        XCTAssertEqual(
+            SidebarServerDropPlanner.insertionIndex(
+                draggedServerId: "c",
+                targetServerId: "a",
+                targetIsLocal: false,
+                orderedRemoteServerIds: ids,
+                edge: .top
+            ),
+            0
+        )
+        XCTAssertEqual(
+            SidebarServerDropPlanner.insertionIndex(
+                draggedServerId: "b",
+                targetServerId: "local",
+                targetIsLocal: true,
+                orderedRemoteServerIds: ids,
+                edge: .bottom
+            ),
+            0
+        )
+        XCTAssertNil(
+            SidebarServerDropPlanner.insertionIndex(
+                draggedServerId: "a",
+                targetServerId: "local",
+                targetIsLocal: true,
+                orderedRemoteServerIds: ids,
+                edge: .bottom
+            )
+        )
+    }
 }

@@ -108,4 +108,14 @@ enum ServerDirectory {
         config.save()
         hub.reload()
     }
+
+    static func moveRemote(_ serverId: String, offset: Int, hub: RuntimeHub) throws {
+        let remoteIds = try ClientConfig.loadForWrite().servers
+            .filter { !$0.isLocal }
+            .map(\.id)
+        guard let source = remoteIds.firstIndex(of: serverId) else { return }
+        let target = min(max(source + offset, 0), remoteIds.count - 1)
+        guard target != source else { return }
+        try reorderRemote(serverId, to: target, hub: hub)
+    }
 }

@@ -293,6 +293,69 @@ final class WorkbenchLayoutStateTests: XCTestCase {
     }
 
     @MainActor
+    func testSidebarPresentationKeepsWorkspaceOrderAndCommandMapping() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("acro-sidebar-contract-\(UUID().uuidString)")
+        let file = root.appendingPathComponent("client.json")
+        setenv("ACRO_CLIENT_CONFIG", file.path, 1)
+        let server = ServerEntry(
+            localId: "server", name: "Server", deviceId: "device", token: "token",
+            pub: Data(repeating: 1, count: 32).base64EncodedString(),
+            endpoints: ["127.0.0.1:1"]
+        )
+        ClientConfig(v: 2, servers: [server], active: server.id).save()
+        let hub = RuntimeHub()
+        hub.reload()
+        defer {
+            ClientConfig(v: 2, servers: [], active: nil).save()
+            hub.reload()
+            unsetenv("ACRO_CLIENT_CONFIG")
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let first = Workspace(
+            id: "first", name: "First", sessionIds: [], createdAt: "",
+            layout: nil, layoutRev: nil)
+        let second = Workspace(
+            id: "second", name: "Second", sessionIds: [], createdAt: "",
+            layout: nil, layoutRev: nil)
+        let third = Workspace(
+            id: "third", name: "Third", sessionIds: [], createdAt: "",
+            layout: nil, layoutRev: nil)
+        let groups = [WorkspaceGroup(
+            id: "group", name: "Group", workspaceIds: [second.id, first.id], createdAt: "")]
+        let connection = try XCTUnwrap(hub.connection(for: server.id))
+        connection.commitRefreshSnapshot(
+            workspaceGroups: groups,
+            workspaces: [first, second, third],
+            sessions: [],
+            focus: []
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = server.id
+
+        let expected = [second.id, first.id, third.id]
+        XCTAssertEqual(model.orderedWorkspaces.map(\.id), expected)
+        XCTAssertEqual(
+            CompactSidebarProjection.sections(groups: groups, workspaces: [first, second, third])
+                .flatMap(\.workspaces).map(\.id),
+            expected
+        )
+        XCTAssertEqual(model.workspaceShortcutDigit(second.id), 1)
+        XCTAssertEqual(model.workspaceShortcutDigit(first.id), 2)
+        XCTAssertEqual(model.workspaceShortcutDigit(third.id), 3)
+
+        model.setLeftSidebarPresentation(.compact)
+        XCTAssertEqual(model.orderedWorkspaces.map(\.id), expected)
+        model.selectWorkspace(number: 9)
+        XCTAssertEqual(model.selectedWorkspaceId, third.id)
+
+        model.setLeftSidebarPresentation(.wide)
+        XCTAssertEqual(model.orderedWorkspaces.map(\.id), expected)
+        XCTAssertEqual(model.workspaceShortcutDigit(third.id), 3)
+    }
+
+    @MainActor
     func testWorkbenchModelSelectsLayoutWithinCurrentServer() throws {
         var first = WorkspaceTerminalLayout()
         first.adopt("session-a")
@@ -420,6 +483,52 @@ final class WorkbenchLayoutStateTests: XCTestCase {
 
         XCTAssertNil(model.pendingSessionTermination)
         XCTAssertEqual(model.errorMessage, "目标服务器已移除，操作已取消")
+    }
+
+    @MainActor
+    func testWorkspaceMenuKeepsItsExplicitServerAfterSelectionChanges() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("acro-menu-server-\(UUID().uuidString)")
+        let file = root.appendingPathComponent("client.json")
+        setenv("ACRO_CLIENT_CONFIG", file.path, 1)
+        let pub = Data(repeating: 1, count: 32).base64EncodedString()
+        let serverA = ServerEntry(
+            localId: "server-a", name: "A", deviceId: "device-a", token: "token-a",
+            pub: pub, endpoints: ["127.0.0.1:1"])
+        let serverB = ServerEntry(
+            localId: "server-b", name: "B", deviceId: "device-b", token: "token-b",
+            pub: pub, endpoints: ["127.0.0.1:2"])
+        ClientConfig(v: 2, servers: [serverA, serverB], active: serverB.id).save()
+        let hub = RuntimeHub()
+        hub.reload()
+        defer {
+            ClientConfig(v: 2, servers: [], active: nil).save()
+            hub.reload()
+            unsetenv("ACRO_CLIENT_CONFIG")
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        let workspace = Workspace(
+            id: "shared", name: "A Workspace", sessionIds: ["session-a"], createdAt: "",
+            layout: nil, layoutRev: nil)
+        let staleWorkspace = Workspace(
+            id: workspace.id, name: workspace.name, sessionIds: [], createdAt: "",
+            layout: nil, layoutRev: nil)
+        let session = Session(
+            id: "session-a", cwd: "/tmp", command: "zsh", cols: 80, rows: 24,
+            createdAt: "", alive: true, exitCode: nil, title: nil, agent: nil)
+        try XCTUnwrap(hub.connection(for: serverA.id)).commitRefreshSnapshot(
+            workspaceGroups: [], workspaces: [workspace], sessions: [session], focus: [])
+        try XCTUnwrap(hub.connection(for: serverB.id)).commitRefreshSnapshot(
+            workspaceGroups: [], workspaces: [], sessions: [], focus: [])
+
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = serverB.id
+        model.requestWorkspaceDeletion(staleWorkspace, serverId: serverA.id)
+        model.selectedServerId = serverB.id
+
+        XCTAssertEqual(model.pendingWorkspaceDeletion?.id, workspace.id)
+        XCTAssertEqual(model.pendingWorkspaceDeletionSessionCount, 1)
     }
 
     @MainActor

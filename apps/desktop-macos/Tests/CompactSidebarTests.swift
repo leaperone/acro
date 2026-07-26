@@ -76,28 +76,20 @@ final class CompactSidebarTests: XCTestCase {
         XCTAssertEqual(sections[1].workspaces.map(\.id), [third.id])
     }
 
-    func testWorkspaceSnapshotTracksConnectionAvailability() {
-        let base = CompactSidebarWorkspaceSnapshot(
-            id: "workspace",
-            name: "Workspace",
-            initial: "W",
-            serverName: "Server",
-            groupName: nil,
-            sessionCount: 1,
-            isSelected: true,
-            canCreateTerminal: false,
-            shortcutHint: "⌘1"
+    func testWorkspaceMenuSnapshotTracksConnectionAvailability() {
+        let base = SidebarWorkspaceMenuSnapshot(
+            canMutate: false,
+            canMoveUp: false,
+            canMoveDown: true,
+            isInGroup: false,
+            moveTargets: []
         )
-        let connected = CompactSidebarWorkspaceSnapshot(
-            id: base.id,
-            name: base.name,
-            initial: base.initial,
-            serverName: base.serverName,
-            groupName: base.groupName,
-            sessionCount: base.sessionCount,
-            isSelected: base.isSelected,
-            canCreateTerminal: true,
-            shortcutHint: base.shortcutHint
+        let connected = SidebarWorkspaceMenuSnapshot(
+            canMutate: true,
+            canMoveUp: base.canMoveUp,
+            canMoveDown: base.canMoveDown,
+            isInGroup: base.isInGroup,
+            moveTargets: base.moveTargets
         )
 
         XCTAssertNotEqual(base, connected)

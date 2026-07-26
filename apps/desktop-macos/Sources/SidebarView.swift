@@ -77,11 +77,116 @@ struct SidebarMoveTarget: Equatable {
     let disabled: Bool
 }
 
+struct SidebarServerMenuSnapshot: Equatable {
+    let canCreate: Bool
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+}
+
+struct SidebarServerMenuActions {
+    let createWorkspace: () -> Void
+    let createGroup: () -> Void
+    let moveUp: () -> Void
+    let moveDown: () -> Void
+    let edit: (() -> Void)?
+    let openSettings: () -> Void
+    let remove: (() -> Void)?
+    let showInWideSidebar: (() -> Void)?
+}
+
+struct SidebarServerContextMenu: View {
+    let snapshot: SidebarServerMenuSnapshot
+    let actions: SidebarServerMenuActions
+
+    var body: some View {
+        Button("新建工作区", action: actions.createWorkspace)
+            .disabled(!snapshot.canCreate)
+        Button("新建分组…", action: actions.createGroup)
+            .disabled(!snapshot.canCreate)
+        if snapshot.canMoveUp || snapshot.canMoveDown {
+            Divider()
+            Button("上移", action: actions.moveUp)
+                .disabled(!snapshot.canMoveUp)
+            Button("下移", action: actions.moveDown)
+                .disabled(!snapshot.canMoveDown)
+        }
+        if let edit = actions.edit {
+            Divider()
+            Button("编辑服务器…", action: edit)
+        }
+        Divider()
+        Button("设置…", action: actions.openSettings)
+        if let showInWideSidebar = actions.showInWideSidebar {
+            Divider()
+            Button("在完整侧边栏中显示", action: showInWideSidebar)
+        }
+        if let remove = actions.remove {
+            Divider()
+            Button("移除服务器", role: .destructive, action: remove)
+        }
+    }
+}
+
+struct SidebarWorkspaceMenuSnapshot: Equatable {
+    let canMutate: Bool
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let isInGroup: Bool
+    let moveTargets: [SidebarMoveTarget]
+}
+
+struct SidebarWorkspaceMenuActions {
+    let newTerminal: () -> Void
+    let moveUp: () -> Void
+    let moveDown: () -> Void
+    let moveToGroup: (String?) -> Void
+    let rename: () -> Void
+    let delete: () -> Void
+    let showInWideSidebar: (() -> Void)?
+}
+
+struct SidebarWorkspaceContextMenu: View {
+    let snapshot: SidebarWorkspaceMenuSnapshot
+    let actions: SidebarWorkspaceMenuActions
+
+    var body: some View {
+        Button("新建终端", action: actions.newTerminal)
+            .disabled(!snapshot.canMutate)
+        Divider()
+        Button("上移", action: actions.moveUp)
+            .disabled(!snapshot.canMutate || !snapshot.canMoveUp)
+        Button("下移", action: actions.moveDown)
+            .disabled(!snapshot.canMutate || !snapshot.canMoveDown)
+        if !snapshot.moveTargets.isEmpty {
+            Menu("移动到分组") {
+                ForEach(snapshot.moveTargets, id: \.id) { target in
+                    Button(target.name) { actions.moveToGroup(target.id) }
+                        .disabled(!snapshot.canMutate || target.disabled)
+                }
+            }
+        }
+        if snapshot.isInGroup {
+            Button("移出分组") { actions.moveToGroup(nil) }
+                .disabled(!snapshot.canMutate)
+        }
+        Divider()
+        Button("重命名…", action: actions.rename)
+            .disabled(!snapshot.canMutate)
+        if let showInWideSidebar = actions.showInWideSidebar {
+            Button("在完整侧边栏中显示", action: showInWideSidebar)
+        }
+        Divider()
+        Button("删除工作区", role: .destructive, action: actions.delete)
+            .disabled(!snapshot.canMutate)
+    }
+}
+
 struct WorkspaceGroupRowSnapshot: Equatable {
     let id: String
     let name: String
     let workspaceCount: Int
     let isExpanded: Bool
+    let canMutate: Bool
 }
 
 struct WorkspaceGroupRowActions {
@@ -100,20 +205,14 @@ struct WorkspaceRowSnapshot: Equatable {
     let sessionCount: Int
     let showsChevron: Bool
     let isExpanded: Bool
-    let isInGroup: Bool
     let shortcutHint: String?
     // cmux 式副行:工作区的既定路径(第一个存活终端的目录,~ 缩写)
     let pathLabel: String?
-    let moveTargets: [SidebarMoveTarget]
 }
 
 struct WorkspaceRowActions {
     let select: () -> Void
     let toggleExpand: () -> Void
-    let newTerminal: () -> Void
-    let rename: () -> Void
-    let delete: () -> Void
-    let moveToGroup: (String?) -> Void
     let beginDrag: () -> NSItemProvider
     let acceptDrop: (SidebarWorkspaceDropEdge) -> Bool
     let performDrop: (SidebarWorkspaceDropEdge) -> Bool
@@ -146,12 +245,33 @@ enum SidebarWorkspaceDropPlanner {
     }
 }
 
+enum SidebarServerDropPlanner {
+    static func insertionIndex(
+        draggedServerId: String,
+        targetServerId: String,
+        targetIsLocal: Bool,
+        orderedRemoteServerIds: [String],
+        edge: SidebarWorkspaceDropEdge
+    ) -> Int? {
+        if targetIsLocal {
+            return edge == .bottom && orderedRemoteServerIds.first != draggedServerId ? 0 : nil
+        }
+        return SidebarWorkspaceDropPlanner.insertionIndex(
+            draggedWorkspaceId: draggedServerId,
+            targetWorkspaceId: targetServerId,
+            orderedWorkspaceIds: orderedRemoteServerIds,
+            edge: edge
+        )
+    }
+}
+
 struct SessionRowSnapshot: Equatable {
     let id: String
     let title: String
     let cwd: String
     let alive: Bool
     let isSelected: Bool
+    let canMutate: Bool
 }
 
 struct SessionRowActions {
@@ -214,6 +334,7 @@ struct WorkspaceGroupRow: View, Equatable {
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
+            .disabled(!snapshot.canMutate)
             .opacity(hovered ? 1 : 0)
             .allowsHitTesting(hovered)
             .help("在分组中新建工作区")
@@ -228,9 +349,13 @@ struct WorkspaceGroupRow: View, Equatable {
         .onHover { hovered = $0 }
         .contextMenu {
             Button("新建工作区", action: actions.createWorkspace)
+                .disabled(!snapshot.canMutate)
             Divider()
-            Button("重命名", action: actions.rename)
+            Button("重命名…", action: actions.rename)
+                .disabled(!snapshot.canMutate)
+            Divider()
             Button("解散分组", role: .destructive, action: actions.dissolve)
+                .disabled(!snapshot.canMutate)
         }
         .onDrop(
             of: [.acroSidebarWorkspace],
@@ -243,13 +368,115 @@ struct WorkspaceGroupRow: View, Equatable {
     }
 }
 
-struct WorkspaceRow: View, Equatable {
-    let snapshot: WorkspaceRowSnapshot
-    let actions: WorkspaceRowActions
+struct SidebarServerHeaderSnapshot: Equatable {
+    let name: String
+    let expanded: Bool
+    let selected: Bool
+    let state: RuntimeConnection.ConnectionState
+    let pathLabel: String
+}
+
+struct SidebarServerHeaderActions {
+    let toggle: () -> Void
+    let beginDrag: (() -> NSItemProvider)?
+    let acceptDrop: (SidebarWorkspaceDropEdge) -> Bool
+    let performDrop: (SidebarWorkspaceDropEdge) -> Bool
+}
+
+struct SidebarServerHeader: View, Equatable {
+    let snapshot: SidebarServerHeaderSnapshot
+    let actions: SidebarServerHeaderActions
+    let menuSnapshot: SidebarServerMenuSnapshot
+    let menuActions: SidebarServerMenuActions
     @State private var dropEdge: SidebarWorkspaceDropEdge?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.snapshot == rhs.snapshot
+        lhs.snapshot == rhs.snapshot && lhs.menuSnapshot == rhs.menuSnapshot
+    }
+
+    var body: some View {
+        dragSource
+            .overlay(alignment: dropEdge == .bottom ? .bottom : .top) {
+                if dropEdge != nil {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.accentColor)
+                        .frame(height: 2)
+                        .padding(.horizontal, 4)
+                }
+            }
+            .contextMenu {
+                SidebarServerContextMenu(snapshot: menuSnapshot, actions: menuActions)
+            }
+            .onDrop(
+                of: [.acroSidebarServer],
+                delegate: SidebarWorkspaceRowDropDelegate(
+                    edge: Binding(get: { dropEdge }, set: { dropEdge = $0 }),
+                    height: 28,
+                    canAccept: actions.acceptDrop,
+                    perform: actions.performDrop
+                )
+            )
+    }
+
+    @ViewBuilder
+    private var dragSource: some View {
+        if let beginDrag = actions.beginDrag {
+            button.onDrag(beginDrag)
+        } else {
+            button
+        }
+    }
+
+    private var button: some View {
+        Button(action: actions.toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: snapshot.expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 12)
+                Image(systemName: "network")
+                    .font(.caption)
+                    .foregroundStyle(snapshot.selected ? .primary : .secondary)
+                Text(snapshot.name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(snapshot.selected ? .primary : .secondary)
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
+                Text(snapshot.pathLabel)
+                    .font(.caption2)
+                    .foregroundStyle(snapshot.state == .connected ? Color.green : Color.orange)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(snapshot.state == .connected ? "展开/收起 \(snapshot.name)" : "\(snapshot.name) 未连接,自动重试中")
+        .accessibilityLabel(snapshot.name)
+        .accessibilityValue(snapshot.expanded ? "已展开" : "已折叠")
+        .accessibilityAddTraits(snapshot.selected ? [.isSelected] : [])
+    }
+
+    private var statusColor: Color {
+        switch snapshot.state {
+        case .connected: .green
+        case .connecting: .orange
+        case .disconnected: .secondary
+        }
+    }
+}
+
+struct WorkspaceRow: View, Equatable {
+    let snapshot: WorkspaceRowSnapshot
+    let actions: WorkspaceRowActions
+    let menuSnapshot: SidebarWorkspaceMenuSnapshot
+    let menuActions: SidebarWorkspaceMenuActions
+    @State private var dropEdge: SidebarWorkspaceDropEdge?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.snapshot == rhs.snapshot && lhs.menuSnapshot == rhs.menuSnapshot
     }
 
     var body: some View {
@@ -306,6 +533,7 @@ struct WorkspaceRow: View, Equatable {
         }
         .padding(.horizontal, 6)
         .modifier(SidebarRowSurface(selected: snapshot.isSelected))
+        .accessibilityAddTraits(snapshot.isSelected ? [.isSelected] : [])
         .overlay(alignment: dropEdge == .bottom ? .bottom : .top) {
             if dropEdge != nil {
                 RoundedRectangle(cornerRadius: 1)
@@ -324,24 +552,7 @@ struct WorkspaceRow: View, Equatable {
             }
         }
         .contextMenu {
-            Button("新建终端", action: actions.newTerminal)
-            Divider()
-            if !snapshot.moveTargets.isEmpty {
-                Menu("移动到分组") {
-                    ForEach(snapshot.moveTargets, id: \.id) { target in
-                        Button(target.name) { actions.moveToGroup(target.id) }
-                            .disabled(target.disabled)
-                    }
-                }
-            }
-            if snapshot.isInGroup {
-                Button("移出分组") { actions.moveToGroup(nil) }
-            }
-            if !snapshot.moveTargets.isEmpty {
-                Divider()
-            }
-            Button("重命名", action: actions.rename)
-            Button("删除工作区", role: .destructive, action: actions.delete)
+            SidebarWorkspaceContextMenu(snapshot: menuSnapshot, actions: menuActions)
         }
         .onDrag(actions.beginDrag)
         .onDrop(
@@ -398,8 +609,10 @@ struct SessionRow: View, Equatable {
         .accessibilityValue(snapshot.alive ? "运行中" : "已结束")
         .contextMenu {
             Button("在同一目录新建终端", action: actions.newSibling)
+                .disabled(!snapshot.canMutate)
             Divider()
             Button("关闭终端", role: .destructive, action: actions.terminate)
+                .disabled(!snapshot.canMutate)
         }
     }
 }
@@ -586,7 +799,7 @@ struct SidebarView: View {
                 Button("新建工作区", systemImage: "square.stack.3d.up.badge.plus") {
                     model.requestCreateWorkspace()
                 }
-                Button("新建分组", systemImage: "folder.badge.plus") {
+                Button("新建分组…", systemImage: "folder.badge.plus") {
                     model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
                 }
             } label: {
@@ -672,6 +885,30 @@ struct SidebarView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 26)
+        .contextMenu {
+            SidebarServerContextMenu(
+                snapshot: SidebarServerMenuSnapshot(
+                    canCreate: entry.connection.connected,
+                    canMoveUp: false,
+                    canMoveDown: false
+                ),
+                actions: SidebarServerMenuActions(
+                    createWorkspace: {
+                        model.requestCreateWorkspace(serverId: entry.id)
+                    },
+                    createGroup: {
+                        model.presentWorkspaceGroupEditor(
+                            workspaceGroupId: nil, name: "", serverId: entry.id)
+                    },
+                    moveUp: {},
+                    moveDown: {},
+                    edit: nil,
+                    openSettings: { model.requestOpenSettings() },
+                    remove: nil,
+                    showInWideSidebar: nil
+                )
+            )
+        }
     }
 
     private func localStateLabel(_ state: RuntimeConnection.ConnectionState) -> String {
@@ -718,58 +955,114 @@ struct SidebarView: View {
     private func serverSection(_ entry: RuntimeHub.Entry) -> some View {
         let expanded = !collapsedServerIds.contains(entry.id)
         let isSelected = model.selectedServerId == entry.id
-        Button {
-            if expanded {
-                collapsedServerIds.insert(entry.id)
-            } else {
-                collapsedServerIds.remove(entry.id)
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 12)
-                Image(systemName: "network")
-                    .font(.caption)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                Text(entry.server.name)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(isSelected ? .primary : .secondary)
-                statusDot(entry.connection.state)
-                Text(pathLabel(entry.connection))
-                    .font(.caption2)
-                    .foregroundStyle(entry.connection.connected ? Color.green : Color.orange)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(entry.connection.connected ? "展开/收起 \(entry.server.name)" : "\(entry.server.name) 未连接,自动重试中")
-        .contextMenu {
-            // 服务器级创建入口:动作先 activate,保证 RPC 落到这台服务器
-            Button("新建工作区") {
-                model.activate(serverId: entry.id)
-                model.requestCreateWorkspace()
-            }
-            .disabled(!entry.connection.connected)
-            Button("新建分组") {
-                model.activate(serverId: entry.id)
-                model.presentWorkspaceGroupEditor(workspaceGroupId: nil, name: "")
-            }
-            .disabled(!entry.connection.connected)
-            Divider()
-            Button("编辑服务器…") { editingServerId = EditingServerId(id: entry.id) }
-            Button("移除服务器", role: .destructive) { pendingServerRemoval = entry.server }
-            Divider()
-            Button("远程设置…") { model.requestOpenSettings() }
-        }
+        let position = remoteServerPosition(entry.id)
+        SidebarServerHeader(
+            snapshot: SidebarServerHeaderSnapshot(
+                name: entry.server.name,
+                expanded: expanded,
+                selected: isSelected,
+                state: entry.connection.state,
+                pathLabel: pathLabel(entry.connection)
+            ),
+            actions: SidebarServerHeaderActions(
+                toggle: {
+                    if expanded {
+                        collapsedServerIds.insert(entry.id)
+                    } else {
+                        collapsedServerIds.remove(entry.id)
+                    }
+                },
+                beginDrag: { beginServerDrag(entry) },
+                acceptDrop: { edge in
+                    serverInsertionIndex(target: entry, edge: edge) != nil
+                },
+                performDrop: { edge in
+                    performServerDrop(target: entry, edge: edge)
+                }
+            ),
+            menuSnapshot: SidebarServerMenuSnapshot(
+                canCreate: entry.connection.connected,
+                canMoveUp: position.map { $0 > 0 } ?? false,
+                canMoveDown: position.map { $0 < remoteServerIds.count - 1 } ?? false
+            ),
+            menuActions: SidebarServerMenuActions(
+                createWorkspace: {
+                    model.requestCreateWorkspace(serverId: entry.id)
+                },
+                createGroup: {
+                    model.presentWorkspaceGroupEditor(
+                        workspaceGroupId: nil, name: "", serverId: entry.id)
+                },
+                moveUp: { moveServer(entry.id, offset: -1) },
+                moveDown: { moveServer(entry.id, offset: 1) },
+                edit: { editingServerId = EditingServerId(id: entry.id) },
+                openSettings: { model.requestOpenSettings() },
+                remove: { pendingServerRemoval = entry.server },
+                showInWideSidebar: nil
+            )
+        )
+        .equatable()
 
         if expanded {
             serverContent(entry)
                 .padding(.leading, 4)
+        }
+    }
+
+    private var remoteServerIds: [String] {
+        SidebarServerProjection.entries(hub.entries)
+            .filter { !$0.server.isLocal }
+            .map(\.id)
+    }
+
+    private func remoteServerPosition(_ serverId: String) -> Int? {
+        remoteServerIds.firstIndex(of: serverId)
+    }
+
+    private func beginServerDrag(_ entry: RuntimeHub.Entry) -> NSItemProvider {
+        model.draggingWorkspace = nil
+        let payload = ServerDragPayload(serverId: entry.id)
+        model.draggingServer = payload
+        let provider = SidebarDragItemProvider()
+        provider.registerItem(entry.id, type: .acroSidebarServer)
+        provider.onEnd = { Task { @MainActor in model.endServerDrag(payload) } }
+        return provider
+    }
+
+    private func serverInsertionIndex(
+        target: RuntimeHub.Entry, edge: SidebarWorkspaceDropEdge
+    ) -> Int? {
+        guard let payload = model.draggingServer else { return nil }
+        return SidebarServerDropPlanner.insertionIndex(
+            draggedServerId: payload.serverId,
+            targetServerId: target.id,
+            targetIsLocal: target.server.isLocal,
+            orderedRemoteServerIds: remoteServerIds,
+            edge: edge
+        )
+    }
+
+    private func performServerDrop(
+        target: RuntimeHub.Entry, edge: SidebarWorkspaceDropEdge
+    ) -> Bool {
+        guard let payload = model.draggingServer,
+              let index = serverInsertionIndex(target: target, edge: edge)
+        else { return false }
+        model.draggingServer = nil
+        do {
+            try ServerDirectory.reorderRemote(payload.serverId, to: index, hub: hub)
+            return true
+        } catch {
+            model.errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func moveServer(_ serverId: String, offset: Int) {
+        do {
+            try ServerDirectory.moveRemote(serverId, offset: offset, hub: hub)
+        } catch {
+            model.errorMessage = error.localizedDescription
         }
     }
 
@@ -835,21 +1128,20 @@ struct SidebarView: View {
                 id: group.id,
                 name: group.name,
                 workspaceCount: groupWorkspaces.count,
-                isExpanded: expanded
+                isExpanded: expanded,
+                canMutate: entry.connection.connected
             ),
             actions: WorkspaceGroupRowActions(
                 toggle: { model.toggleWorkspaceGroup(group.id, serverId: entry.id) },
                 createWorkspace: {
-                    model.activate(serverId: entry.id)
-                    model.requestCreateWorkspace(in: group.id)
+                    model.requestCreateWorkspace(in: group.id, serverId: entry.id)
                 },
                 rename: {
-                    model.activate(serverId: entry.id)
-                    model.presentWorkspaceGroupEditor(workspaceGroupId: group.id, name: group.name)
+                    model.presentWorkspaceGroupEditor(
+                        workspaceGroupId: group.id, name: group.name, serverId: entry.id)
                 },
                 dissolve: {
-                    model.activate(serverId: entry.id)
-                    model.pendingWorkspaceGroupRemoval = group
+                    model.requestWorkspaceGroupRemoval(group, serverId: entry.id)
                 },
                 acceptWorkspaceDrop: {
                     model.draggingWorkspace?.serverId == entry.id
@@ -874,8 +1166,7 @@ struct SidebarView: View {
         if expanded {
             if groupWorkspaces.isEmpty {
                 Button {
-                    model.activate(serverId: entry.id)
-                    model.requestCreateWorkspace(in: group.id)
+                    model.requestCreateWorkspace(in: group.id, serverId: entry.id)
                 } label: {
                     Label("新建工作区", systemImage: "square.stack.3d.up.badge.plus")
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -907,6 +1198,9 @@ struct SidebarView: View {
         ))
         let workspaceSessions = model.sessions(in: workspace, on: connection)
         let currentGroup = model.workspaceGroup(containing: workspace.id, on: connection)
+        let workspaceContainer = currentGroup.map { model.workspaces(in: $0, on: connection) }
+            ?? model.ungroupedWorkspaces(on: connection)
+        let workspacePosition = workspaceContainer.firstIndex(where: { $0.id == workspace.id })
         let isSelectedServer = model.selectedServerId == entry.id
         WorkspaceRow(
             snapshot: WorkspaceRowSnapshot(
@@ -917,14 +1211,10 @@ struct SidebarView: View {
                 sessionCount: workspaceSessions.count,
                 showsChevron: model.sidebarViewMode == .sessions,
                 isExpanded: expanded,
-                isInGroup: currentGroup != nil,
                 shortcutHint: model.cmdHeld && isSelectedServer
                     ? model.workspaceShortcutDigit(workspace.id).map { "⌘\($0)" }
                     : nil,
-                pathLabel: workspaceSessions.first.map { SidebarPath.abbreviate($0.cwd) },
-                moveTargets: connection.workspaceGroups.map {
-                    SidebarMoveTarget(id: $0.id, name: $0.name, disabled: $0.id == currentGroup?.id)
-                }
+                pathLabel: workspaceSessions.first.map { SidebarPath.abbreviate($0.cwd) }
             ),
             actions: WorkspaceRowActions(
                 select: {
@@ -932,23 +1222,6 @@ struct SidebarView: View {
                     model.selectWorkspace(workspace)
                 },
                 toggleExpand: { model.toggleWorkspace(workspace.id, serverId: entry.id) },
-                newTerminal: {
-                    model.activate(serverId: entry.id)
-                    model.requestNewTerminal(in: workspace)
-                },
-                rename: {
-                    model.activate(serverId: entry.id)
-                    model.presentWorkspaceRename(workspaceId: workspace.id, name: workspace.name)
-                },
-                delete: {
-                    model.activate(serverId: entry.id)
-                    model.pendingWorkspaceDeletion = workspace
-                },
-                moveToGroup: { groupId in
-                    model.activate(serverId: entry.id)
-                    let target = connection.workspaceGroups.first { $0.id == groupId }
-                    model.requestMoveWorkspace(workspace, to: target)
-                },
                 beginDrag: {
                     model.draggingServer = nil
                     let payload = WorkspaceDragPayload(workspaceId: workspace.id, serverId: entry.id)
@@ -991,6 +1264,45 @@ struct SidebarView: View {
                         index: index, on: connection)
                     return true
                 }
+            ),
+            menuSnapshot: SidebarWorkspaceMenuSnapshot(
+                canMutate: connection.connected,
+                canMoveUp: workspacePosition.map { $0 > 0 } ?? false,
+                canMoveDown: workspacePosition.map { $0 < workspaceContainer.count - 1 } ?? false,
+                isInGroup: currentGroup != nil,
+                moveTargets: connection.workspaceGroups.map {
+                    SidebarMoveTarget(
+                        id: $0.id, name: $0.name, disabled: $0.id == currentGroup?.id)
+                }
+            ),
+            menuActions: SidebarWorkspaceMenuActions(
+                newTerminal: {
+                    model.requestNewTerminal(in: workspace, serverId: entry.id)
+                },
+                moveUp: {
+                    model.requestMoveWorkspace(workspace.id, offset: -1, on: connection)
+                },
+                moveDown: {
+                    model.requestMoveWorkspace(workspace.id, offset: 1, on: connection)
+                },
+                moveToGroup: { groupId in
+                    let target = groupId.flatMap { id in
+                        connection.workspaceGroups.first { $0.id == id }
+                    }
+                    if groupId != nil && target == nil {
+                        model.errorMessage = "目标分组已移除，操作已取消"
+                        return
+                    }
+                    model.requestMoveWorkspace(workspace, to: target, on: connection)
+                },
+                rename: {
+                    model.presentWorkspaceRename(
+                        workspaceId: workspace.id, name: workspace.name, serverId: entry.id)
+                },
+                delete: {
+                    model.requestWorkspaceDeletion(workspace, serverId: entry.id)
+                },
+                showInWideSidebar: nil
             )
         )
         .equatable()
@@ -1004,7 +1316,8 @@ struct SidebarView: View {
                         title: model.sessionDisplayName(session, on: connection),
                         cwd: SidebarPath.abbreviate(session.cwd),
                         alive: session.alive,
-                        isSelected: isSelectedServer && model.selectedSessionId == session.id
+                        isSelected: isSelectedServer && model.selectedSessionId == session.id,
+                        canMutate: entry.connection.connected && session.alive
                     ),
                     actions: SessionRowActions(
                         show: {
@@ -1012,12 +1325,11 @@ struct SidebarView: View {
                             model.showSession(session)
                         },
                         newSibling: {
-                            model.activate(serverId: entry.id)
-                            model.requestNewTerminal(in: workspace, inheritFrom: session.id)
+                            model.requestNewTerminal(
+                                in: workspace, serverId: entry.id, inheritFrom: session.id)
                         },
                         terminate: {
-                            model.activate(serverId: entry.id)
-                            model.pendingSessionTermination = session
+                            model.requestSessionTermination(session, serverId: entry.id)
                         }
                     )
                 )
