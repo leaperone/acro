@@ -692,6 +692,33 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func terminalTabsUseCmuxActionLaneFade() throws {
+        let model = WorkbenchModel(hub: RuntimeHub())
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+        let effect = try #require(
+            paneController.controller.configuration.appearance.splitButtonBackdropEffect
+        )
+
+        #expect(effect.style == .translucentChrome)
+        #expect(effect.fadeWidth == 99.75)
+        #expect(effect.contentFadeWidth == 28.875)
+        #expect(effect.solidWidth == 23.875)
+        #expect(effect.solidSurfaceWidthAdjustment == -80)
+        #expect(effect.separatorFadeWidth == 99.75)
+        #expect(effect.fadeRampStartFraction == 0.60)
+        #expect(effect.leadingOpacity == 0)
+        #expect(effect.trailingOpacity == 0.8625)
+        #expect(effect.contentOcclusionFraction == 0.6875)
+        #expect(effect.masksTabContent)
+    }
+
+    @Test
     func productionFileDropFailsClosedWithoutAnAuthenticatedRuntime() {
         let model = WorkbenchModel(hub: RuntimeHub())
 
