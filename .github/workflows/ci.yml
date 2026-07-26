@@ -47,6 +47,8 @@ jobs:
       - name: test
         run: swift test --package-path apps/desktop-macos
       - name: package smoke
+        env:
+          ACRO_SIGN_IDENTITY: "-"
         run: |
           bash apps/desktop-macos/scripts/package-app.sh 0.0.0-ci "$GITHUB_RUN_NUMBER"
           RESOURCES="apps/desktop-macos/dist/Acro.app/Contents/Resources"
