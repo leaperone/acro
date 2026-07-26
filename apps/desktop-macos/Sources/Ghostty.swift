@@ -75,7 +75,7 @@ final class Ghostty {
         if let app { ghostty_app_tick(app) }
     }
 
-    // 构建一份配置:先吃用户原生的 ghostty 配置(XDG 发现 ~/.config/ghostty/config 等)作基底,
+    // 构建一份配置:先吃用户原生的 ghostty XDG 配置作基底,
     // 再叠加 Acro 设置面板生成的 conf(UI 选的字体/字号/主题 + CJK 回退,后加载覆盖用户值),
     // 最后处理 config-file include。整个流程只依赖 ghostty 原生 C API,与原生 ghostty 配置兼容。
     private static func makeConfig() -> ghostty_config_t? {
@@ -83,7 +83,10 @@ final class Ghostty {
             NSLog("ghostty_config_new failed")
             return nil
         }
-        ghostty_config_load_default_files(cfg)
+        for path in userGhosttyConfigPaths()
+        where FileManager.default.fileExists(atPath: path) {
+            path.withCString { ghostty_config_load_file(cfg, $0) }
+        }
         // 按已存设置(重)生成 Acro 叠加层:新机器也有 CJK 回退链,且按当前字体物化情况重算。
         TerminalAppearance.regenerateFromStoredSettings()
         if FileManager.default.fileExists(atPath: TerminalAppearance.confPath) {
@@ -94,6 +97,18 @@ final class Ghostty {
         ghostty_config_load_recursive_files(cfg)
         ghostty_config_finalize(cfg)
         return cfg
+    }
+
+    nonisolated static func userGhosttyConfigPaths(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: String = NSHomeDirectory()
+    ) -> [String] {
+        let configHome = environment["XDG_CONFIG_HOME"].flatMap {
+            !$0.isEmpty && ($0 as NSString).isAbsolutePath ? $0 : nil
+        }
+            ?? "\(homeDirectory)/.config"
+        let directory = "\(configHome)/ghostty"
+        return ["\(directory)/config", "\(directory)/config.ghostty"]
     }
 
     // 热重载:改字体/主题后立即生效,无需重启。重建配置并推给已存在的 app(ghostty 会传播到
