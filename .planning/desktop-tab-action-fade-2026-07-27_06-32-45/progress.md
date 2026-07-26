@@ -2,7 +2,7 @@
 
 - 任务 ID：`desktop-tab-action-fade-2026-07-27_06-32-45`
 - 创建时间：`2026-07-27_06-32-45`
-- 当前状态：`in_progress`
+- 当前状态：`completed`
 
 ## 已完成
 
@@ -16,7 +16,7 @@
 
 ## 进行中
 
-- 推送 PR 并执行 preflight。
+- 无。
 
 ## 修改文件
 
@@ -33,6 +33,8 @@
 | `pnpm check` | TypeScript 与 15 项 Node 测试 | 已通过 |
 | `pnpm build` | CLI/runtime 构建；仅现有 import.meta 警告 | 已通过 |
 | Desktop release scripts | 7 项通过 | 已通过 |
+| 与 `origin/main` 合并探测 | 无冲突 | 已通过 |
+| PR #133 CI | TypeScript 通过；Desktop 由 GitHub required check 守门 | 已通过 / 等待合并守门 |
 
 ## 错误与恢复
 
