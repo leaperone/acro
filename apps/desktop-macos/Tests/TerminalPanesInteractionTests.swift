@@ -1,5 +1,7 @@
+import AppKit
 import Bonsplit
 import Foundation
+import SwiftUI
 import Testing
 @testable import AcroDesktop
 
@@ -36,6 +38,71 @@ struct TerminalPanesInteractionTests {
         let firstTab = try #require(paneController.controller.tabs(inPane: livePane).first)
 
         #expect(paneController.controller.reorderTab(firstTab.id, toIndex: 3))
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [
+            sessions[1], sessions[2], sessions[0],
+        ])
+    }
+
+    @Test
+    func mouseDragBetweenRenderedTabsReordersAndPersists() throws {
+        let model = WorkbenchModel(hub: RuntimeHub())
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let sessions = [UUID().uuidString, UUID().uuidString, UUID().uuidString]
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: sessions))
+        )
+
+        let runtime = RuntimeConnection()
+        let hostingView = NSHostingView(rootView:
+            TerminalPanesView(model: model, runtime: runtime)
+                .padding(.top, WorkbenchLayoutMetrics.terminalContentTopPadding(
+                    isFullScreen: false,
+                    nativeTitlebarHeight: 32,
+                    hostingSafeAreaTop: 32
+                ))
+                .ignoresSafeArea(.container, edges: .top)
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovable = false
+        hostingView.frame = window.contentView?.bounds ?? .zero
+        hostingView.autoresizingMask = [.width, .height]
+        window.contentView?.addSubview(hostingView)
+        window.makeKeyAndOrderFront(nil)
+
+        window.contentView?.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let tabViews = renderedTabItemHitRegions(in: hostingView)
+            .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+        #expect(tabViews.count == sessions.count)
+        let source = try #require(tabViews.first)
+        let destination = try #require(tabViews.last)
+        let sourcePoint = source.convert(NSPoint(x: source.bounds.midX, y: source.bounds.midY), to: nil)
+        let destinationPoint = destination.convert(
+            NSPoint(x: destination.bounds.maxX - 2, y: destination.bounds.midY),
+            to: nil
+        )
+
+        for event in [
+            try mouseEvent(.leftMouseDown, at: sourcePoint, in: window),
+            try mouseEvent(.leftMouseDragged, at: destinationPoint, in: window),
+            try mouseEvent(.leftMouseUp, at: destinationPoint, in: window),
+        ] {
+            NSApp.postEvent(event, atStart: false)
+        }
+        drainMouseEvents()
+
         #expect(model.workspaceLayouts[key]?.root?.sessionIds == [
             sessions[1], sessions[2], sessions[0],
         ])
@@ -215,5 +282,54 @@ struct TerminalPanesInteractionTests {
             focusedPaneId: left.id
         )
         return (model, key, sessions)
+    }
+}
+
+@MainActor
+private func renderedTabItemHitRegions(in root: NSView) -> [NSView] {
+    var candidates: [NSView] = []
+    if root is BonsplitTabItemHitRegionProviding, !root.isHidden, root.alphaValue > 0 {
+        candidates.append(root)
+    }
+    for subview in root.subviews {
+        candidates.append(contentsOf: renderedTabItemHitRegions(in: subview))
+    }
+    return candidates.filter { candidate in
+        let frame = candidate.convert(candidate.bounds, to: nil)
+        return !candidates.contains { other in
+            other !== candidate && frame.contains(other.convert(other.bounds, to: nil))
+        }
+    }
+}
+
+@MainActor
+private func mouseEvent(
+    _ type: NSEvent.EventType,
+    at point: NSPoint,
+    in window: NSWindow
+) throws -> NSEvent {
+    try #require(NSEvent.mouseEvent(
+        with: type,
+        location: point,
+        modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 1,
+        pressure: 1
+    ))
+}
+
+@MainActor
+private func drainMouseEvents() {
+    let deadline = Date().addingTimeInterval(0.2)
+    while let event = NSApp.nextEvent(
+        matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp],
+        until: deadline,
+        inMode: .default,
+        dequeue: true
+    ) {
+        NSApp.sendEvent(event)
     }
 }
