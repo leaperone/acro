@@ -6,8 +6,27 @@ import Testing
 @testable import AcroDesktop
 
 @MainActor
-@Suite
+@Suite(.serialized)
 struct TerminalPanesInteractionTests {
+    @Test
+    func appBootstrapsMinimalBonsplitPresentation() {
+        let defaults = UserDefaults.standard
+        let key = "workspacePresentationMode"
+        let previous = defaults.object(forKey: key)
+        defaults.removeObject(forKey: key)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        _ = AcroApp()
+
+        #expect(defaults.string(forKey: key) == "minimal")
+    }
+
     @Test
     func failedSessionRemovalKeepsTheSelectedTab() async throws {
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
@@ -419,6 +438,18 @@ struct TerminalPanesInteractionTests {
 
     @Test
     func mouseDragBetweenRenderedTabsReordersAndPersists() async throws {
+        let defaults = UserDefaults.standard
+        let presentationKey = "workspacePresentationMode"
+        let previousPresentation = defaults.object(forKey: presentationKey)
+        defaults.set("minimal", forKey: presentationKey)
+        defer {
+            if let previousPresentation {
+                defaults.set(previousPresentation, forKey: presentationKey)
+            } else {
+                defaults.removeObject(forKey: presentationKey)
+            }
+        }
+
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
         let sessions = [UUID().uuidString, UUID().uuidString, UUID().uuidString]
         let runtime = RuntimeConnection()
@@ -497,6 +528,10 @@ struct TerminalPanesInteractionTests {
         #expect(tabViews.count == sessions.count)
         let source = try #require(tabViews.first)
         let destination = try #require(tabViews.last)
+        let contentTop = hostingView.convert(hostingView.bounds, to: nil).maxY
+        let tabTop = tabViews.map { $0.convert($0.bounds, to: nil).maxY }.max()
+        #expect(abs(try #require(tabTop) - contentTop) <= 1)
+
         let sourcePoint = source.convert(NSPoint(x: source.bounds.midX, y: source.bounds.midY), to: nil)
         let destinationPoint = destination.convert(
             NSPoint(x: destination.bounds.maxX - 2, y: destination.bounds.midY),
