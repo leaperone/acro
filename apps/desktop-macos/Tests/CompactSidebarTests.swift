@@ -2,6 +2,57 @@ import XCTest
 @testable import AcroDesktop
 
 final class CompactSidebarTests: XCTestCase {
+    func testTerminalContentCancelsOnlyTheNativeTitlebarSafeArea() {
+        XCTAssertEqual(
+            WorkbenchLayoutMetrics.terminalContentTopPadding(
+                isFullScreen: false,
+                nativeTitlebarHeight: 32,
+                hostingSafeAreaTop: 28
+            ),
+            -28
+        )
+        XCTAssertEqual(
+            WorkbenchLayoutMetrics.terminalContentTopPadding(
+                isFullScreen: false,
+                nativeTitlebarHeight: 28,
+                hostingSafeAreaTop: 32
+            ),
+            -28
+        )
+        XCTAssertEqual(
+            WorkbenchLayoutMetrics.terminalContentTopPadding(
+                isFullScreen: false,
+                nativeTitlebarHeight: 32,
+                hostingSafeAreaTop: 0
+            ),
+            0
+        )
+        XCTAssertEqual(
+            WorkbenchLayoutMetrics.terminalContentTopPadding(
+                isFullScreen: false,
+                nativeTitlebarHeight: 0,
+                hostingSafeAreaTop: 32
+            ),
+            0
+        )
+        XCTAssertEqual(
+            WorkbenchLayoutMetrics.terminalContentTopPadding(
+                isFullScreen: false,
+                nativeTitlebarHeight: -4,
+                hostingSafeAreaTop: -8
+            ),
+            0
+        )
+        XCTAssertEqual(
+            WorkbenchLayoutMetrics.terminalContentTopPadding(
+                isFullScreen: true,
+                nativeTitlebarHeight: 32,
+                hostingSafeAreaTop: 32
+            ),
+            0
+        )
+    }
+
     func testLayoutUsesFixedWidthThatContainsTrafficLights() {
         XCTAssertEqual(CompactSidebarLayout.width, 64)
         XCTAssertGreaterThanOrEqual(CompactSidebarLayout.width, 62)
