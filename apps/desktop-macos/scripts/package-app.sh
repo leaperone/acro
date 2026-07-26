@@ -2,15 +2,16 @@
 # 打包 Acro.app 与分发 zip/dmg。用法:scripts/package-app.sh [version] [build_version]
 # 前置:scripts/setup-ghostty.sh 已就绪(GhosttyKit.xcframework + Resources)
 #
-# 签名:ACRO_SIGN_IDENTITY 设为 Developer ID 证书名则正式签名(hardened runtime),
-#      未设则 ad-hoc(本地开发/无证书 CI 回退)。
+# 签名:ACRO_SIGN_IDENTITY 必须显式设置；Developer ID 证书名用于本地/发布，
+#      `-` 只用于无证书 CI 的 ad-hoc 包烟测。
 # 公证:同时设 ACRO_NOTARY_KEY(p8 路径)、ACRO_NOTARY_KEY_ID、ACRO_NOTARY_ISSUER
 #      则走 notarytool 公证 + staple;缺任一则跳过。
 set -euo pipefail
 
 VERSION="${1:-0.0.0}"
 BUILD_VERSION="${2:-0}"
-SIGN_IDENTITY="${ACRO_SIGN_IDENTITY:--}"
+: "${ACRO_SIGN_IDENTITY:?ACRO_SIGN_IDENTITY must be set to a Developer ID identity or explicit - for CI}"
+SIGN_IDENTITY="$ACRO_SIGN_IDENTITY"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_ENTITLEMENTS="$DIR/Node.entitlements"
 APP_ICON="$DIR/Assets/Acro.icns"
