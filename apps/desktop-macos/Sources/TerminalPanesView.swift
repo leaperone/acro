@@ -386,19 +386,6 @@ private struct PaneTabBar: View {
         // 窗口级 isMovable=false 已根治标题栏带拖窗,标签条留在主 hosting view;
         // 嵌套 NSHostingView 会破坏 .onDrag 的拖拽会话,不要再包一层
         tabBarContent
-            .onDrop(
-                of: [.acroTabTransfer],
-                delegate: TabBarDropDelegate(
-                    canAccept: { model.validDrag(model.draggingTab) },
-                    perform: {
-                        guard let payload = model.draggingTab else { return false }
-                        model.draggingTab = nil
-                        // 标签条空白 = 显式"排到末尾";nil(反悔语义)留给窗格 body 中心区
-                        model.moveTab(payload, toPane: pane.id, at: pane.sessionIds.count)
-                        return true
-                    }
-                )
-            )
             .frame(height: 28)
             .background {
                 ZStack(alignment: .bottom) {
@@ -489,16 +476,17 @@ private struct PaneTabBar: View {
                 provider.onEnd = { Task { @MainActor in model.endTabDrag(payload) } }
                 return provider
             },
-            acceptDrop: {
-                model.validDrag(model.draggingTab) && model.draggingTab?.sessionId != sessionId
-            },
-            performDrop: {
-                guard let payload = model.draggingTab else { return false }
-                model.draggingTab = nil
-                model.moveTab(payload, toPane: pane.id, at: index)
-                return true
-            }
+            dropEnabled: model.validDrag(model.draggingTab) && model.draggingTab?.sessionId != sessionId,
+            dropBefore: { performDrop(at: index) },
+            dropAfter: { performDrop(at: index + 1) }
         )
+    }
+
+    private func performDrop(at index: Int) -> Bool {
+        guard let payload = model.draggingTab else { return false }
+        model.draggingTab = nil
+        model.moveTab(payload, toPane: pane.id, at: index)
+        return true
     }
 }
 
@@ -513,11 +501,11 @@ private struct PaneTabItem: View {
     let splitRight: () -> Void
     let splitDown: () -> Void
     let beginDrag: () -> NSItemProvider
-    let acceptDrop: () -> Bool
-    let performDrop: () -> Bool
+    let dropEnabled: Bool
+    let dropBefore: () -> Bool
+    let dropAfter: () -> Bool
 
     @State private var hovered = false
-    @State private var dropTargeted = false
 
     var body: some View {
         HStack(spacing: 6) {
@@ -574,12 +562,10 @@ private struct PaneTabItem: View {
                     .padding(.trailing, 1)
             }
         }
-        .overlay(alignment: .leading) {
-            if dropTargeted {
-                // 落点指示贯穿整条标签条:2pt 短竖线太弱,拖动时看起来像"不能排序"
-                Rectangle()
-                    .fill(Color.accentColor)
-                    .frame(width: 3)
+        .overlay {
+            HStack(spacing: 0) {
+                TabInsertionDropZone(edge: .leading, enabled: dropEnabled, perform: dropBefore)
+                TabInsertionDropZone(edge: .trailing, enabled: dropEnabled, perform: dropAfter)
             }
         }
         .onHover { hovered = $0 }
@@ -592,14 +578,6 @@ private struct PaneTabItem: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: select)
         .onDrag(beginDrag)
-        .onDrop(
-            of: [.acroTabTransfer],
-            delegate: TabInsertDropDelegate(
-                isTargeted: Binding(get: { dropTargeted }, set: { dropTargeted = $0 }),
-                canAccept: acceptDrop,
-                perform: performDrop
-            )
-        )
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
@@ -665,10 +643,31 @@ private struct TabInsertDropDelegate: DropDelegate {
     }
 }
 
-private struct TabBarDropDelegate: DropDelegate {
-    let canAccept: () -> Bool
+private struct TabInsertionDropZone: View {
+    let edge: Alignment
+    let enabled: Bool
     let perform: () -> Bool
 
-    func validateDrop(info: DropInfo) -> Bool { canAccept() }
-    func performDrop(info: DropInfo) -> Bool { perform() }
+    @State private var targeted = false
+
+    var body: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .overlay(alignment: edge) {
+                if targeted {
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: 3)
+                }
+            }
+            .onDrop(
+                of: [.acroTabTransfer],
+                delegate: TabInsertDropDelegate(
+                    isTargeted: $targeted,
+                    canAccept: { enabled },
+                    perform: perform
+                )
+            )
+            .allowsHitTesting(enabled)
+    }
 }
