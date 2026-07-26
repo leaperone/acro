@@ -62,6 +62,9 @@ if ! grep -Fq "Authority=Developer ID Application:" <<<"$SIGN_INFO" \
   echo "acro-helper 必须使用固定 identifier 的 Developer ID Application 身份签名。" >&2
   exit 1
 fi
+if xattr -p com.apple.provenance "$STAGED_BIN" >/dev/null 2>&1; then
+  xattr -d com.apple.provenance "$STAGED_BIN"
+fi
 
 plutil -create xml1 "$STAGED_PLIST"
 plutil -insert Label -string "$LABEL" "$STAGED_PLIST"
@@ -73,6 +76,9 @@ plutil -insert LimitLoadToSessionType -string Aqua "$STAGED_PLIST"
 plutil -insert StandardOutPath -string "$LOG_DIR/helper.log" "$STAGED_PLIST"
 plutil -insert StandardErrorPath -string "$LOG_DIR/helper.log" "$STAGED_PLIST"
 plutil -lint "$STAGED_PLIST" >/dev/null
+if xattr -p com.apple.provenance "$STAGED_PLIST" >/dev/null 2>&1; then
+  xattr -d com.apple.provenance "$STAGED_PLIST"
+fi
 
 mv -f "$STAGED_BIN" "$HELPER_BIN"
 mv -f "$STAGED_PLIST" "$PLIST"

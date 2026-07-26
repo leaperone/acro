@@ -72,11 +72,12 @@ fi
             self.assertNotIn(str(ROOT), plist_path.read_text())
             self.assertNotIn(".build", plist_path.read_text())
 
-            provenance_removals = xattr_log.read_text().splitlines()
+            provenance_removals = [
+                line
+                for line in xattr_log.read_text().splitlines()
+                if line.startswith("-d com.apple.provenance ")
+            ]
             self.assertEqual(len(provenance_removals), 2)
-            self.assertTrue(
-                all(line.startswith("-d com.apple.provenance ") for line in provenance_removals)
-            )
 
             codesign_args = codesign_log.read_text()
             self.assertIn("--identifier one.leaper.acro.helper", codesign_args)

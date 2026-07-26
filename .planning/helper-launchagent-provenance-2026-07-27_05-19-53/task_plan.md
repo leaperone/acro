@@ -35,9 +35,9 @@
 
 ## 验收标准
 
-- [ ] 新生成的 binary 与 plist 在安装前执行 provenance 清理。
-- [ ] `launchctl bootstrap` 可加载固定路径的签名 helper。
-- [ ] runtime 与 daemon 不重启，Computer Use 权限 RPC 可连接。
+- [x] 新生成的 binary 与 plist 在安装前执行 provenance 清理。
+- [x] `launchctl bootstrap` 可加载固定路径的签名 helper。
+- [x] runtime 与 daemon 不重启，Computer Use 权限 RPC 可连接。
 
 ## 未确认事项
 
@@ -48,8 +48,8 @@
 ## 执行状态
 
 - [x] 完成只读探索并确认真实调用链
-- [ ] 完成实现
-- [ ] 完成验证
+- [x] 完成实现
+- [x] 完成验证
 - [ ] 完成交付前收敛检查
 
 ## 决策
@@ -63,3 +63,4 @@
 | 错误 | 尝试 | 处理结果 |
 |---|---:|---|
 | `launchctl bootstrap` 返回 I/O error | 1 | 只读确认 plist、签名、权限均正常；删除 provenance 后同一服务加载成功 |
+| `pgrep` 锚定模式未匹配 daemon 完整命令 | 1 | 改用完整 `ps` 进程核对；daemon PID 1151 未变化 |
