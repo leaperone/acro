@@ -747,20 +747,29 @@ final class WorkbenchModel: ObservableObject {
 
     func closeTab(_ sessionId: String, workspaceId: String, serverId: String) {
         let key = ScopedResourceID(serverId: serverId, resourceId: workspaceId)
+        let wasActive = selectedServerId == serverId
+            && selectedWorkspaceId == workspaceId
+            && (terminalPaneControllers[key]?.focusedSessionId
+                ?? workspaceLayouts[key]?.focusedSessionId) == sessionId
         if terminalPaneControllers[key]?.removeSession(sessionId) == true {
-            if selectedServerId == serverId, selectedWorkspaceId == workspaceId {
-                syncSelectionFromLayout()
-                requestTerminalFocus()
-            }
+            if wasActive { activateFallbackAfterClosingTab(for: key) }
             return
         }
         guard var layout = workspaceLayouts[key] else { return }
         layout.removeTab(sessionId)
         dirtyLayoutWorkspaceIds.insert(key)
         workspaceLayouts[key] = layout
-        if selectedServerId == serverId, selectedWorkspaceId == workspaceId {
+        if wasActive { activateFallbackAfterClosingTab(for: key) }
+    }
+
+    private func activateFallbackAfterClosingTab(for key: ScopedResourceID) {
+        guard selectedServerId == key.serverId, selectedWorkspaceId == key.resourceId else {
+            return
+        }
+        if let fallbackSessionId = currentLayout?.focusedSessionId {
+            applyTerminalPaneSelection(fallbackSessionId, for: key)
+        } else {
             syncSelectionFromLayout()
-            requestTerminalFocus()
         }
     }
 
@@ -1005,13 +1014,13 @@ final class WorkbenchModel: ObservableObject {
                 _ = try await connection.rpc("session.kill", ["sessionId": session.id])
             }
             pendingSessionTermination = nil
+            if let workspaceId, let targetServerId {
+                closeTab(session.id, workspaceId: workspaceId, serverId: targetServerId)
+            }
             if let targetServerId {
                 TerminalSurfaceCache.shared.evict(serverId: targetServerId, sessionId: session.id)
             }
             await connection.refresh()
-            if let workspaceId, let targetServerId {
-                closeTab(session.id, workspaceId: workspaceId, serverId: targetServerId)
-            }
         } catch {
             pendingSessionTermination = nil
             errorMessage = error.localizedDescription

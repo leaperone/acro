@@ -9,6 +9,106 @@ import Testing
 @Suite
 struct TerminalPanesInteractionTests {
     @Test
+    func failedSessionRemovalKeepsTheSelectedTab() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let fallback = makeSession(id: UUID().uuidString)
+        let closing = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [fallback.id, closing.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                Issue.record("refresh must not run after a failed mutation")
+                throw RpcError(message: "unexpected refresh")
+            },
+            rpcProvider: { _, _ in throw RpcError(message: "remove failed") }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [fallback, closing],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(
+                sessionIds: [fallback.id, closing.id],
+                selectedSessionId: closing.id
+            ))
+        )
+        model.selectedSessionId = closing.id
+        let paneController = try #require(model.currentTerminalPaneController)
+        let bonsplitController = paneController.controller
+        let initialFocusRequest = model.terminalFocusRequest
+
+        await model.terminateSession(closing, on: runtime)
+
+        #expect(paneController.controller === bonsplitController)
+        #expect(paneController.controller.allTabIds.count == 2)
+        #expect(paneController.focusedSessionId == closing.id)
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [fallback.id, closing.id])
+        #expect(model.selectedSessionId == closing.id)
+        #expect(model.terminalFocusRequest == initialFocusRequest)
+        #expect(model.errorMessage == "remove failed")
+    }
+
+    @Test
+    func closingBackgroundTabDoesNotReactivateTheTerminal() throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let active = makeSession(id: UUID().uuidString)
+        let background = makeSession(id: UUID().uuidString)
+        let (_, hub) = makeRuntimeFixture(
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: [active.id, background.id],
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [active, background]
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(
+                sessionIds: [active.id, background.id],
+                selectedSessionId: active.id
+            ))
+        )
+        model.selectedSessionId = active.id
+        let paneController = try #require(model.currentTerminalPaneController)
+        let initialFocusRequest = model.terminalFocusRequest
+        let initialFlashToken = model.flashToken
+
+        model.closeTab(background.id, workspaceId: key.resourceId, serverId: key.serverId)
+
+        #expect(paneController.focusedSessionId == active.id)
+        #expect(model.selectedSessionId == active.id)
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [active.id])
+        #expect(model.terminalFocusRequest == initialFocusRequest)
+        #expect(model.flashToken == initialFlashToken)
+    }
+
+    @Test
     func closingSelectedLiveTabImmediatelyActivatesFallbackWithoutControllerRebuild() async throws {
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
         let fallback = makeSession(id: UUID().uuidString)
@@ -94,6 +194,7 @@ struct TerminalPanesInteractionTests {
             focus: []
         ))
         await termination.value
+        model.reconcileLayoutState()
 
         #expect(paneController.controller === bonsplitController)
         #expect(paneController.focusedSessionId == fallback.id)
