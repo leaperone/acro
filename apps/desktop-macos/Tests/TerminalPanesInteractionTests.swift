@@ -735,9 +735,13 @@ struct TerminalPanesInteractionTests {
 
         let opaque = TerminalChromeAppearance(red: 0x12, green: 0x34, blue: 0x56, opacity: 1)
         model.applyTerminalChromeAppearance(opaque)
+        let lateKey = ScopedResourceID(serverId: "server", resourceId: "three")
+        model.workspaceLayouts[lateKey] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+        )
 
         #expect(model.terminalChromeAppearance == opaque)
-        for key in keys {
+        for key in keys + [lateKey] {
             let appearance = try #require(
                 model.terminalPaneControllers[key]?.controller.configuration.appearance
             )
@@ -746,6 +750,7 @@ struct TerminalPanesInteractionTests {
             #expect(appearance.chromeColors.splitButtonBackdropHex == "#00000000")
             #expect(appearance.chromeColors.paneBackgroundHex == "#00000000")
             #expect(appearance.usesSharedBackdrop)
+            #expect(appearance.splitButtonBackdropEffect?.fadeWidth == 99.75)
         }
 
         let translucent = TerminalChromeAppearance(
@@ -756,7 +761,7 @@ struct TerminalPanesInteractionTests {
         )
         model.applyTerminalChromeAppearance(translucent)
 
-        for key in keys {
+        for key in keys + [lateKey] {
             let appearance = try #require(
                 model.terminalPaneControllers[key]?.controller.configuration.appearance
             )

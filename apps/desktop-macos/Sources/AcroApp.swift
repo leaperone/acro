@@ -165,6 +165,7 @@ struct AcroApp: App {
             WorkbenchView(model: model, runtime: model.runtime)
                 .onAppear {
                     _ = Ghostty.shared // 初始化 libghostty
+                    model.applyTerminalChromeAppearance(Ghostty.shared.chromeAppearance)
                     hub.reload() // 为每台已配对服务器建立常驻连接
                 }
                 .task {

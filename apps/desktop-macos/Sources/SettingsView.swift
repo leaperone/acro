@@ -18,7 +18,7 @@ struct SettingsView: View {
                 .tabItem { Label("远程", systemImage: "antenna.radiowaves.left.and.right") }
             ShortcutSettingsPane()
                 .tabItem { Label("快捷键", systemImage: "keyboard") }
-            AppearanceSettingsPane()
+            AppearanceSettingsPane(model: model)
                 .tabItem { Label("外观", systemImage: "paintbrush") }
         }
         .frame(width: 560)
@@ -823,6 +823,7 @@ enum TerminalAppearance {
 }
 
 private struct AppearanceSettingsPane: View {
+    @ObservedObject var model: WorkbenchModel
     @AppStorage("acro.terminal.font-family") private var fontFamily = ""
     @AppStorage("acro.terminal.font-size") private var fontSize = 0
     @AppStorage("acro.terminal.theme") private var theme = ""
@@ -864,5 +865,6 @@ private struct AppearanceSettingsPane: View {
         TerminalAppearance.write(fontFamily: fontFamily, fontSize: fontSize, theme: theme)
         // 热重载:推给已存在的所有 surface,改字体/字号/主题立即生效,不用重启。
         Ghostty.shared.reloadConfig()
+        model.applyTerminalChromeAppearance(Ghostty.shared.chromeAppearance)
     }
 }
