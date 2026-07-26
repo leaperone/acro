@@ -9,6 +9,98 @@ import Testing
 @Suite
 struct TerminalPanesInteractionTests {
     @Test
+    func closingSelectedLiveTabImmediatelyActivatesFallbackWithoutControllerRebuild() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let fallback = makeSession(id: UUID().uuidString)
+        let closing = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [fallback.id, closing.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let refreshGate = RefreshSnapshotGate()
+        var rpcCalls: [(method: String, sessionId: String?)] = []
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                try await refreshGate.wait()
+            },
+            rpcProvider: { method, params in
+                rpcCalls.append((method, params["sessionId"] as? String))
+                return method == "session.claimFocus" ? ["claimed": true] : [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [fallback, closing],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(
+                sessionIds: [fallback.id, closing.id],
+                selectedSessionId: closing.id
+            ))
+        )
+        model.selectedSessionId = closing.id
+        let paneController = try #require(model.currentTerminalPaneController)
+        let bonsplitController = paneController.controller
+        let initialFocusRequest = model.terminalFocusRequest
+
+        let termination = Task { await model.terminateSession(closing, on: runtime) }
+        while !refreshGate.isWaiting { await Task.yield() }
+        for _ in 0..<20 where !rpcCalls.contains(where: {
+            $0.method == "session.claimFocus" && $0.sessionId == fallback.id
+        }) {
+            await Task.yield()
+        }
+
+        #expect(paneController.controller === bonsplitController)
+        #expect(paneController.controller.allTabIds.count == 1)
+        #expect(paneController.focusedSessionId == fallback.id)
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [fallback.id])
+        #expect(model.selectedSessionId == fallback.id)
+        #expect(model.terminalFocusRequest > initialFocusRequest)
+        #expect(rpcCalls.contains(where: {
+            $0.method == "session.claimFocus" && $0.sessionId == fallback.id
+        }))
+
+        refreshGate.resume(returning: .init(
+            workspaceGroups: [],
+            workspaces: [Workspace(
+                id: workspace.id,
+                name: workspace.name,
+                sessionIds: [fallback.id],
+                createdAt: workspace.createdAt,
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [fallback],
+            focus: []
+        ))
+        await termination.value
+
+        #expect(paneController.controller === bonsplitController)
+        #expect(paneController.focusedSessionId == fallback.id)
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [fallback.id])
+    }
+
+    @Test
     func restoresPersistedTopologyAndDividerPosition() throws {
         let fixture = makeSplitFixture()
         let paneController = try #require(fixture.model.currentTerminalPaneController)
@@ -557,4 +649,35 @@ private func makeRuntimeFixture(
         endpoints: []
     )
     return (runtime, RuntimeHub(entries: [.init(server: server, connection: runtime)]))
+}
+
+private func makeSession(id: String) -> Session {
+    Session(
+        id: id,
+        cwd: "/tmp",
+        command: "zsh",
+        cols: 80,
+        rows: 24,
+        createdAt: "2026-07-27T00:00:00Z",
+        alive: true,
+        exitCode: nil,
+        title: nil,
+        agent: nil
+    )
+}
+
+@MainActor
+private final class RefreshSnapshotGate {
+    private var continuation: CheckedContinuation<RuntimeConnection.RefreshSnapshot, Error>?
+    private(set) var isWaiting = false
+
+    func wait() async throws -> RuntimeConnection.RefreshSnapshot {
+        isWaiting = true
+        return try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    func resume(returning snapshot: RuntimeConnection.RefreshSnapshot) {
+        continuation?.resume(returning: snapshot)
+        continuation = nil
+    }
 }
