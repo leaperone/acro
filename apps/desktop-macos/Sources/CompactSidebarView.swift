@@ -1,5 +1,5 @@
 // Compact 左侧栏：固定宽度的服务器 / 工作区快速切换轨道。
-// 结构管理、会话树和破坏性操作保留在完整侧边栏。
+// 实体菜单与完整侧边栏共享；分组行和会话树只在完整侧边栏呈现。
 
 import SwiftUI
 import UniformTypeIdentifiers
@@ -141,6 +141,8 @@ struct CompactSidebarView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var hub: RuntimeHub
     @State private var connectSheetPresented = false
+    @State private var editingServerId: EditingServerId?
+    @State private var pendingServerRemoval: ServerEntry?
 
     private static let palette: [Color] = [
         .blue, .purple, .orange, .pink, .teal, .indigo, .green, .red,
@@ -196,6 +198,27 @@ struct CompactSidebarView: View {
         .sheet(isPresented: $connectSheetPresented) {
             ConnectServerSheet(hub: hub)
         }
+        .sheet(item: $editingServerId) { editing in
+            EditServerSheet(serverId: editing.id, hub: hub)
+        }
+        .confirmationDialog(
+            "移除服务器「\(pendingServerRemoval?.name ?? "")」?",
+            isPresented: Binding(
+                get: { pendingServerRemoval != nil },
+                set: { if !$0 { pendingServerRemoval = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("移除(不影响服务器上的会话)", role: .destructive) {
+                guard let server = pendingServerRemoval else { return }
+                pendingServerRemoval = nil
+                ServerDirectory.remove(server.id, hub: hub)
+                model.reconcileLayoutState()
+            }
+            Button("取消", role: .cancel) { pendingServerRemoval = nil }
+        } message: {
+            Text("只删除本机的连接凭据;服务器上的工作区与终端不受影响,可重新配对接入。")
+        }
     }
 
     private var selectedWorkspaceScrollId: String? {
@@ -228,6 +251,7 @@ struct CompactSidebarView: View {
         )
         let color = Self.palette[CompactSidebarIdentity.colorIndex(for: entry.id)]
         let isSelected = model.selectedServerId == entry.id
+        let position = remoteServerPosition(entry.id)
         return VStack(spacing: 6) {
             CompactSidebarServerButton(
                 snapshot: CompactSidebarServerSnapshot(
@@ -240,11 +264,33 @@ struct CompactSidebarView: View {
                 ),
                 color: color,
                 select: { model.activate(serverId: entry.id) },
-                createWorkspace: {
-                    model.activate(serverId: entry.id)
-                    model.requestCreateWorkspace()
-                },
-                useWideSidebar: { model.setLeftSidebarPresentation(.wide) },
+                menuSnapshot: SidebarServerMenuSnapshot(
+                    canCreate: entry.connection.connected,
+                    canMoveUp: position.map { $0 > 0 } ?? false,
+                    canMoveDown: position.map { $0 < remoteServerIds.count - 1 } ?? false
+                ),
+                menuActions: SidebarServerMenuActions(
+                    createWorkspace: {
+                        model.requestCreateWorkspace(serverId: entry.id)
+                    },
+                    createGroup: {
+                        model.presentWorkspaceGroupEditor(
+                            workspaceGroupId: nil, name: "", serverId: entry.id)
+                    },
+                    moveUp: { moveServer(entry.id, offset: -1) },
+                    moveDown: { moveServer(entry.id, offset: 1) },
+                    edit: entry.server.isLocal ? nil : {
+                        editingServerId = EditingServerId(id: entry.id)
+                    },
+                    openSettings: { model.requestOpenSettings() },
+                    remove: entry.server.isLocal ? nil : {
+                        pendingServerRemoval = entry.server
+                    },
+                    showInWideSidebar: {
+                        model.activate(serverId: entry.id)
+                        model.setLeftSidebarPresentation(.wide)
+                    }
+                ),
                 beginDrag: entry.server.isLocal ? nil : {
                     beginServerDrag(entry)
                 },
@@ -300,6 +346,11 @@ struct CompactSidebarView: View {
     ) -> some View {
         let sessions = model.sessions(in: workspace, on: entry.connection)
         let scopedId = workspaceScrollId(serverId: entry.id, workspaceId: workspace.id)
+        let currentGroup = model.workspaceGroup(
+            containing: workspace.id, on: entry.connection)
+        let container = currentGroup.map { model.workspaces(in: $0, on: entry.connection) }
+            ?? model.ungroupedWorkspaces(on: entry.connection)
+        let position = container.firstIndex(where: { $0.id == workspace.id })
         return CompactSidebarWorkspaceButton(
             snapshot: CompactSidebarWorkspaceSnapshot(
                 id: scopedId,
@@ -310,7 +361,6 @@ struct CompactSidebarView: View {
                 sessionCount: sessions.count,
                 isSelected: model.selectedServerId == entry.id
                     && model.selectedWorkspaceId == workspace.id,
-                canCreateTerminal: entry.connection.connected,
                 shortcutHint: model.cmdHeld && model.selectedServerId == entry.id
                     ? model.workspaceShortcutDigit(workspace.id).map { "⌘\($0)" }
                     : nil
@@ -319,15 +369,51 @@ struct CompactSidebarView: View {
                 model.activate(serverId: entry.id)
                 model.selectWorkspace(workspace)
             },
-            newTerminal: {
-                model.activate(serverId: entry.id)
-                model.requestNewTerminal(in: workspace)
-            },
-            showInWideSidebar: {
-                model.activate(serverId: entry.id)
-                model.selectWorkspace(workspace)
-                model.setLeftSidebarPresentation(.wide)
-            },
+            menuSnapshot: SidebarWorkspaceMenuSnapshot(
+                canMutate: entry.connection.connected,
+                canMoveUp: position.map { $0 > 0 } ?? false,
+                canMoveDown: position.map { $0 < container.count - 1 } ?? false,
+                isInGroup: currentGroup != nil,
+                moveTargets: entry.connection.workspaceGroups.map {
+                    SidebarMoveTarget(
+                        id: $0.id, name: $0.name, disabled: $0.id == currentGroup?.id)
+                }
+            ),
+            menuActions: SidebarWorkspaceMenuActions(
+                newTerminal: {
+                    model.requestNewTerminal(in: workspace, serverId: entry.id)
+                },
+                moveUp: {
+                    model.requestMoveWorkspace(
+                        workspace.id, offset: -1, on: entry.connection)
+                },
+                moveDown: {
+                    model.requestMoveWorkspace(
+                        workspace.id, offset: 1, on: entry.connection)
+                },
+                moveToGroup: { groupId in
+                    let target = groupId.flatMap { id in
+                        entry.connection.workspaceGroups.first { $0.id == id }
+                    }
+                    if groupId != nil && target == nil {
+                        model.errorMessage = "目标分组已移除，操作已取消"
+                        return
+                    }
+                    model.requestMoveWorkspace(workspace, to: target, on: entry.connection)
+                },
+                rename: {
+                    model.presentWorkspaceRename(
+                        workspaceId: workspace.id, name: workspace.name, serverId: entry.id)
+                },
+                delete: {
+                    model.requestWorkspaceDeletion(workspace, serverId: entry.id)
+                },
+                showInWideSidebar: {
+                    model.activate(serverId: entry.id)
+                    model.selectWorkspace(workspace)
+                    model.setLeftSidebarPresentation(.wide)
+                }
+            ),
             beginDrag: {
                 model.draggingServer = nil
                 let payload = WorkspaceDragPayload(
@@ -392,22 +478,36 @@ struct CompactSidebarView: View {
         return provider
     }
 
+    private var remoteServerIds: [String] {
+        SidebarServerProjection.entries(hub.entries)
+            .filter { !$0.server.isLocal }
+            .map(\.id)
+    }
+
+    private func remoteServerPosition(_ serverId: String) -> Int? {
+        remoteServerIds.firstIndex(of: serverId)
+    }
+
     private func serverInsertionIndex(
         target: RuntimeHub.Entry, edge: SidebarWorkspaceDropEdge
     ) -> Int? {
         guard let payload = model.draggingServer else { return nil }
-        let remoteIds = SidebarServerProjection.entries(hub.entries)
-            .filter { !$0.server.isLocal }
-            .map(\.id)
-        if target.server.isLocal {
-            return edge == .bottom && remoteIds.first != payload.serverId ? 0 : nil
-        }
-        return SidebarWorkspaceDropPlanner.insertionIndex(
-            draggedWorkspaceId: payload.serverId,
-            targetWorkspaceId: target.id,
-            orderedWorkspaceIds: remoteIds,
+        return SidebarServerDropPlanner.insertionIndex(
+            draggedServerId: payload.serverId,
+            targetServerId: target.id,
+            targetIsLocal: target.server.isLocal,
+            orderedRemoteServerIds: remoteServerIds,
             edge: edge
         )
+    }
+
+
+    private func moveServer(_ serverId: String, offset: Int) {
+        do {
+            try ServerDirectory.moveRemote(serverId, offset: offset, hub: hub)
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
     }
 
     private func performServerDrop(
@@ -479,8 +579,8 @@ private struct CompactSidebarServerButton: View {
     let snapshot: CompactSidebarServerSnapshot
     let color: Color
     let select: () -> Void
-    let createWorkspace: () -> Void
-    let useWideSidebar: () -> Void
+    let menuSnapshot: SidebarServerMenuSnapshot
+    let menuActions: SidebarServerMenuActions
     let beginDrag: (() -> NSItemProvider)?
     let acceptDrop: (SidebarWorkspaceDropEdge) -> Bool
     let performDrop: (SidebarWorkspaceDropEdge) -> Bool
@@ -544,10 +644,7 @@ private struct CompactSidebarServerButton: View {
         .accessibilityValue(statusLabel)
         .accessibilityAddTraits(snapshot.isSelected ? [.isSelected] : [])
         .contextMenu {
-            Button("新建工作区", action: createWorkspace)
-                .disabled(snapshot.state != .connected)
-            Divider()
-            Button("使用完整侧边栏", action: useWideSidebar)
+            SidebarServerContextMenu(snapshot: menuSnapshot, actions: menuActions)
         }
     }
 
@@ -583,15 +680,14 @@ struct CompactSidebarWorkspaceSnapshot: Equatable {
     let groupName: String?
     let sessionCount: Int
     let isSelected: Bool
-    let canCreateTerminal: Bool
     let shortcutHint: String?
 }
 
 private struct CompactSidebarWorkspaceButton: View {
     let snapshot: CompactSidebarWorkspaceSnapshot
     let select: () -> Void
-    let newTerminal: () -> Void
-    let showInWideSidebar: () -> Void
+    let menuSnapshot: SidebarWorkspaceMenuSnapshot
+    let menuActions: SidebarWorkspaceMenuActions
     let beginDrag: () -> NSItemProvider
     let acceptDrop: (SidebarWorkspaceDropEdge) -> Bool
     let performDrop: (SidebarWorkspaceDropEdge) -> Bool
@@ -644,10 +740,7 @@ private struct CompactSidebarWorkspaceButton: View {
         .accessibilityValue(accessibilityValue)
         .accessibilityAddTraits(snapshot.isSelected ? [.isSelected] : [])
         .contextMenu {
-            Button("新建终端", action: newTerminal)
-                .disabled(!snapshot.canCreateTerminal)
-            Divider()
-            Button("在完整侧边栏中显示", action: showInWideSidebar)
+            SidebarWorkspaceContextMenu(snapshot: menuSnapshot, actions: menuActions)
         }
         .onDrag(beginDrag)
         .onDrop(

@@ -111,5 +111,16 @@ final class ClientConfigPermissionsTests: XCTestCase {
         XCTAssertEqual(saved.servers.map(\.id), [local.id, secondRemote.id, firstRemote.id])
         XCTAssertEqual(saved.active, secondRemote.id)
         XCTAssertEqual(hub.entries.map(\.id), saved.servers.map(\.id))
+
+        try ServerDirectory.moveRemote(secondRemote.id, offset: 1, hub: hub)
+        let moved = try XCTUnwrap(ClientConfig.load())
+        XCTAssertEqual(moved.servers.map(\.id), [local.id, firstRemote.id, secondRemote.id])
+        XCTAssertEqual(moved.active, secondRemote.id)
+
+        try ServerDirectory.moveRemote(secondRemote.id, offset: 1, hub: hub)
+        XCTAssertEqual(
+            try XCTUnwrap(ClientConfig.load()).servers.map(\.id),
+            [local.id, firstRemote.id, secondRemote.id]
+        )
     }
 }

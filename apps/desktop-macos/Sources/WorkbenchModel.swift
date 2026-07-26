@@ -124,18 +124,25 @@ final class WorkbenchModel: ObservableObject {
     @Published var editingWorkspaceId: String?
     @Published var workspaceName = ""
     @Published var pendingWorkspaceDeletion: Workspace? {
-        didSet { if pendingWorkspaceDeletion != nil { pendingServerId = selectedServerId } }
+        didSet { capturePendingServerIfNeeded(pendingWorkspaceDeletion != nil) }
     }
     @Published var pendingWorkspaceGroupRemoval: WorkspaceGroup? {
-        didSet { if pendingWorkspaceGroupRemoval != nil { pendingServerId = selectedServerId } }
+        didSet { capturePendingServerIfNeeded(pendingWorkspaceGroupRemoval != nil) }
     }
     @Published var pendingSessionTermination: Session? {
-        didSet { if pendingSessionTermination != nil { pendingServerId = selectedServerId } }
+        didSet { capturePendingServerIfNeeded(pendingSessionTermination != nil) }
     }
     @Published var showingDaemonRestartConfirmation = false
     // 弹框/编辑器打开时的目标服务器:确认动作按它路由,
     // 避免弹框期间切换服务器把破坏性 RPC 发错目标
     private var pendingServerId: String?
+    private var pendingServerOverride: String?
+
+    private func capturePendingServerIfNeeded(_ hasPendingValue: Bool) {
+        guard hasPendingValue else { return }
+        pendingServerId = pendingServerOverride ?? selectedServerId
+        pendingServerOverride = nil
+    }
 
     private var pendingRuntime: RuntimeConnection? {
         hub.connection(for: pendingServerId)
@@ -541,6 +548,9 @@ final class WorkbenchModel: ObservableObject {
     }
 
     func selectWorkspace(_ workspace: Workspace) {
+        guard let workspace = runtime.workspaces.first(where: { $0.id == workspace.id }) else {
+            return
+        }
         selectedWorkspaceId = workspace.id
         expandGroupContaining(workspace.id)
         if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
@@ -753,6 +763,24 @@ final class WorkbenchModel: ObservableObject {
         Task { _ = await openTerminal(in: workspace, inheritFrom: inheritFrom, on: connection) }
     }
 
+    func requestNewTerminal(
+        in workspace: Workspace, serverId: String, inheritFrom: String? = nil
+    ) {
+        guard let connection = hub.connection(for: serverId) else {
+            errorMessage = "目标服务器已移除，操作已取消"
+            return
+        }
+        guard let workspace = connection.workspaces.first(where: { $0.id == workspace.id }) else {
+            errorMessage = "目标工作区已移除，操作已取消"
+            return
+        }
+        selectedServerId = serverId
+        selectedWorkspaceId = workspace.id
+        expandGroupContaining(workspace.id)
+        if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
+        Task { _ = await openTerminal(in: workspace, inheritFrom: inheritFrom, on: connection) }
+    }
+
     // 路径继承源:聚焦终端优先;fallback 工作区第一个存活终端;都没有交给服务端(家目录)
     private func inheritCwdSource(in workspace: Workspace, on connection: RuntimeConnection) -> String? {
         if runtime === connection, selectedWorkspaceId == workspace.id,
@@ -871,15 +899,19 @@ final class WorkbenchModel: ObservableObject {
         expandedWorkspaceGroupIds.insert(key)
     }
 
-    func presentWorkspaceGroupEditor(workspaceGroupId: String?, name: String) {
-        pendingServerId = selectedServerId
+    func presentWorkspaceGroupEditor(
+        workspaceGroupId: String?, name: String, serverId: String? = nil
+    ) {
+        pendingServerId = serverId ?? selectedServerId
         editingWorkspaceGroupId = workspaceGroupId
         workspaceGroupName = name
         showingWorkspaceGroupEditor = true
     }
 
-    func presentWorkspaceRename(workspaceId: String, name: String) {
-        pendingServerId = selectedServerId
+    func presentWorkspaceRename(
+        workspaceId: String, name: String, serverId: String? = nil
+    ) {
+        pendingServerId = serverId ?? selectedServerId
         editingWorkspaceId = workspaceId
         workspaceName = name
         showingWorkspaceEditor = true
@@ -913,6 +945,54 @@ final class WorkbenchModel: ObservableObject {
     func requestCreateWorkspace(in workspaceGroupId: String? = nil) {
         let connection = runtime
         Task { await createWorkspace(in: workspaceGroupId, on: connection) }
+    }
+
+    func requestCreateWorkspace(in workspaceGroupId: String? = nil, serverId: String) {
+        guard let connection = hub.connection(for: serverId) else {
+            errorMessage = "目标服务器已移除，操作已取消"
+            return
+        }
+        selectedServerId = serverId
+        Task { await createWorkspace(in: workspaceGroupId, on: connection) }
+    }
+
+    func requestWorkspaceDeletion(_ workspace: Workspace, serverId: String) {
+        guard let connection = hub.connection(for: serverId) else {
+            errorMessage = "目标服务器已移除，操作已取消"
+            return
+        }
+        guard let workspace = connection.workspaces.first(where: { $0.id == workspace.id }) else {
+            errorMessage = "目标工作区已移除，操作已取消"
+            return
+        }
+        pendingServerOverride = serverId
+        pendingWorkspaceDeletion = workspace
+    }
+
+    func requestWorkspaceGroupRemoval(_ group: WorkspaceGroup, serverId: String) {
+        guard let connection = hub.connection(for: serverId) else {
+            errorMessage = "目标服务器已移除，操作已取消"
+            return
+        }
+        guard let group = connection.workspaceGroups.first(where: { $0.id == group.id }) else {
+            errorMessage = "目标分组已移除，操作已取消"
+            return
+        }
+        pendingServerOverride = serverId
+        pendingWorkspaceGroupRemoval = group
+    }
+
+    func requestSessionTermination(_ session: Session, serverId: String) {
+        guard let connection = hub.connection(for: serverId) else {
+            errorMessage = "目标服务器已移除，操作已取消"
+            return
+        }
+        guard let session = connection.sessions.first(where: { $0.id == session.id }) else {
+            errorMessage = "目标终端已结束，操作已取消"
+            return
+        }
+        pendingServerOverride = serverId
+        pendingSessionTermination = session
     }
 
     private func createWorkspace(
@@ -1029,12 +1109,29 @@ final class WorkbenchModel: ObservableObject {
 
     func requestMoveWorkspace(_ workspace: Workspace, to group: WorkspaceGroup?) {
         let connection = runtime
-        Task { await moveWorkspace(workspace, to: group, on: connection) }
+        Task { await moveWorkspace(workspace, toGroupId: group?.id, on: connection) }
+    }
+
+    func requestMoveWorkspace(
+        _ workspace: Workspace, to group: WorkspaceGroup?, on connection: RuntimeConnection
+    ) {
+        Task { await moveWorkspace(workspace, toGroupId: group?.id, on: connection) }
     }
 
     private func moveWorkspace(
-        _ workspace: Workspace, to group: WorkspaceGroup?, on connection: RuntimeConnection
+        _ workspace: Workspace, toGroupId groupId: String?, on connection: RuntimeConnection
     ) async {
+        guard let workspace = connection.workspaces.first(where: { $0.id == workspace.id }) else {
+            errorMessage = "目标工作区已移除，操作已取消"
+            return
+        }
+        let group = groupId.flatMap { id in
+            connection.workspaceGroups.first(where: { $0.id == id })
+        }
+        if groupId != nil && group == nil {
+            errorMessage = "目标分组已移除，操作已取消"
+            return
+        }
         do {
             _ = try await connection.rpc("workspace.update", [
                 "workspaceId": workspace.id,
@@ -1059,6 +1156,19 @@ final class WorkbenchModel: ObservableObject {
             await reorderWorkspace(
                 workspaceId, toGroup: workspaceGroupId, index: index, on: connection)
         }
+    }
+
+    func requestMoveWorkspace(
+        _ workspaceId: String, offset: Int, on connection: RuntimeConnection
+    ) {
+        let group = workspaceGroup(containing: workspaceId, on: connection)
+        let container = group.map { workspaces(in: $0, on: connection) }
+            ?? ungroupedWorkspaces(on: connection)
+        guard let source = container.firstIndex(where: { $0.id == workspaceId }) else { return }
+        let target = min(max(source + offset, 0), container.count - 1)
+        guard target != source else { return }
+        requestReorderWorkspace(
+            workspaceId, toGroup: group?.id, index: target, on: connection)
     }
 
     private func reorderWorkspace(
