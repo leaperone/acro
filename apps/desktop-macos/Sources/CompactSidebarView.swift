@@ -2,6 +2,7 @@
 // 结构管理、会话树和破坏性操作保留在完整侧边栏。
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum CompactSidebarLayout {
     static let width: CGFloat = 64
@@ -34,6 +35,7 @@ enum CompactSidebarIdentity {
 
 struct CompactSidebarSection: Identifiable, Equatable {
     let id: String
+    let groupId: String?
     let name: String?
     let workspaces: [Workspace]
 }
@@ -52,6 +54,7 @@ enum CompactSidebarProjection {
             guard !values.isEmpty else { return nil }
             return CompactSidebarSection(
                 id: "group:\(group.id)",
+                groupId: group.id,
                 name: group.name,
                 workspaces: values
             )
@@ -61,6 +64,7 @@ enum CompactSidebarProjection {
         if !ungrouped.isEmpty {
             sections.append(CompactSidebarSection(
                 id: "ungrouped",
+                groupId: nil,
                 name: nil,
                 workspaces: ungrouped
             ))
@@ -159,10 +163,10 @@ struct CompactSidebarView: View {
                                 .help("Runtime 尚未就绪")
                                 .accessibilityLabel("Runtime 尚未就绪")
                         }
-                        ForEach(hub.entries) { entry in
+                        ForEach(SidebarServerProjection.entries(hub.entries)) { entry in
                             RuntimeConnectionScope(connection: entry.connection) { connection in
                                 serverSection(entry)
-                                    .onChange(of: connection.workspaces.map(\.id)) { _, _ in
+                                    .onChange(of: connection.workspaces.map(\.id).sorted()) { _, _ in
                                         scrollToSelection(proxy)
                                     }
                             }
@@ -174,7 +178,7 @@ struct CompactSidebarView: View {
                 .onChange(of: selectedWorkspaceScrollId, initial: true) { _, _ in
                     scrollToSelection(proxy)
                 }
-                .onChange(of: workspaceIds) { _, _ in
+                .onChange(of: workspaceMembershipIds) { _, _ in
                     scrollToSelection(proxy)
                 }
             }
@@ -200,12 +204,12 @@ struct CompactSidebarView: View {
         return workspaceScrollId(serverId: serverId, workspaceId: workspaceId)
     }
 
-    private var workspaceIds: [String] {
+    private var workspaceMembershipIds: [String] {
         hub.entries.flatMap { entry in
             entry.connection.workspaces.map {
                 workspaceScrollId(serverId: entry.id, workspaceId: $0.id)
             }
-        }
+        }.sorted()
     }
 
     private func scrollToSelection(_ proxy: ScrollViewProxy) {
@@ -240,16 +244,24 @@ struct CompactSidebarView: View {
                     model.activate(serverId: entry.id)
                     model.requestCreateWorkspace()
                 },
-                useWideSidebar: { model.setLeftSidebarPresentation(.wide) }
+                useWideSidebar: { model.setLeftSidebarPresentation(.wide) },
+                beginDrag: entry.server.isLocal ? nil : {
+                    beginServerDrag(entry)
+                },
+                acceptDrop: { edge in
+                    serverInsertionIndex(target: entry, edge: edge) != nil
+                },
+                performDrop: { edge in
+                    performServerDrop(target: entry, edge: edge)
+                }
             )
-            .equatable()
 
             ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
                 VStack(spacing: 6) {
                     ForEach(section.workspaces) { workspace in
                         compactWorkspaceButton(
                             workspace,
-                            groupName: section.name,
+                            section: section,
                             entry: entry
                         )
                     }
@@ -283,7 +295,7 @@ struct CompactSidebarView: View {
 
     private func compactWorkspaceButton(
         _ workspace: Workspace,
-        groupName: String?,
+        section: CompactSidebarSection,
         entry: RuntimeHub.Entry
     ) -> some View {
         let sessions = model.sessions(in: workspace, on: entry.connection)
@@ -294,11 +306,14 @@ struct CompactSidebarView: View {
                 name: workspace.name,
                 initial: CompactSidebarIdentity.mark(for: workspace.name),
                 serverName: entry.server.name,
-                groupName: groupName,
+                groupName: section.name,
                 sessionCount: sessions.count,
                 isSelected: model.selectedServerId == entry.id
                     && model.selectedWorkspaceId == workspace.id,
-                canCreateTerminal: entry.connection.connected
+                canCreateTerminal: entry.connection.connected,
+                shortcutHint: model.cmdHeld && model.selectedServerId == entry.id
+                    ? model.workspaceShortcutDigit(workspace.id).map { "⌘\($0)" }
+                    : nil
             ),
             select: {
                 model.activate(serverId: entry.id)
@@ -312,10 +327,103 @@ struct CompactSidebarView: View {
                 model.activate(serverId: entry.id)
                 model.selectWorkspace(workspace)
                 model.setLeftSidebarPresentation(.wide)
+            },
+            beginDrag: {
+                model.draggingServer = nil
+                let payload = WorkspaceDragPayload(
+                    workspaceId: workspace.id, serverId: entry.id)
+                model.draggingWorkspace = payload
+                let provider = SidebarDragItemProvider()
+                provider.registerItem(workspace.id, type: .acroSidebarWorkspace)
+                provider.onEnd = { Task { @MainActor in model.endWorkspaceDrag(payload) } }
+                return provider
+            },
+            acceptDrop: { edge in
+                guard let payload = model.draggingWorkspace,
+                      payload.serverId == entry.id,
+                      let container = workspaceContainer(for: section, entry: entry)
+                else { return false }
+                return SidebarWorkspaceDropPlanner.insertionIndex(
+                    draggedWorkspaceId: payload.workspaceId,
+                    targetWorkspaceId: workspace.id,
+                    orderedWorkspaceIds: container.map(\.id),
+                    edge: edge
+                ) != nil
+            },
+            performDrop: { edge in
+                guard let payload = model.draggingWorkspace,
+                      payload.serverId == entry.id,
+                      let container = workspaceContainer(for: section, entry: entry),
+                      let index = SidebarWorkspaceDropPlanner.insertionIndex(
+                          draggedWorkspaceId: payload.workspaceId,
+                          targetWorkspaceId: workspace.id,
+                          orderedWorkspaceIds: container.map(\.id),
+                          edge: edge
+                      )
+                else { return false }
+                model.draggingWorkspace = nil
+                model.requestReorderWorkspace(
+                    payload.workspaceId, toGroup: section.groupId,
+                    index: index, on: entry.connection)
+                return true
             }
         )
-        .equatable()
         .id(scopedId)
+    }
+
+    private func workspaceContainer(
+        for section: CompactSidebarSection, entry: RuntimeHub.Entry
+    ) -> [Workspace]? {
+        guard let groupId = section.groupId else {
+            return model.ungroupedWorkspaces(on: entry.connection)
+        }
+        guard let group = entry.connection.workspaceGroups.first(where: { $0.id == groupId })
+        else { return nil }
+        return model.workspaces(in: group, on: entry.connection)
+    }
+
+    private func beginServerDrag(_ entry: RuntimeHub.Entry) -> NSItemProvider {
+        model.draggingWorkspace = nil
+        let payload = ServerDragPayload(serverId: entry.id)
+        model.draggingServer = payload
+        let provider = SidebarDragItemProvider()
+        provider.registerItem(entry.id, type: .acroSidebarServer)
+        provider.onEnd = { Task { @MainActor in model.endServerDrag(payload) } }
+        return provider
+    }
+
+    private func serverInsertionIndex(
+        target: RuntimeHub.Entry, edge: SidebarWorkspaceDropEdge
+    ) -> Int? {
+        guard let payload = model.draggingServer else { return nil }
+        let remoteIds = SidebarServerProjection.entries(hub.entries)
+            .filter { !$0.server.isLocal }
+            .map(\.id)
+        if target.server.isLocal {
+            return edge == .bottom && remoteIds.first != payload.serverId ? 0 : nil
+        }
+        return SidebarWorkspaceDropPlanner.insertionIndex(
+            draggedWorkspaceId: payload.serverId,
+            targetWorkspaceId: target.id,
+            orderedWorkspaceIds: remoteIds,
+            edge: edge
+        )
+    }
+
+    private func performServerDrop(
+        target: RuntimeHub.Entry, edge: SidebarWorkspaceDropEdge
+    ) -> Bool {
+        guard let payload = model.draggingServer,
+              let index = serverInsertionIndex(target: target, edge: edge)
+        else { return false }
+        model.draggingServer = nil
+        do {
+            try ServerDirectory.reorderRemote(payload.serverId, to: index, hub: hub)
+            return true
+        } catch {
+            model.errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     private var footer: some View {
@@ -367,16 +475,44 @@ struct CompactSidebarServerSnapshot: Equatable {
     let state: RuntimeConnection.ConnectionState
 }
 
-private struct CompactSidebarServerButton: View, Equatable {
+private struct CompactSidebarServerButton: View {
     let snapshot: CompactSidebarServerSnapshot
     let color: Color
     let select: () -> Void
     let createWorkspace: () -> Void
     let useWideSidebar: () -> Void
-
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.snapshot == rhs.snapshot }
+    let beginDrag: (() -> NSItemProvider)?
+    let acceptDrop: (SidebarWorkspaceDropEdge) -> Bool
+    let performDrop: (SidebarWorkspaceDropEdge) -> Bool
+    @State private var dropEdge: SidebarWorkspaceDropEdge?
 
     var body: some View {
+        Group {
+            if let beginDrag {
+                button.onDrag(beginDrag)
+            } else {
+                button
+            }
+        }
+        .overlay(alignment: dropEdge == .bottom ? .bottom : .top) {
+            if dropEdge != nil {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.accentColor)
+                    .frame(width: 28, height: 2)
+            }
+        }
+        .onDrop(
+            of: [.acroSidebarServer],
+            delegate: SidebarWorkspaceRowDropDelegate(
+                edge: Binding(get: { dropEdge }, set: { dropEdge = $0 }),
+                height: CompactSidebarLayout.itemHeight,
+                canAccept: acceptDrop,
+                perform: performDrop
+            )
+        )
+    }
+
+    private var button: some View {
         Button(action: select) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -448,15 +584,18 @@ struct CompactSidebarWorkspaceSnapshot: Equatable {
     let sessionCount: Int
     let isSelected: Bool
     let canCreateTerminal: Bool
+    let shortcutHint: String?
 }
 
-private struct CompactSidebarWorkspaceButton: View, Equatable {
+private struct CompactSidebarWorkspaceButton: View {
     let snapshot: CompactSidebarWorkspaceSnapshot
     let select: () -> Void
     let newTerminal: () -> Void
     let showInWideSidebar: () -> Void
-
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.snapshot == rhs.snapshot }
+    let beginDrag: () -> NSItemProvider
+    let acceptDrop: (SidebarWorkspaceDropEdge) -> Bool
+    let performDrop: (SidebarWorkspaceDropEdge) -> Bool
+    @State private var dropEdge: SidebarWorkspaceDropEdge?
 
     var body: some View {
         Button(action: select) {
@@ -485,6 +624,20 @@ private struct CompactSidebarWorkspaceButton: View, Equatable {
             }
         }
         .buttonStyle(CompactSidebarItemButtonStyle(selected: snapshot.isSelected))
+        .overlay(alignment: dropEdge == .bottom ? .bottom : .top) {
+            if dropEdge != nil {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.accentColor)
+                    .frame(width: 28, height: 2)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if let hint = snapshot.shortcutHint {
+                ShortcutHintPill(text: hint, fontSize: 8)
+                    .offset(x: 2, y: -2)
+                    .transition(.opacity)
+            }
+        }
         .help(helpText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(snapshot.name)
@@ -496,6 +649,16 @@ private struct CompactSidebarWorkspaceButton: View, Equatable {
             Divider()
             Button("在完整侧边栏中显示", action: showInWideSidebar)
         }
+        .onDrag(beginDrag)
+        .onDrop(
+            of: [.acroSidebarWorkspace],
+            delegate: SidebarWorkspaceRowDropDelegate(
+                edge: Binding(get: { dropEdge }, set: { dropEdge = $0 }),
+                height: CompactSidebarLayout.itemHeight,
+                canAccept: acceptDrop,
+                perform: performDrop
+            )
+        )
     }
 
     private var helpText: String {

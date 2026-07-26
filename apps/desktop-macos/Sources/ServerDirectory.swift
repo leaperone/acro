@@ -62,7 +62,7 @@ enum ServerDirectory {
             token: offer.token,
             pub: offer.pub,
             endpoints: offer.endpoints)
-        config.servers.append(entry)
+        config.servers.insert(entry, at: 0)
         config.active = entry.id
         config.save()
         hub.reload()
@@ -93,6 +93,18 @@ enum ServerDirectory {
         guard var config = ClientConfig.load() else { return }
         config.servers.removeAll { $0.id == serverId }
         if config.active == serverId { config.active = config.servers.first?.id }
+        config.save()
+        hub.reload()
+    }
+
+    static func reorderRemote(_ serverId: String, to index: Int, hub: RuntimeHub) throws {
+        var config = try ClientConfig.loadForWrite()
+        let locals = config.servers.filter(\.isLocal)
+        var remotes = config.servers.filter { !$0.isLocal }
+        guard let source = remotes.firstIndex(where: { $0.id == serverId }) else { return }
+        let server = remotes.remove(at: source)
+        remotes.insert(server, at: min(max(index, 0), remotes.count))
+        config.servers = locals + remotes
         config.save()
         hub.reload()
     }

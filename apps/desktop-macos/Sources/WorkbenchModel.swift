@@ -44,6 +44,11 @@ struct WorkspaceDragPayload: Equatable {
     let token = UUID()
 }
 
+struct ServerDragPayload: Equatable {
+    let serverId: String
+    let token = UUID()
+}
+
 @MainActor
 final class WorkbenchModel: ObservableObject {
     // 多主机:hub 为每台已配对服务器维持一条常驻连接;
@@ -106,6 +111,7 @@ final class WorkbenchModel: ObservableObject {
     // ---- 拖拽与快捷键提示 ----
     @Published var draggingTab: TabDragPayload?
     @Published var draggingWorkspace: WorkspaceDragPayload?
+    @Published var draggingServer: ServerDragPayload?
     @Published private(set) var cmdHeld = false
     @Published private(set) var controlHeld = false
 
@@ -679,6 +685,10 @@ final class WorkbenchModel: ObservableObject {
         if draggingWorkspace == payload { draggingWorkspace = nil }
     }
 
+    func endServerDrag(_ payload: ServerDragPayload) {
+        if draggingServer == payload { draggingServer = nil }
+    }
+
     func moveTab(_ payload: TabDragPayload, toPane paneId: String, at index: Int?) {
         guard validDrag(payload) else { return }
         mutateCurrentLayout { $0.moveTab(payload.sessionId, toPane: paneId, at: index) }
@@ -1041,9 +1051,10 @@ final class WorkbenchModel: ObservableObject {
 
     // 拖拽重排:workspaceGroupId 为 nil 表示未分组区
     func requestReorderWorkspace(
-        _ workspaceId: String, toGroup workspaceGroupId: String?, index: Int
+        _ workspaceId: String, toGroup workspaceGroupId: String?, index: Int,
+        on connection: RuntimeConnection? = nil
     ) {
-        let connection = runtime
+        let connection = connection ?? runtime
         Task {
             await reorderWorkspace(
                 workspaceId, toGroup: workspaceGroupId, index: index, on: connection)

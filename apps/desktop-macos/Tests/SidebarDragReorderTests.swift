@@ -1,10 +1,17 @@
 import XCTest
+import UniformTypeIdentifiers
 @testable import AcroDesktop
 
 final class SidebarDragReorderTests: XCTestCase {
     func testDropEdgeUsesRowHalf() {
         XCTAssertEqual(SidebarWorkspaceDropEdge.resolve(locationY: 15, height: 40), .top)
         XCTAssertEqual(SidebarWorkspaceDropEdge.resolve(locationY: 20, height: 40), .bottom)
+    }
+
+    func testSidebarDragTypesArePrivateAndDistinct() {
+        XCTAssertNotEqual(UTType.acroSidebarWorkspace, .text)
+        XCTAssertNotEqual(UTType.acroSidebarServer, .text)
+        XCTAssertNotEqual(UTType.acroSidebarWorkspace, .acroSidebarServer)
     }
 
     func testPlannerInsertsBeforeAndAfterTarget() {
