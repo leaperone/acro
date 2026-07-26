@@ -8,6 +8,7 @@ struct TerminalPanesView: View {
     var body: some View {
         if let paneController = model.currentTerminalPaneController,
            model.currentLayout?.root != nil {
+            let tabMetadata = tabMetadata(for: paneController)
             BonsplitView(controller: paneController.controller) { tab, paneId in
                 TerminalPaneContent(
                     model: model,
@@ -17,6 +18,9 @@ struct TerminalPanesView: View {
                 )
             } emptyPane: { _ in
                 ContentUnavailableView("终端已结束", systemImage: "terminal")
+            }
+            .onChange(of: tabMetadata, initial: true) { _, _ in
+                paneController.refreshTabMetadata()
             }
         } else if let selectedWorkspace = model.selectedWorkspace {
             ContentUnavailableView {
@@ -37,6 +41,44 @@ struct TerminalPanesView: View {
             }
         }
     }
+
+    private func tabMetadata(
+        for paneController: TerminalPaneController
+    ) -> TerminalTabMetadataSnapshot {
+        let key = paneController.key
+        guard model.hub.connection(for: key.serverId) === runtime else {
+            return TerminalTabMetadataSnapshot(key: key, tabs: [])
+        }
+        let sessionsById = Dictionary(
+            runtime.sessions.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let tabs = paneController.controller.allPaneIds.flatMap { paneId in
+            paneController.controller.tabs(inPane: paneId).compactMap {
+                paneController.sessionId(for: $0.id)
+            }
+        }.compactMap { sessionId in
+            sessionsById[sessionId].map {
+                TerminalTabMetadata(
+                    sessionId: sessionId,
+                    cwd: $0.cwd,
+                    title: $0.title
+                )
+            }
+        }
+        return TerminalTabMetadataSnapshot(key: key, tabs: tabs)
+    }
+}
+
+private struct TerminalTabMetadataSnapshot: Equatable {
+    let key: ScopedResourceID
+    let tabs: [TerminalTabMetadata]
+}
+
+private struct TerminalTabMetadata: Equatable {
+    let sessionId: String
+    let cwd: String
+    let title: String?
 }
 
 private struct TerminalPaneContent: View {

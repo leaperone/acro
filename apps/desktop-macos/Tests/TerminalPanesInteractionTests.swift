@@ -44,6 +44,187 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func incrementalSessionTitleRefreshesTheRenderedTab() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let sessionId = UUID().uuidString
+        let session = Session(
+            id: sessionId,
+            cwd: "/tmp",
+            command: "zsh",
+            cols: 80,
+            rows: 24,
+            createdAt: "2026-07-27T00:00:00Z",
+            alive: true,
+            exitCode: nil,
+            title: nil,
+            agent: nil
+        )
+        let (runtime, hub) = makeRuntimeFixture(
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: [sessionId],
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [session]
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [sessionId]))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+        let pane = try #require(paneController.controller.allPaneIds.first)
+        #expect(paneController.controller.tabs(inPane: pane).first?.title == "tmp")
+
+        let hostingView = NSHostingView(rootView: TerminalPanesView(model: model, runtime: runtime))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(100))
+
+        let revision = runtime.snapshotRevision
+        #expect(runtime.applyIncrementalEvent(
+            "session.title",
+            payload: ["sessionId": sessionId, "title": "vim"]
+        ))
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(runtime.snapshotRevision == revision)
+        #expect(model.currentTerminalPaneController === paneController)
+        #expect(paneController.controller.tabs(inPane: pane).first?.title == "vim")
+    }
+
+    @Test
+    func switchingToBackgroundWorkspaceAppliesItsPendingTitle() async throws {
+        let sessionA = UUID().uuidString
+        let sessionB = UUID().uuidString
+        let workspaces = [
+            Workspace(
+                id: "workspace-a", name: "A", sessionIds: [sessionA],
+                createdAt: "2026-07-27T00:00:00Z", layout: nil, layoutRev: nil
+            ),
+            Workspace(
+                id: "workspace-b", name: "B", sessionIds: [sessionB],
+                createdAt: "2026-07-27T00:00:00Z", layout: nil, layoutRev: nil
+            ),
+        ]
+        let sessions = [sessionA, sessionB].map {
+            Session(
+                id: $0, cwd: "/tmp", command: "zsh", cols: 80, rows: 24,
+                createdAt: "2026-07-27T00:00:00Z", alive: true, exitCode: nil,
+                title: nil, agent: nil
+            )
+        }
+        let (runtime, hub) = makeRuntimeFixture(workspaces: workspaces, sessions: sessions)
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = "server"
+        model.selectedWorkspaceId = workspaces[0].id
+        for (workspace, session) in zip(workspaces, sessions) {
+            model.workspaceLayouts[ScopedResourceID(
+                serverId: "server", resourceId: workspace.id
+            )] = WorkspaceTerminalLayout(
+                root: .pane(PaneTabGroup(sessionIds: [session.id]))
+            )
+        }
+        let keyB = ScopedResourceID(serverId: "server", resourceId: workspaces[1].id)
+        let controllerB = try #require(model.terminalPaneControllers[keyB])
+        let paneB = try #require(controllerB.controller.allPaneIds.first)
+
+        let hostingView = NSHostingView(rootView: TerminalPanesView(model: model, runtime: runtime))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(runtime.applyIncrementalEvent(
+            "session.title",
+            payload: ["sessionId": sessionB, "title": "ssh prod"]
+        ))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(controllerB.controller.tabs(inPane: paneB).first?.title == "tmp")
+
+        model.selectedWorkspaceId = workspaces[1].id
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(model.currentTerminalPaneController === controllerB)
+        #expect(controllerB.controller.tabs(inPane: paneB).first?.title == "ssh prod")
+    }
+
+    @Test
+    func switchingBetweenEmptyMetadataControllersStillRefreshesTheNewController() async throws {
+        let workspaces = [
+            Workspace(
+                id: "workspace-a", name: "A", sessionIds: [],
+                createdAt: "2026-07-27T00:00:00Z", layout: nil, layoutRev: nil
+            ),
+            Workspace(
+                id: "workspace-b", name: "B", sessionIds: [],
+                createdAt: "2026-07-27T00:00:00Z", layout: nil, layoutRev: nil
+            ),
+        ]
+        let (runtime, hub) = makeRuntimeFixture(workspaces: workspaces, sessions: [])
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = "server"
+        model.selectedWorkspaceId = workspaces[0].id
+        let missingA = UUID().uuidString
+        let missingB = UUID().uuidString
+        for (workspace, sessionId) in zip(workspaces, [missingA, missingB]) {
+            model.workspaceLayouts[ScopedResourceID(
+                serverId: "server", resourceId: workspace.id
+            )] = WorkspaceTerminalLayout(
+                root: .pane(PaneTabGroup(sessionIds: [sessionId]))
+            )
+        }
+        let keyB = ScopedResourceID(serverId: "server", resourceId: workspaces[1].id)
+        let controllerB = try #require(model.terminalPaneControllers[keyB])
+        let paneB = try #require(controllerB.controller.allPaneIds.first)
+        let tabB = try #require(controllerB.controller.tabs(inPane: paneB).first)
+        controllerB.controller.updateTab(tabB.id, title: "stale")
+
+        let hostingView = NSHostingView(rootView: TerminalPanesView(model: model, runtime: runtime))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(100))
+
+        model.selectedWorkspaceId = workspaces[1].id
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(model.currentTerminalPaneController === controllerB)
+        #expect(controllerB.controller.tabs(inPane: paneB).first?.title == "终端")
+    }
+
+    @Test
     func mouseDragBetweenRenderedTabsReordersAndPersists() async throws {
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
         let sessions = [UUID().uuidString, UUID().uuidString, UUID().uuidString]
@@ -353,4 +534,27 @@ private func mouseEvent(
         clickCount: 1,
         pressure: 1
     ))
+}
+
+@MainActor
+private func makeRuntimeFixture(
+    workspaces: [Workspace],
+    sessions: [Session]
+) -> (runtime: RuntimeConnection, hub: RuntimeHub) {
+    let runtime = RuntimeConnection()
+    runtime.commitRefreshSnapshot(
+        workspaceGroups: [],
+        workspaces: workspaces,
+        sessions: sessions,
+        focus: []
+    )
+    let server = ServerEntry(
+        localId: "server",
+        name: "Server",
+        deviceId: "device",
+        token: "token",
+        pub: "public-key",
+        endpoints: []
+    )
+    return (runtime, RuntimeHub(entries: [.init(server: server, connection: runtime)]))
 }
