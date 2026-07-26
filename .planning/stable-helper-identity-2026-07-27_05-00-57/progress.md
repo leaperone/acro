@@ -13,7 +13,7 @@
 
 ## 进行中
 
-- 提交失败测试并取得 CI 红色证据。
+- 使用真实 Developer ID 验证签名 requirement，再执行完整检查。
 
 ## 修改文件
 
@@ -28,6 +28,9 @@
 | 当前 plist | 指向仓库 `.build/release/acro-helper` | 已确认缺陷 |
 | 当前权限 | accessibility=false，screenRecording=false | 已确认 |
 | `python3 -m unittest apps.desktop-macos.scripts.test_install_helper_launchagent` | 缺少 `scripts/install-helper-launchagent.sh`，按预期失败 | 红色测试 |
+| PR #129 首次 CI | `desktop-macos` 失败，`typescript` 通过 | 红色证据 |
+| `bash -n scripts/install-helper-launchagent.sh scripts/install-launchagents.sh` | 通过 | 已通过 |
+| `python3 -m unittest discover -s apps/desktop-macos/scripts -p 'test_*.py'` | 6 项通过 | 已通过 |
 
 ## 错误与恢复
 
