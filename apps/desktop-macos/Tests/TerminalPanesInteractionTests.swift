@@ -6,7 +6,7 @@ import Testing
 @testable import AcroDesktop
 
 @MainActor
-@Suite
+@Suite(.serialized)
 struct TerminalPanesInteractionTests {
     @Test
     func appBootstrapsMinimalBonsplitPresentation() {

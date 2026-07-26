@@ -16,6 +16,7 @@
 - 在 `AcroApp.init()` 构造 Workbench/Bonsplit 前固定写入 minimal presentation。
 - 启动模式和真实窗口拖拽两项针对性测试转绿。
 - 在最新 `origin/main` 上完成全量 Desktop、TypeScript 和打包脚本验证。
+- 交付审查发现新增测试共享 `UserDefaults.standard`，将 AppKit 交互 suite 串行化，避免并发恢复 presentation key 产生随机失败。
 
 ## 进行中
 
@@ -52,3 +53,4 @@
 | Orca Computer Use `runtime_unavailable` | 1 | 按仓库规则停止重试，改用可重复窗口测试 |
 | GhosttyKit `ghostty.h` 缺失 | 1 | 运行项目 setup 脚本补齐 worktree 构建资产 |
 | 顶部 2pt 合成拖拽测试挂起 | 1 | 终止测试；分离顶边几何与中心拖拽，避免把 AppKit 合成事件限制当真实行为 |
+| 新增测试并发修改同一 AppStorage key | 1 | 将共享 AppKit/UserDefaults 的交互 suite 标记为 serialized |
