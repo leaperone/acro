@@ -222,6 +222,7 @@ final class RuntimeConnection: ObservableObject {
     private var reconnectTask: Task<Void, Never>?
     private var readinessTimeoutTask: Task<Void, Never>?
     private var initialRefreshTask: Task<Void, Never>?
+    private let rpcProvider: (@MainActor (String, [String: Any]) async throws -> Any)?
     private let initialRefreshDelays: [TimeInterval]
     private let readinessTimeout: TimeInterval
     var onTerminalFrame: ((UInt32, UInt32, Data) -> Void)?
@@ -232,11 +233,13 @@ final class RuntimeConnection: ObservableObject {
     init(
         refreshSnapshotProvider: (@MainActor () async throws -> RefreshSnapshot)? = nil,
         initialRefreshDelays: [TimeInterval]? = nil,
-        readinessTimeout: TimeInterval = 10
+        readinessTimeout: TimeInterval = 10,
+        rpcProvider: (@MainActor (String, [String: Any]) async throws -> Any)? = nil
     ) {
         self.refreshSnapshotProvider = refreshSnapshotProvider
         self.initialRefreshDelays = initialRefreshDelays ?? Self.reconnectDelays
         self.readinessTimeout = readinessTimeout
+        self.rpcProvider = rpcProvider
     }
 
     func connect(server: ServerEntry) {
@@ -619,6 +622,7 @@ final class RuntimeConnection: ObservableObject {
     }
 
     func rpc(_ method: String, _ params: [String: Any] = [:]) async throws -> Any {
+        if let rpcProvider { return try await rpcProvider(method, params) }
         guard let task, let session else { throw RpcError(message: "not connected") }
         let id = nextId
         nextId += 1
