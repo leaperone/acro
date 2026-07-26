@@ -4,6 +4,7 @@
 // 布局叶子是标签组窗格(Bonsplit 模型):标签、分屏、拖拽都在 WorkspaceTerminalLayout 上操作。
 
 import AppKit
+import Bonsplit
 import SwiftUI
 
 enum SidebarViewMode: String, CaseIterable, Identifiable {
@@ -29,14 +30,6 @@ enum SidebarViewMode: String, CaseIterable, Identifiable {
 
 // 应用内拖拽的真源(cmux SidebarWorkspaceDragRegistry 模式):
 // NSItemProvider 异步且跨进程,应用内直接读这里,同步且无歧义。
-struct TabDragPayload: Equatable {
-    let sessionId: String
-    let sourcePaneId: String
-    // 每次拖拽唯一:陈旧 provider 的延迟 deinit(外部 App 异步 loadItem 持有数秒)
-    // 不会误清后来同一标签的新一轮拖拽
-    let token = UUID()
-}
-
 struct WorkspaceDragPayload: Equatable {
     let workspaceId: String
     let serverId: String
@@ -64,19 +57,33 @@ final class WorkbenchModel: ObservableObject {
     }
 
     // ---- 选择与布局 ----
-    @Published var selectedServerId: String? { didSet { persistLayout() } }
-    @Published var selectedWorkspaceId: String? { didSet { persistLayout() } }
+    @Published var selectedServerId: String? {
+        didSet {
+            persistLayout()
+            updateTerminalPaneInteractivity()
+        }
+    }
+    @Published var selectedWorkspaceId: String? {
+        didSet {
+            persistLayout()
+            updateTerminalPaneInteractivity()
+        }
+    }
     @Published var selectedSessionId: String?
     @Published var workspaceLayouts: [ScopedResourceID: WorkspaceTerminalLayout] = [:] {
         didSet {
             persistLayout()
             scheduleLayoutSync()
+            synchronizeTerminalPaneControllers()
         }
     }
     @Published var expandedWorkspaceGroupIds: Set<ScopedResourceID> = []
     @Published var expandedWorkspaceIds: Set<ScopedResourceID> = []
     @Published private(set) var leftSidebarPresentation: LeftSidebarPresentation = .wide {
-        didSet { persistLayout() }
+        didSet {
+            persistLayout()
+            synchronizeTerminalPaneControllers()
+        }
     }
     @Published var inspectorVisible = true { didSet { persistLayout() } }
     @Published var sidebarViewMode: SidebarViewMode {
@@ -109,7 +116,6 @@ final class WorkbenchModel: ObservableObject {
     private var layoutPersistTask: Task<Void, Never>?
 
     // ---- 拖拽与快捷键提示 ----
-    @Published var draggingTab: TabDragPayload?
     @Published var draggingWorkspace: WorkspaceDragPayload?
     @Published var draggingServer: ServerDragPayload?
     @Published private(set) var cmdHeld = false
@@ -171,6 +177,7 @@ final class WorkbenchModel: ObservableObject {
     private var reconcileScheduled = false
     private var startupWorkspaceReconciled = false
     private var flagsMonitor: Any?
+    private(set) var terminalPaneControllers: [ScopedResourceID: TerminalPaneController] = [:]
     private static let layoutKey = "acro.desktop.workbench.layout.v2"
     private static let sidebarModeKey = "acro.desktop.sidebar.view-mode"
 
@@ -369,6 +376,11 @@ final class WorkbenchModel: ObservableObject {
         return workspaceLayouts[key]
     }
 
+    var currentTerminalPaneController: TerminalPaneController? {
+        guard let selectedWorkspaceId, let key = scopedID(selectedWorkspaceId) else { return nil }
+        return terminalPaneControllers[key]
+    }
+
     var selectedWorkspace: Workspace? {
         runtime.workspaces.first { $0.id == selectedWorkspaceId }
     }
@@ -456,6 +468,13 @@ final class WorkbenchModel: ObservableObject {
         return last.isEmpty || last == "/" ? "终端" : last
     }
 
+    func terminalTabTitle(_ sessionId: String, for key: ScopedResourceID) -> String {
+        guard let connection = hub.connection(for: key.serverId),
+              let session = connection.sessions.first(where: { $0.id == sessionId })
+        else { return "终端" }
+        return sessionDisplayName(session, on: connection)
+    }
+
     // ---- 布局变更入口(集中同步选中态与持久化) ----
 
     private func mutateCurrentLayout(_ transform: (inout WorkspaceTerminalLayout) -> Void) {
@@ -465,6 +484,93 @@ final class WorkbenchModel: ObservableObject {
         dirtyLayoutWorkspaceIds.insert(key)
         workspaceLayouts[key] = layout
         syncSelectionFromLayout()
+    }
+
+    func applyTerminalPaneLayout(
+        _ layout: WorkspaceTerminalLayout,
+        for key: ScopedResourceID,
+        markDirty: Bool
+    ) {
+        if markDirty { dirtyLayoutWorkspaceIds.insert(key) }
+        if workspaceLayouts[key] != layout { workspaceLayouts[key] = layout }
+        guard key.serverId == selectedServerId, key.resourceId == selectedWorkspaceId else { return }
+        syncSelectionFromLayout()
+    }
+
+    func applyTerminalPaneSelection(_ sessionId: String, for key: ScopedResourceID) {
+        guard key.serverId == selectedServerId,
+              key.resourceId == selectedWorkspaceId,
+              hub.connection(for: key.serverId)?.sessions.contains(where: {
+                  $0.id == sessionId && $0.alive
+              }) == true
+        else { return }
+        selectedSessionId = sessionId
+        flashPane(sessionId)
+        requestTerminalFocus()
+        maybeClaimFocus(sessionId)
+    }
+
+    private func synchronizeTerminalPaneControllers() {
+        let validKeys = Set(workspaceLayouts.keys)
+        let staleKeys = terminalPaneControllers.keys.filter { !validKeys.contains($0) }
+        for key in staleKeys {
+            terminalPaneControllers.removeValue(forKey: key)?.deactivate()
+        }
+        for (key, layout) in workspaceLayouts {
+            if let paneController = terminalPaneControllers[key] {
+                paneController.update(
+                    layout: layout,
+                    trafficLightClearance: leftSidebarPresentation == .hidden
+                )
+            } else {
+                terminalPaneControllers[key] = TerminalPaneController(
+                    model: self,
+                    key: key,
+                    layout: layout,
+                    trafficLightClearance: leftSidebarPresentation == .hidden,
+                    fileDropHandler: { [weak self] sessionKey, urls in
+                        self?.handleTerminalFileDrop(
+                            urls,
+                            sessionKey: sessionKey,
+                            workspaceId: key.resourceId
+                        ) ?? false
+                    }
+                )
+            }
+        }
+        updateTerminalPaneInteractivity()
+    }
+
+    private func updateTerminalPaneInteractivity() {
+        let currentKey = selectedWorkspaceId.flatMap(scopedID)
+        for (key, paneController) in terminalPaneControllers {
+            paneController.controller.isInteractive = key == currentKey
+        }
+    }
+
+    func handleTerminalFileDrop(
+        _ urls: [URL],
+        sessionKey: ScopedResourceID,
+        workspaceId: String
+    ) -> Bool {
+        guard let connection = hub.connection(for: sessionKey.serverId),
+              !connection.deviceId.isEmpty,
+              connection.sessions.contains(where: {
+                  $0.id == sessionKey.resourceId && $0.alive
+              }),
+              connection.workspaces.contains(where: {
+                  $0.id == workspaceId && $0.sessionIds.contains(sessionKey.resourceId)
+              })
+        else { return false }
+        if let owner = connection.focusOwners[sessionKey.resourceId],
+           owner.deviceId != connection.deviceId {
+            return false
+        }
+        return TerminalSurfaceCache.shared.handleDroppedURLs(
+            urls,
+            serverId: sessionKey.serverId,
+            sessionId: sessionKey.resourceId
+        )
     }
 
     private func syncSelectionFromLayout() {
@@ -539,7 +645,9 @@ final class WorkbenchModel: ObservableObject {
     func showSession(_ session: Session, flash: Bool = true) {
         guard let workspace = workspace(containing: session.id) else { return }
         selectedWorkspaceId = workspace.id
-        mutateCurrentLayout { $0.adopt(session.id) }
+        if currentTerminalPaneController?.adopt(sessionId: session.id) != true {
+            mutateCurrentLayout { $0.adopt(session.id) }
+        }
         expandGroupContaining(workspace.id)
         if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
         if flash { flashPane(session.id) }
@@ -556,7 +664,9 @@ final class WorkbenchModel: ObservableObject {
         if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
         if scopedID(workspace.id).flatMap({ workspaceLayouts[$0] })?.root == nil,
            let session = sessions(in: workspace).first {
-            mutateCurrentLayout { $0.adopt(session.id) }
+            if currentTerminalPaneController?.adopt(sessionId: session.id) != true {
+                mutateCurrentLayout { $0.adopt(session.id) }
+            }
         }
         syncSelectionFromLayout()
         if let focusedSessionId = currentLayout?.focusedSessionId {
@@ -591,7 +701,9 @@ final class WorkbenchModel: ObservableObject {
     func focusSession(_ session: Session, flash: Bool = false) {
         guard let workspace = workspace(containing: session.id) else { return }
         if selectedWorkspaceId != workspace.id { selectedWorkspaceId = workspace.id }
-        mutateCurrentLayout { $0.adopt(session.id) }
+        if currentTerminalPaneController?.adopt(sessionId: session.id) != true {
+            mutateCurrentLayout { $0.adopt(session.id) }
+        }
         if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
         expandGroupContaining(workspace.id)
         if flash { flashPane(session.id) }
@@ -606,6 +718,7 @@ final class WorkbenchModel: ObservableObject {
     // ---- 标签动作 ----
 
     func selectTab(_ sessionId: String, inPane paneId: String) {
+        if currentTerminalPaneController?.select(sessionId: sessionId) == true { return }
         mutateCurrentLayout { $0.selectTab(sessionId, inPane: paneId) }
         maybeClaimFocus(sessionId)
         flashPane(sessionId)
@@ -613,6 +726,7 @@ final class WorkbenchModel: ObservableObject {
     }
 
     func selectTab(number: Int) {
+        if currentTerminalPaneController?.selectTab(number: number) == true { return }
         guard let target = currentLayout?.tab(number: number) else { return }
         selectTab(target.sessionId, inPane: target.paneId)
     }
@@ -633,6 +747,13 @@ final class WorkbenchModel: ObservableObject {
 
     func closeTab(_ sessionId: String, workspaceId: String, serverId: String) {
         let key = ScopedResourceID(serverId: serverId, resourceId: workspaceId)
+        if terminalPaneControllers[key]?.removeSession(sessionId) == true {
+            if selectedServerId == serverId, selectedWorkspaceId == workspaceId {
+                syncSelectionFromLayout()
+                requestTerminalFocus()
+            }
+            return
+        }
         guard var layout = workspaceLayouts[key] else { return }
         layout.removeTab(sessionId)
         dirtyLayoutWorkspaceIds.insert(key)
@@ -653,42 +774,43 @@ final class WorkbenchModel: ObservableObject {
 
     // 关闭标签 = 真正终止终端;开着二次确认时先弹框,terminateSession 成功后把标签摘掉
     func requestKillTab(_ sessionId: String) {
-        guard let session = session(sessionId) else {
-            closeTab(sessionId)
+        guard let selectedServerId, let selectedWorkspaceId else { return }
+        requestKillTab(
+            sessionId,
+            for: ScopedResourceID(serverId: selectedServerId, resourceId: selectedWorkspaceId)
+        )
+    }
+
+    func requestKillTab(_ sessionId: String, for key: ScopedResourceID) {
+        guard let connection = hub.connection(for: key.serverId),
+              let session = connection.sessions.first(where: { $0.id == sessionId && $0.alive })
+        else {
+            closeTab(sessionId, workspaceId: key.resourceId, serverId: key.serverId)
+            return
+        }
+        guard connection.workspaces.contains(where: {
+            $0.id == key.resourceId && $0.sessionIds.contains(sessionId)
+        }) else {
+            closeTab(sessionId, workspaceId: key.resourceId, serverId: key.serverId)
             return
         }
         if confirmCloseTab {
-            pendingSessionTermination = session
+            requestSessionTermination(session, serverId: key.serverId)
         } else {
-            let connection = runtime
             Task { await terminateSession(session, on: connection) }
         }
     }
 
     func requestKillFocusedTab() {
-        guard let sessionId = currentLayout?.focusedSessionId else { return }
+        guard let sessionId = currentTerminalPaneController?.focusedSessionId
+            ?? currentLayout?.focusedSessionId else { return }
         requestKillTab(sessionId)
     }
 
     func selectAdjacentTab(offset: Int) {
+        if currentTerminalPaneController?.selectAdjacentTab(offset: offset) == true { return }
         guard let target = currentLayout?.adjacentTab(offset: offset) else { return }
         selectTab(target.sessionId, inPane: target.paneId)
-    }
-
-    // 拖拽负载有效性:会话必须仍在"当前布局"的来源窗格里。
-    // 防两类脏 drop:拖拽中切了工作区(payload 指向别的布局树,落下会双挂 PTY);
-    // 拖拽取消后残留的陈旧 payload(会话可能已被杀)。
-    func validDrag(_ payload: TabDragPayload?) -> Bool {
-        guard let payload,
-              let source = currentLayout?.root?.pane(withId: payload.sourcePaneId),
-              source.sessionIds.contains(payload.sessionId)
-        else { return false }
-        return true
-    }
-
-    // 拖拽会话结束(drop/取消/拖出窗口)后的兜底清理
-    func endTabDrag(_ payload: TabDragPayload) {
-        if draggingTab == payload { draggingTab = nil }
     }
 
     func endWorkspaceDrag(_ payload: WorkspaceDragPayload) {
@@ -699,30 +821,15 @@ final class WorkbenchModel: ObservableObject {
         if draggingServer == payload { draggingServer = nil }
     }
 
-    func moveTab(_ payload: TabDragPayload, toPane paneId: String, at index: Int?) {
-        guard validDrag(payload) else { return }
-        mutateCurrentLayout { $0.moveTab(payload.sessionId, toPane: paneId, at: index) }
-        flashPane(payload.sessionId)
-        requestTerminalFocus()
-    }
-
-    func moveTabToSplit(
-        _ payload: TabDragPayload,
-        ofPane paneId: String,
-        direction: TerminalSplitDirection,
-        newPaneFirst: Bool
-    ) {
-        guard validDrag(payload) else { return }
-        mutateCurrentLayout {
-            $0.moveTabToSplit(
-                payload.sessionId, ofPane: paneId, direction: direction, newPaneFirst: newPaneFirst
-            )
-        }
-        flashPane(payload.sessionId)
-        requestTerminalFocus()
-    }
-
     func focusPane(_ paneId: String) {
+        if let paneUUID = UUID(uuidString: paneId),
+           let paneController = currentTerminalPaneController {
+            let pane = Bonsplit.PaneID(id: paneUUID)
+            if paneController.controller.allPaneIds.contains(pane) {
+                paneController.controller.focusPane(pane)
+                return
+            }
+        }
         mutateCurrentLayout { layout in
             layout.focusedPaneId = paneId
         }
@@ -735,12 +842,22 @@ final class WorkbenchModel: ObservableObject {
 
     // 均分窗格(CmuxPanes equalizeDividerPlan)
     func equalizeSplits() {
+        if let paneController = currentTerminalPaneController {
+            paneController.equalizeSplits()
+            requestTerminalFocus()
+            return
+        }
         mutateCurrentLayout { $0.equalizeSplits() }
         requestTerminalFocus()
     }
 
     // vim 方向导航:按窗格几何找目标(⌘⇧HJKL)
     func focusPane(toward direction: PaneDirection) {
+        if let paneController = currentTerminalPaneController {
+            paneController.focusPane(toward: direction)
+            requestTerminalFocus()
+            return
+        }
         guard let targetPaneId = currentLayout?.paneId(toward: direction) else { return }
         mutateCurrentLayout { $0.focusedPaneId = targetPaneId }
         if let sessionId = currentLayout?.root?.pane(withId: targetPaneId)?.selectedSessionId {
@@ -759,6 +876,13 @@ final class WorkbenchModel: ObservableObject {
         selectedWorkspaceId = workspace.id
         expandGroupContaining(workspace.id)
         if let key = scopedID(workspace.id) { expandedWorkspaceIds.insert(key) }
+        if let paneController = currentTerminalPaneController {
+            let targetPane = paneId
+                .flatMap(UUID.init(uuidString:))
+                .map(Bonsplit.PaneID.init(id:))
+            paneController.createTerminal(in: targetPane, inheritFrom: inheritFrom)
+            return
+        }
         if let paneId { mutateCurrentLayout { $0.focusedPaneId = paneId } }
         Task { _ = await openTerminal(in: workspace, inheritFrom: inheritFrom, on: connection) }
     }
@@ -794,7 +918,8 @@ final class WorkbenchModel: ObservableObject {
     @discardableResult
     private func openTerminal(
         in workspace: Workspace, activate: Bool = true, inheritFrom explicit: String? = nil,
-        on explicitConnection: RuntimeConnection? = nil
+        on explicitConnection: RuntimeConnection? = nil,
+        refreshAfterCreate: Bool = true
     ) async -> Session? {
         let connection = explicitConnection ?? runtime
         var params: [String: Any] = [
@@ -807,7 +932,7 @@ final class WorkbenchModel: ObservableObject {
         }
         do {
             let session = try await connection.rpc("session.create", params, as: Session.self)
-            await connection.refresh()
+            if refreshAfterCreate { await connection.refresh() }
             if activate, runtime === connection { showSession(session) }
             return session
         } catch {
@@ -816,7 +941,36 @@ final class WorkbenchModel: ObservableObject {
         }
     }
 
+    func createTerminalForPaneController(
+        key: ScopedResourceID,
+        inheritFrom: String?
+    ) async -> Session? {
+        guard let connection = hub.connection(for: key.serverId) else {
+            errorMessage = "目标服务器已移除，操作已取消"
+            return nil
+        }
+        guard let workspace = connection.workspaces.first(where: { $0.id == key.resourceId }) else {
+            errorMessage = "目标工作区已移除，操作已取消"
+            return nil
+        }
+        return await openTerminal(
+            in: workspace,
+            activate: false,
+            inheritFrom: inheritFrom,
+            on: connection,
+            refreshAfterCreate: false
+        )
+    }
+
+    func refreshRuntime(for key: ScopedResourceID) async {
+        await hub.connection(for: key.serverId)?.refresh()
+    }
+
     func splitTerminal(_ direction: TerminalSplitDirection) {
+        if let paneController = currentTerminalPaneController {
+            paneController.split(direction)
+            return
+        }
         guard let sourcePaneId = currentLayout?.focusedPane?.id,
               let selectedWorkspace
         else { return }
@@ -856,16 +1010,7 @@ final class WorkbenchModel: ObservableObject {
             }
             await connection.refresh()
             if let workspaceId, let targetServerId {
-                let key = ScopedResourceID(serverId: targetServerId, resourceId: workspaceId)
-                if var layout = workspaceLayouts[key] {
-                    layout.removeTab(session.id)
-                    dirtyLayoutWorkspaceIds.insert(key)
-                    workspaceLayouts[key] = layout
-                    if runtime === connection, selectedWorkspaceId == workspaceId {
-                        syncSelectionFromLayout()
-                        requestTerminalFocus()
-                    }
-                }
+                closeTab(session.id, workspaceId: workspaceId, serverId: targetServerId)
             }
         } catch {
             pendingSessionTermination = nil
@@ -1348,6 +1493,8 @@ final class WorkbenchModel: ObservableObject {
         }
         if workspaceLayouts != nextWorkspaceLayouts {
             workspaceLayouts = nextWorkspaceLayouts
+        } else {
+            synchronizeTerminalPaneControllers()
         }
 
         if let selectedWorkspaceId, !selectedValidWorkspaceIds.contains(selectedWorkspaceId) {
