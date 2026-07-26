@@ -63,4 +63,20 @@ final class TerminalFileDropTests: XCTestCase {
             )
         }
     }
+
+    @MainActor
+    func testAppKitDropPathRequiresTheSharedPolicyHandler() {
+        let view = AcroTerminalNSView(serverId: "server", sessionId: "session", command: "true")
+        let urls = [URL(fileURLWithPath: "/tmp/file")]
+
+        XCTAssertFalse(view.acceptDroppedURLs(urls))
+
+        var received: [URL] = []
+        view.onFileDrop = { dropped in
+            received = dropped
+            return true
+        }
+        XCTAssertTrue(view.acceptDroppedURLs(urls))
+        XCTAssertEqual(received, urls)
+    }
 }

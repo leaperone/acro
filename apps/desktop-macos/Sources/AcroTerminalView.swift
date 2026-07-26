@@ -23,6 +23,7 @@ final class AcroTerminalNSView: NSView {
     private var leftMousePressed = false
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?
+    var onFileDrop: (([URL]) -> Bool)?
     // 是否为所在窗格的选中标签。背景标签的 surface 常驻渲染但不接管鼠标,
     // 见 hitTest 覆写。
     var isActive = false
@@ -415,9 +416,15 @@ final class AcroTerminalNSView: NSView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        let text = TerminalFileDrop.insertedText(
-            for: TerminalFileDrop.fileURLs(from: sender.draggingPasteboard)
-        )
+        acceptDroppedURLs(TerminalFileDrop.fileURLs(from: sender.draggingPasteboard))
+    }
+
+    func acceptDroppedURLs(_ urls: [URL]) -> Bool {
+        onFileDrop?(urls) ?? false
+    }
+
+    func handleDroppedURLs(_ urls: [URL]) -> Bool {
+        let text = TerminalFileDrop.insertedText(for: urls)
         guard !text.isEmpty, surface != nil else { return false }
         onFocus?()
         focusTerminal()
@@ -588,6 +595,11 @@ final class TerminalSurfaceCache {
             evict(serverId: key.serverId, sessionId: key.resourceId)
         }
     }
+
+    func handleDroppedURLs(_ urls: [URL], serverId: String, sessionId: String) -> Bool {
+        views[ScopedResourceID(serverId: serverId, resourceId: sessionId)]?
+            .handleDroppedURLs(urls) ?? false
+    }
 }
 
 struct AcroTerminalView: NSViewRepresentable {
@@ -598,6 +610,7 @@ struct AcroTerminalView: NSViewRepresentable {
     var isActive = false
     var onClose: (() -> Void)? = nil
     var onFocus: (() -> Void)? = nil
+    var onFileDrop: (([URL]) -> Bool)? = nil
 
     func makeNSView(context: Context) -> AcroTerminalNSView {
         let view = TerminalSurfaceCache.shared.view(
@@ -607,6 +620,7 @@ struct AcroTerminalView: NSViewRepresentable {
         )
         view.onClose = onClose
         view.onFocus = onFocus
+        view.onFileDrop = onFileDrop
         view.isActive = isActive
         view.applyFocusRequest(focusRequest)
         return view
@@ -615,6 +629,7 @@ struct AcroTerminalView: NSViewRepresentable {
     func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {
         nsView.onClose = onClose
         nsView.onFocus = onFocus
+        nsView.onFileDrop = onFileDrop
         nsView.isActive = isActive
         nsView.applyFocusRequest(focusRequest)
     }
