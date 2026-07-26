@@ -154,6 +154,7 @@ struct AcroApp: App {
     private let localRuntime = LocalRuntimeManager()
 
     init() {
+        UserDefaults.standard.set("minimal", forKey: "workspacePresentationMode")
         let hub = RuntimeHub()
         _hub = StateObject(wrappedValue: hub)
         _model = StateObject(wrappedValue: WorkbenchModel(hub: hub))

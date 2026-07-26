@@ -12,15 +12,20 @@
 - 新增启动模式回归：当前 Acro 初始化后 key 仍为 nil，按预期失败。
 - 新增真实窗口顶边断言；当前 main 已贴顶。
 - 将真实重排测试固定到 minimal 模式，仍可重排并持久化。
+- Desktop CI 已按预期红色，唯一失败为启动后 `workspacePresentationMode` 仍是 nil。
+- 在 `AcroApp.init()` 构造 Workbench/Bonsplit 前固定写入 minimal presentation。
+- 启动模式和真实窗口拖拽两项针对性测试转绿。
+- 在最新 `origin/main` 上完成全量 Desktop、TypeScript 和打包脚本验证。
 
 ## 进行中
 
-- 提交失败测试并取得 CI 红色证据。
+- 推送重写后的分支，等待最终 CI 并执行 preflight。
 
 ## 修改文件
 
 - `.planning/desktop-top-tab-chrome-2026-07-27_05-39-08/*`
-- 预计修改 `AcroApp.swift` 和桌面交互测试。
+- `apps/desktop-macos/Sources/AcroApp.swift`
+- `apps/desktop-macos/Tests/TerminalPanesInteractionTests.swift`
 
 ## 验证结果
 
@@ -32,6 +37,13 @@
 | Computer Use | Orca runtime 未运行 | 未做真实 UI 验证 |
 | 启动模式回归 | 期望 minimal，实际 nil | 红色测试 |
 | 真实窗口顶边 + minimal 拖拽 | 通过 | 已通过 |
+| PR #131 Desktop CI | `appBootstrapsMinimalBonsplitPresentation` 失败，实际 nil | 红色证据 |
+| 启动模式针对性测试 | 1 项通过，初始化后为 minimal | 已通过 |
+| minimal 真实窗口拖拽 | 1 项通过，贴顶、重排、持久化均成立 | 已通过 |
+| 全量 Desktop | 80 XCTest + 24 Swift Testing | 已通过 |
+| `pnpm check` | TypeScript 与 15 项 Node 测试 | 已通过 |
+| `pnpm build` | CLI/runtime 构建；仅现有 import.meta 警告 | 已通过 |
+| Desktop release scripts | 7 项通过 | 已通过 |
 
 ## 错误与恢复
 
