@@ -1,5 +1,7 @@
+import AppKit
 import Bonsplit
 import Foundation
+import SwiftUI
 import Testing
 @testable import AcroDesktop
 
@@ -36,6 +38,105 @@ struct TerminalPanesInteractionTests {
         let firstTab = try #require(paneController.controller.tabs(inPane: livePane).first)
 
         #expect(paneController.controller.reorderTab(firstTab.id, toIndex: 3))
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [
+            sessions[1], sessions[2], sessions[0],
+        ])
+    }
+
+    @Test
+    func mouseDragBetweenRenderedTabsReordersAndPersists() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let sessions = [UUID().uuidString, UUID().uuidString, UUID().uuidString]
+        let runtime = RuntimeConnection()
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: sessions,
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: sessions.map { id in
+                Session(
+                    id: id,
+                    cwd: "/tmp",
+                    command: "zsh",
+                    cols: 80,
+                    rows: 24,
+                    createdAt: "2026-07-27T00:00:00Z",
+                    alive: true,
+                    exitCode: nil,
+                    title: nil,
+                    agent: nil
+                )
+            },
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let hub = RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        let model = WorkbenchModel(hub: hub)
+        model.restoreLayoutIfNeeded()
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.setLeftSidebarPresentation(.wide)
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: sessions))
+        )
+
+        let hostingView = NSHostingView(rootView: WorkbenchView(model: model, runtime: runtime))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        hostingView.frame = NSRect(x: 0, y: 0, width: 900, height: 500)
+        hostingView.autoresizingMask = [.width, .height]
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        #expect(window.styleMask.contains(.fullSizeContentView))
+        #expect(window.titleVisibility == .hidden)
+        #expect(window.titlebarAppearsTransparent)
+        #expect(!window.isMovable)
+
+        let tabViews = renderedTabItemHitRegions(in: hostingView)
+            .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+        #expect(tabViews.count == sessions.count)
+        let source = try #require(tabViews.first)
+        let destination = try #require(tabViews.last)
+        let sourcePoint = source.convert(NSPoint(x: source.bounds.midX, y: source.bounds.midY), to: nil)
+        let destinationPoint = destination.convert(
+            NSPoint(x: destination.bounds.maxX - 2, y: destination.bounds.midY),
+            to: nil
+        )
+
+        for event in [
+            try mouseEvent(.leftMouseDown, at: sourcePoint, in: window),
+            try mouseEvent(.leftMouseDragged, at: destinationPoint, in: window),
+            try mouseEvent(.leftMouseUp, at: destinationPoint, in: window),
+        ] {
+            NSApp.sendEvent(event)
+        }
+
         #expect(model.workspaceLayouts[key]?.root?.sessionIds == [
             sessions[1], sessions[2], sessions[0],
         ])
@@ -216,4 +317,40 @@ struct TerminalPanesInteractionTests {
         )
         return (model, key, sessions)
     }
+}
+
+@MainActor
+private func renderedTabItemHitRegions(in root: NSView) -> [NSView] {
+    var candidates: [NSView] = []
+    if root is BonsplitTabItemHitRegionProviding, !root.isHidden, root.alphaValue > 0 {
+        candidates.append(root)
+    }
+    for subview in root.subviews {
+        candidates.append(contentsOf: renderedTabItemHitRegions(in: subview))
+    }
+    return candidates.filter { candidate in
+        let frame = candidate.convert(candidate.bounds, to: nil)
+        return !candidates.contains { other in
+            other !== candidate && frame.contains(other.convert(other.bounds, to: nil))
+        }
+    }
+}
+
+@MainActor
+private func mouseEvent(
+    _ type: NSEvent.EventType,
+    at point: NSPoint,
+    in window: NSWindow
+) throws -> NSEvent {
+    try #require(NSEvent.mouseEvent(
+        with: type,
+        location: point,
+        modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber,
+        context: nil,
+        eventNumber: 0,
+        clickCount: 1,
+        pressure: 1
+    ))
 }
