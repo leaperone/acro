@@ -1614,6 +1614,22 @@ struct TerminalPanesInteractionTests {
         dragHandle.mouseDown(with: event)
 
         #expect(!dragHandle.mouseDownCanMoveWindow)
+        #expect(window.performDragCallCount == 0)
+        #expect(!window.isMovable)
+
+        dragHandle.mouseDragged(with: try mouseEvent(
+            .leftMouseDragged,
+            at: NSPoint(x: 22, y: 21),
+            in: window
+        ))
+        #expect(window.performDragCallCount == 0)
+
+        dragHandle.mouseDragged(with: try mouseEvent(
+            .leftMouseDragged,
+            at: NSPoint(x: 25, y: 20),
+            in: window
+        ))
+
         #expect(window.performDragCallCount == 1)
         #expect(window.receivedDragEvent === event)
         #expect(window.wasMovableDuringPerformDrag)

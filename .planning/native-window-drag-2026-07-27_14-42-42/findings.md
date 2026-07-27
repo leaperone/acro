@@ -21,13 +21,15 @@
 - 旧提交 `8a2784a` 因 `isMovable=false` 让 `performDrag` 成为 no-op，才引入手工 workaround；cmux `aac2351` 已用临时恢复 movable 解决同一问题。
 - `NSWindow.performDrag(with:)` 可被测试子类 override，不需要新增产品 seam 或真实移动测试机窗口。
 - 旧实现运行回归测试时，原生调用次数、原始事件和调用期间 movable 三项断言都会失败；不是只靠源码对照推断。
+- 最终审查确认，首次 `mouseDown` 立即进入 `performDrag` 会让 AppKit 可能吞掉首击 `mouseUp`；Acro 没有 cmux 的双击 monitor，必须复用 Bonsplit 的 4pt 阈值后启动拖动模式。
 
 ## 技术决策
 
 | 决策 | 证据 |
 |---|---|
 | 先用 spy window 验证原生调用 | 当前实现 callCount 为 0，修复后可同时验证调用期间与返回后的 movability |
-| 删除手工 drag state | 原生 session 已管理连续跟踪和中断，保留 `dragOrigin` 反而重复实现平台能力 |
+| 删除手工坐标移动 state | 原生 session 已管理连续跟踪和中断，保留窗口原点计算会重复实现平台能力 |
+| 保留最小 pending down state | 只用于区分点击与拖动并把原始 mouseDown 交给 AppKit；不是重新实现窗口坐标移动 |
 
 ## 风险与边界
 

@@ -307,17 +307,41 @@ struct WorkbenchView: View {
 // 单击拖动,双击执行系统缩放
 final class WindowDragNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
+    private static let dragStartDistanceSquared: CGFloat = 16
+    private var pendingDragEvent: NSEvent?
+    private var pendingDragStart: NSPoint?
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         if event.clickCount >= 2 {
+            clearPendingDrag()
             window.zoom(nil)
             return
         }
+        pendingDragEvent = event
+        pendingDragStart = event.locationInWindow
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window, let pendingDragEvent, let pendingDragStart else { return }
+        let dx = event.locationInWindow.x - pendingDragStart.x
+        let dy = event.locationInWindow.y - pendingDragStart.y
+        guard dx * dx + dy * dy >= Self.dragStartDistanceSquared else { return }
+
+        clearPendingDrag()
         let wasMovable = window.isMovable
         window.isMovable = true
         defer { window.isMovable = wasMovable }
-        window.performDrag(with: event)
+        window.performDrag(with: pendingDragEvent)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        clearPendingDrag()
+    }
+
+    private func clearPendingDrag() {
+        pendingDragEvent = nil
+        pendingDragStart = nil
     }
 }
 

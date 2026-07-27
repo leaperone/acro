@@ -23,6 +23,7 @@
 
 - 窗口全局继续保持 `isMovable=false` 与 `isMovableByWindowBackground=false`。
 - 仅在显式拖动调用期间临时恢复 `isMovable`，结束后无条件还原。
+- 先保留正常点击的 `mouseUp`；只有移动超过 4pt 阈值才进入原生拖动事务，避免破坏双击缩放。
 - 测试先独立提交失败用例，再提交产品修复。
 - 不重启 terminal daemon。
 
@@ -40,7 +41,8 @@
 
 ## 验收标准
 
-- 单击三个侧栏标题栏空白入口会调用一次原生 `performDrag`。
+- 拖动三个侧栏标题栏空白入口会调用一次原生 `performDrag`。
+- 仅按下或低于 4pt 的移动不启动窗口拖动。
 - `performDrag` 调用期间窗口可移动，返回后恢复不可移动。
 - 标签点击、标签拖拽和右侧分屏按钮不会触发侧栏窗口拖动。
 - 双击仍只执行 zoom，不进入窗口拖动。
@@ -61,7 +63,7 @@
 | 决策 | 理由 |
 |---|---|
 | 复用 AppKit `performDrag` | macOS 自己管理吸附、跨屏、放大窗口恢复和拖动中断；手工坐标更新无法完整复制 |
-| 不抽取新 helper | `WindowDragNSView` 是唯一共享入口，局部保存/恢复 `isMovable` 已足够 |
+| 不抽取新 helper | `WindowDragNSView` 是唯一共享入口，局部阈值判断与保存/恢复 `isMovable` 已足够 |
 
 ## 错误与处理
 

@@ -12,6 +12,7 @@
 - 独立提交失败测试 `a7606d1`，旧实现真实失败。
 - 删除手工坐标跟踪，改为临时启用 `isMovable` 后调用原生 `performDrag`，并用 `defer` 恢复。
 - 标签点击、标签排序和分屏按钮的集成路径确认不会触发侧栏拖窗。
+- 根据最终审查改为移动超过 4pt 后才启动原生拖动，保住首次 `mouseUp` 与双击计数。
 
 ## 进行中
 
@@ -30,7 +31,7 @@
 | 只读调用链审查 | 三个侧栏入口共享一个类；标签栏不经过该类 | pass |
 | 原生 API 可测试性 | `NSWindow.performDrag(with:)` 可 override | pass |
 | 修复前目标测试 | 原生调用次数等 3 项断言失败 | expected fail |
-| 修复后目标测试 | 原生拖动、状态恢复、双击 zoom 全部通过 | pass |
+| 修复后目标测试 | 按下不拖、阈值、原生拖动、状态恢复、双击 zoom 全部通过 | pass |
 | 标签交互隔离 | 点击、排序、分屏后 `performDragCallCount == 0` | pass |
 | `TerminalPanesInteractionTests` | 44 tests | pass |
 | 完整 Swift 测试 | 86 XCTest + 57 Swift Testing | pass |
