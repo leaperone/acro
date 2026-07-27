@@ -6,6 +6,21 @@
 
 import Foundation
 
+struct AgentAttentionSignal: Equatable, Sendable {
+    let state: String
+    let updatedAt: String
+
+    init?(_ agent: AgentSession) {
+        switch agent.state {
+        case "waiting", "done", "error":
+            state = agent.state
+            updatedAt = agent.updatedAt
+        default:
+            return nil
+        }
+    }
+}
+
 struct RpcError: Error, LocalizedError {
     let message: String
     var errorDescription: String? { message }
@@ -172,6 +187,7 @@ final class RuntimeConnection: ObservableObject {
     @Published private(set) var workspaceGroups: [WorkspaceGroup] = []
     @Published private(set) var workspaces: [Workspace] = []
     @Published private(set) var sessions: [Session] = []
+    @Published private(set) var agentAttentionSignals: [String: AgentAttentionSignal] = [:]
     // 终端占用:sessionId -> 占用设备(含自己;是否显示蒙版由调用方比对 deviceId)
     @Published private(set) var focusOwners: [String: SessionFocus] = [:]
     @Published private(set) var snapshotLoaded = false
@@ -217,6 +233,8 @@ final class RuntimeConnection: ObservableObject {
     private var currentRefreshJob: RefreshJob?
     private var nextRefreshJob: RefreshJob?
     private var nextRefreshJobId = 0
+    private var agentEventVersion = 0
+    private var agentEventVersionsBySessionId: [String: Int] = [:]
     private var probeTimer: Timer?
     private var probeOutstanding = false
     private var reconnectTask: Task<Void, Never>?
@@ -261,6 +279,9 @@ final class RuntimeConnection: ObservableObject {
         probeTimer?.invalidate()
         probeTimer = nil
         probeOutstanding = false
+        agentAttentionSignals.removeAll()
+        agentEventVersion = 0
+        agentEventVersionsBySessionId.removeAll()
         self.server = server
         endpointIndex = 0
         reconnectAttempt = 0
@@ -290,6 +311,9 @@ final class RuntimeConnection: ObservableObject {
         probeTimer?.invalidate()
         probeTimer = nil
         probeOutstanding = false
+        agentAttentionSignals.removeAll()
+        agentEventVersion = 0
+        agentEventVersionsBySessionId.removeAll()
         cancelRefreshJobs()
         failPending(RpcError(message: "disconnected"))
     }
@@ -521,11 +545,15 @@ final class RuntimeConnection: ObservableObject {
                 completePending(id, .failure(RpcError(message: err)))
             }
         case "evt":
-            if currentRefreshJob == nil,
-               let event = obj["event"] as? String,
-               applyIncrementalEvent(event, payload: obj["payload"])
-            {
-                return
+            if let event = obj["event"] as? String {
+                if event == "session.agentChanged",
+                   applyIncrementalEvent(event, payload: obj["payload"]) {
+                    return
+                }
+                if currentRefreshJob == nil,
+                   applyIncrementalEvent(event, payload: obj["payload"]) {
+                    return
+                }
             }
             scheduleRefresh()
         default:
@@ -586,6 +614,33 @@ final class RuntimeConnection: ObservableObject {
                 agent: current.agent
             )
             sessions = updated
+            return true
+
+        case "session.agentChanged":
+            guard let sessionId = payload["sessionId"] as? String,
+                  let index = sessions.firstIndex(where: { $0.id == sessionId }),
+                  let agentPayload = payload["agent"] as? [String: Any],
+                  JSONSerialization.isValidJSONObject(agentPayload),
+                  let data = try? JSONSerialization.data(withJSONObject: agentPayload),
+                  let agent = try? JSONDecoder().decode(AgentSession.self, from: data)
+            else { return false }
+
+            agentEventVersion &+= 1
+            agentEventVersionsBySessionId[sessionId] = agentEventVersion
+            let current = sessions[index]
+            var changed = false
+            if current.agent != agent {
+                var updated = sessions
+                updated[index] = Self.session(current, replacingAgent: agent)
+                sessions = updated
+                changed = true
+            }
+            if let signal = AgentAttentionSignal(agent),
+               agentAttentionSignals[sessionId] != signal {
+                agentAttentionSignals[sessionId] = signal
+                changed = true
+            }
+            if changed { snapshotRevision &+= 1 }
             return true
 
         case "session.focusChanged":
@@ -756,7 +811,11 @@ final class RuntimeConnection: ObservableObject {
             guard !Task.isCancelled else { return false }
             guard let self else { return false }
             guard self.generation == generation else { return false }
-            let result = await performRefresh(connectionGeneration: generation)
+            let snapshotAgentEventVersion = agentEventVersion
+            let result = await performRefresh(
+                connectionGeneration: generation,
+                snapshotAgentEventVersion: snapshotAgentEventVersion
+            )
             completeRefreshJob(id: id)
             return result
         }
@@ -773,7 +832,10 @@ final class RuntimeConnection: ObservableObject {
         }
     }
 
-    private func performRefresh(connectionGeneration: Int) async -> Bool {
+    private func performRefresh(
+        connectionGeneration: Int,
+        snapshotAgentEventVersion: Int
+    ) async -> Bool {
         do {
             let snapshot = try await loadRefreshSnapshot()
             guard connectionGeneration == generation else { return false }
@@ -781,7 +843,8 @@ final class RuntimeConnection: ObservableObject {
                 workspaceGroups: snapshot.workspaceGroups,
                 workspaces: snapshot.workspaces,
                 sessions: snapshot.sessions,
-                focus: snapshot.focus
+                focus: snapshot.focus,
+                snapshotAgentEventVersion: snapshotAgentEventVersion
             )
             return true
         } catch {
@@ -808,17 +871,65 @@ final class RuntimeConnection: ObservableObject {
         workspaceGroups: [WorkspaceGroup],
         workspaces: [Workspace],
         sessions: [Session],
-        focus: [SessionFocus]
+        focus: [SessionFocus],
+        snapshotAgentEventVersion: Int? = nil
     ) {
+        var mergedSessions = sessions
+        if let snapshotAgentEventVersion {
+            for index in mergedSessions.indices {
+                let sessionId = mergedSessions[index].id
+                guard let eventVersion = agentEventVersionsBySessionId[sessionId],
+                      eventVersion > snapshotAgentEventVersion,
+                      let current = self.sessions.first(where: { $0.id == sessionId })
+                else { continue }
+                mergedSessions[index] = Self.session(
+                    mergedSessions[index],
+                    replacingAgent: current.agent
+                )
+            }
+        }
+        let incomingSessionIds = Set(mergedSessions.map(\.id))
+        let snapshotCanClear: (String) -> Bool = { sessionId in
+            guard let snapshotAgentEventVersion else { return true }
+            return (self.agentEventVersionsBySessionId[sessionId] ?? 0)
+                <= snapshotAgentEventVersion
+        }
+        for sessionId in Array(agentEventVersionsBySessionId.keys)
+        where !incomingSessionIds.contains(sessionId) && snapshotCanClear(sessionId) {
+            agentEventVersionsBySessionId.removeValue(forKey: sessionId)
+        }
+        var nextAttentionSignals = agentAttentionSignals
+        for sessionId in Array(nextAttentionSignals.keys)
+        where !incomingSessionIds.contains(sessionId) && snapshotCanClear(sessionId) {
+            nextAttentionSignals.removeValue(forKey: sessionId)
+        }
+        for session in mergedSessions {
+            guard let agent = session.agent else {
+                if snapshotCanClear(session.id) {
+                    nextAttentionSignals.removeValue(forKey: session.id)
+                }
+                continue
+            }
+            guard let signal = AgentAttentionSignal(agent) else { continue }
+            if let existing = nextAttentionSignals[session.id],
+               existing.updatedAt >= signal.updatedAt {
+                continue
+            }
+            nextAttentionSignals[session.id] = signal
+        }
         let nextFocusOwners = Dictionary(uniqueKeysWithValues: focus.map { ($0.sessionId, $0) })
         let changed = !snapshotLoaded
             || self.workspaceGroups != workspaceGroups
             || self.workspaces != workspaces
-            || self.sessions != sessions
+            || self.sessions != mergedSessions
+            || agentAttentionSignals != nextAttentionSignals
             || focusOwners != nextFocusOwners
         if self.workspaceGroups != workspaceGroups { self.workspaceGroups = workspaceGroups }
         if self.workspaces != workspaces { self.workspaces = workspaces }
-        if self.sessions != sessions { self.sessions = sessions }
+        if self.sessions != mergedSessions { self.sessions = mergedSessions }
+        if agentAttentionSignals != nextAttentionSignals {
+            agentAttentionSignals = nextAttentionSignals
+        }
         if focusOwners != nextFocusOwners { focusOwners = nextFocusOwners }
         if !snapshotLoaded { snapshotLoaded = true }
         if changed { snapshotRevision &+= 1 }
@@ -831,5 +942,20 @@ final class RuntimeConnection: ObservableObject {
             reconnectAttempt = 0
             endpointIndex = 0
         }
+    }
+
+    private static func session(_ session: Session, replacingAgent agent: AgentSession?) -> Session {
+        Session(
+            id: session.id,
+            cwd: session.cwd,
+            command: session.command,
+            cols: session.cols,
+            rows: session.rows,
+            createdAt: session.createdAt,
+            alive: session.alive,
+            exitCode: session.exitCode,
+            title: session.title,
+            agent: agent
+        )
     }
 }

@@ -736,7 +736,7 @@ const handlers: Record<string, Handler> = {
       ...(params.providerSessionId ? { providerSessionId: params.providerSessionId } : {}),
       updatedAt: params.updatedAt,
     });
-    emitEvent("session.agentChanged", { sessionId: params.sessionId });
+    emitEvent("session.agentChanged", { sessionId: params.sessionId, agent });
     return { agent };
   },
   "session.remove": async (params: { sessionId: string }) => {

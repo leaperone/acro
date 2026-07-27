@@ -14,6 +14,8 @@ final class TerminalPaneController: BonsplitDelegate {
     @ObservationIgnored private var representedLayout: WorkspaceTerminalLayout
     @ObservationIgnored private var sessionIdsByTabId: [TabID: String] = [:]
     @ObservationIgnored private var tabIdsBySessionId: [String: TabID] = [:]
+    @ObservationIgnored private var lastAgentEventBySessionId: [String: AgentAttentionSignal] = [:]
+    @ObservationIgnored private var unreadAgentSessionIds: Set<String> = []
     @ObservationIgnored private var forcedCloseTabIds: Set<TabID> = []
     @ObservationIgnored private var trafficLightClearance: Bool
     @ObservationIgnored private var terminalChromeAppearance: TerminalChromeAppearance
@@ -79,12 +81,33 @@ final class TerminalPaneController: BonsplitDelegate {
 
     func refreshTabMetadata() {
         guard let model else { return }
+        let attentionSignals = model.hub.connection(for: key.serverId)?.agentAttentionSignals ?? [:]
+        let representedSessionIds = Set(sessionIdsByTabId.values)
+        lastAgentEventBySessionId = lastAgentEventBySessionId.filter {
+            representedSessionIds.contains($0.key)
+        }
+        unreadAgentSessionIds.formIntersection(representedSessionIds)
+        let workspaceIsVisible = model.selectedServerId == key.serverId
+            && model.selectedWorkspaceId == key.resourceId
+
         for (tabId, sessionId) in sessionIdsByTabId {
+            let event = attentionSignals[sessionId]
+            let isSelected = workspaceIsVisible && (
+                controller.paneId(containing: tabId).map {
+                    controller.selectedTabId(inPane: $0) == tabId
+                } ?? false
+            )
+            updateAgentAttention(
+                event,
+                for: sessionId,
+                isSelected: isSelected
+            )
             controller.updateTab(
                 tabId,
                 title: model.terminalTabTitle(sessionId, for: key),
                 icon: .some("terminal.fill"),
-                kind: .some("terminal")
+                kind: .some("terminal"),
+                showsNotificationBadge: unreadAgentSessionIds.contains(sessionId)
             )
         }
     }
@@ -179,6 +202,7 @@ final class TerminalPaneController: BonsplitDelegate {
         if closed {
             sessionIdsByTabId.removeValue(forKey: tabId)
             tabIdsBySessionId.removeValue(forKey: sessionId)
+            clearAgentAttention(for: sessionId)
             persist(markDirty: markDirty)
         }
         return closed
@@ -199,6 +223,7 @@ final class TerminalPaneController: BonsplitDelegate {
     ) {
         if let sessionId = sessionIdsByTabId.removeValue(forKey: tabId) {
             tabIdsBySessionId.removeValue(forKey: sessionId)
+            clearAgentAttention(for: sessionId)
         }
     }
 
@@ -208,6 +233,7 @@ final class TerminalPaneController: BonsplitDelegate {
         inPane pane: PaneID
     ) {
         guard let sessionId = sessionIdsByTabId[tab.id] else { return }
+        markAgentAttentionRead(for: sessionId, tabId: tab.id)
         model?.applyTerminalPaneSelection(sessionId, for: key)
         persist(markDirty: true)
     }
@@ -219,6 +245,7 @@ final class TerminalPaneController: BonsplitDelegate {
         toPane destination: PaneID
     ) {
         guard let sessionId = sessionIdsByTabId[tab.id] else { return }
+        markAgentAttentionRead(for: sessionId, tabId: tab.id)
         model?.applyTerminalPaneSelection(sessionId, for: key)
         persist(markDirty: true)
     }
@@ -256,9 +283,10 @@ final class TerminalPaneController: BonsplitDelegate {
     }
 
     func splitTabBar(_ controller: BonsplitController, didFocusPane pane: PaneID) {
-        guard let sessionId = controller.selectedTabId(inPane: pane)
-            .flatMap({ sessionIdsByTabId[$0] })
+        guard let tabId = controller.selectedTabId(inPane: pane),
+              let sessionId = sessionIdsByTabId[tabId]
         else { return }
+        markAgentAttentionRead(for: sessionId, tabId: tabId)
         model?.applyTerminalPaneSelection(sessionId, for: key)
         persist(markDirty: true)
     }
@@ -499,6 +527,33 @@ final class TerminalPaneController: BonsplitDelegate {
     private func register(tabId: TabID, sessionId: String) {
         sessionIdsByTabId[tabId] = sessionId
         tabIdsBySessionId[sessionId] = tabId
+    }
+
+    private func updateAgentAttention(
+        _ event: AgentAttentionSignal?,
+        for sessionId: String,
+        isSelected: Bool
+    ) {
+        guard let event else {
+            clearAgentAttention(for: sessionId)
+            return
+        }
+        let previous = lastAgentEventBySessionId.updateValue(event, forKey: sessionId)
+        if isSelected {
+            unreadAgentSessionIds.remove(sessionId)
+        } else if previous != event {
+            unreadAgentSessionIds.insert(sessionId)
+        }
+    }
+
+    private func markAgentAttentionRead(for sessionId: String, tabId: TabID) {
+        guard unreadAgentSessionIds.remove(sessionId) != nil else { return }
+        controller.updateTab(tabId, showsNotificationBadge: false)
+    }
+
+    private func clearAgentAttention(for sessionId: String) {
+        lastAgentEventBySessionId.removeValue(forKey: sessionId)
+        unreadAgentSessionIds.remove(sessionId)
     }
 
     private func createTerminal(in pane: PaneID, inheritFrom: String?) {

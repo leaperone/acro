@@ -59,10 +59,13 @@ struct TerminalPanesView: View {
             }
         }.compactMap { sessionId in
             sessionsById[sessionId].map {
-                TerminalTabMetadata(
+                let attention = runtime.agentAttentionSignals[sessionId]
+                return TerminalTabMetadata(
                     sessionId: sessionId,
                     cwd: $0.cwd,
-                    title: $0.title
+                    title: $0.title,
+                    agentState: attention?.state,
+                    agentUpdatedAt: attention?.updatedAt
                 )
             }
         }
@@ -79,6 +82,8 @@ private struct TerminalTabMetadata: Equatable {
     let sessionId: String
     let cwd: String
     let title: String?
+    let agentState: String?
+    let agentUpdatedAt: String?
 }
 
 private struct TerminalPaneContent: View {
