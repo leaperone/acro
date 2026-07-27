@@ -314,6 +314,7 @@ struct WorkbenchView: View {
 // 单击拖动,双击执行系统缩放
 final class WindowDragNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     private static let dragStartDistanceSquared: CGFloat = 16
     private var pendingDragEvent: NSEvent?
     private var pendingDragStart: NSPoint?

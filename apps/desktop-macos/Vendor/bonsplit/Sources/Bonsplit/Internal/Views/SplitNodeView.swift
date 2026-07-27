@@ -65,6 +65,14 @@ struct SplitNodeView<Content: View, EmptyContent: View>: View {
 /// hosting chain non-draggable so SwiftUI gesture recognizers receive every click.
 final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
     override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        guard let event, let window else { return false }
+        return BonsplitTabBarHitRegionRegistry.containsWindowPoint(
+            event.locationInWindow,
+            in: window
+        )
+    }
 }
 
 /// NSHostingController whose view is a `NonDraggableHostingView`. See the comment on

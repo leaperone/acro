@@ -1509,7 +1509,14 @@ struct TerminalPanesInteractionTests {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         let previousKeyWindow = NSApp.keyWindow
+        let activationWindow = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 200, height: 120),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
         defer {
+            activationWindow.orderOut(nil)
             window.orderOut(nil)
             previousKeyWindow?.makeKeyAndOrderFront(nil)
         }
@@ -1559,6 +1566,8 @@ struct TerminalPanesInteractionTests {
             to: nil
         )
 
+        activationWindow.makeKeyAndOrderFront(nil)
+        #expect(!window.isKeyWindow)
         for event in [
             try mouseEvent(.leftMouseDown, at: destinationPoint, in: window),
             try mouseEvent(.leftMouseUp, at: destinationPoint, in: window),
@@ -1568,6 +1577,8 @@ struct TerminalPanesInteractionTests {
 
         #expect(model.workspaceLayouts[key]?.focusedSessionId == sessions[2])
 
+        activationWindow.makeKeyAndOrderFront(nil)
+        #expect(!window.isKeyWindow)
         for event in [
             try mouseEvent(.leftMouseDown, at: sourcePoint, in: window),
             try mouseEvent(.leftMouseDragged, at: destinationPoint, in: window),
@@ -1587,6 +1598,8 @@ struct TerminalPanesInteractionTests {
             x: hostingView.convert(hostingView.bounds, to: nil).maxX - 45,
             y: destinationPoint.y
         )
+        activationWindow.makeKeyAndOrderFront(nil)
+        #expect(!window.isKeyWindow)
         for event in [
             try mouseEvent(.leftMouseDown, at: splitRightPoint, in: window),
             try mouseEvent(.leftMouseUp, at: splitRightPoint, in: window),
@@ -1611,6 +1624,7 @@ struct TerminalPanesInteractionTests {
         window.isMovable = false
         let event = try mouseEvent(.leftMouseDown, at: NSPoint(x: 20, y: 20), in: window)
 
+        #expect(dragHandle.acceptsFirstMouse(for: event))
         dragHandle.mouseDown(with: event)
 
         #expect(!dragHandle.mouseDownCanMoveWindow)
