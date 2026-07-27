@@ -1598,6 +1598,28 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func explicitWindowDragUsesNativeSessionAndRestoresImmovableWindow() throws {
+        let window = WindowDragSpyWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        let dragHandle = WindowDragNSView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = dragHandle
+        window.isMovable = false
+        let event = try mouseEvent(.leftMouseDown, at: NSPoint(x: 20, y: 20), in: window)
+
+        dragHandle.mouseDown(with: event)
+
+        #expect(!dragHandle.mouseDownCanMoveWindow)
+        #expect(window.performDragCallCount == 1)
+        #expect(window.receivedDragEvent === event)
+        #expect(window.wasMovableDuringPerformDrag)
+        #expect(!window.isMovable)
+    }
+
+    @Test
     func crossPaneMovePersistsThroughBonsplitDelegate() throws {
         let fixture = makeSplitFixture()
         let paneController = try #require(fixture.model.currentTerminalPaneController)
@@ -2162,6 +2184,19 @@ struct TerminalPanesInteractionTests {
             focusedPaneId: left.id
         )
         return (model, key, sessions)
+    }
+}
+
+@MainActor
+private final class WindowDragSpyWindow: NSWindow {
+    private(set) var performDragCallCount = 0
+    private(set) var receivedDragEvent: NSEvent?
+    private(set) var wasMovableDuringPerformDrag = false
+
+    override func performDrag(with event: NSEvent) {
+        performDragCallCount += 1
+        receivedDragEvent = event
+        wasMovableDuringPerformDrag = isMovable
     }
 }
 
