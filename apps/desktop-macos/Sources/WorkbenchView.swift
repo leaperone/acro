@@ -188,11 +188,8 @@ struct WorkbenchView: View {
         }
         .confirmationDialog("关闭终端？", isPresented: terminationPresented) {
             Button("关闭", role: .destructive) {
-                if !model.pendingSessionTerminations.isEmpty {
-                    let sessions = model.pendingSessionTerminations
-                    Task { await model.terminateSessions(sessions) }
-                } else if let session = model.pendingSessionTermination {
-                    Task { await model.terminateSession(session) }
+                if let request = model.takePendingSessionTerminationRequest() {
+                    Task { await model.confirmSessionTermination(request) }
                 }
             }
             .keyboardShortcut(.defaultAction)
@@ -311,15 +308,9 @@ struct WorkbenchView: View {
 
     private var terminationPresented: Binding<Bool> {
         Binding(
-            get: {
-                model.pendingSessionTermination != nil
-                    || !model.pendingSessionTerminations.isEmpty
-            },
+            get: { model.pendingSessionTerminationRequest != nil },
             set: {
-                if !$0 {
-                    model.pendingSessionTermination = nil
-                    model.pendingSessionTerminations = []
-                }
+                if !$0 { model.cancelPendingSessionTermination() }
             }
         )
     }

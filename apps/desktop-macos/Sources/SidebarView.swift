@@ -1329,7 +1329,13 @@ struct SidebarView: View {
                                 in: workspace, serverId: entry.id, inheritFrom: session.id)
                         },
                         terminate: {
-                            model.requestSessionTermination(session, serverId: entry.id)
+                            model.requestSessionTermination(
+                                session,
+                                for: ScopedResourceID(
+                                    serverId: entry.id,
+                                    resourceId: workspace.id
+                                )
+                            )
                         }
                     )
                 )
