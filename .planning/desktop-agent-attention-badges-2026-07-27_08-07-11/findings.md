@@ -15,12 +15,15 @@
 - `TerminalPanesView.tabMetadata` 生成 Equatable 快照，`onChange` 调用 `refreshTabMetadata()`。
 - `TerminalPaneController.refreshTabMetadata()` 通过 `BonsplitController.updateTab` 同步标签属性。
 - `didSelectTab` 是用户把后台标签标为已读的直接入口。
+- 旧 `session.agentChanged` 只携带 session ID，连续事件可能在全量刷新合并时丢失中间 attention 状态。
 
 ## 调研结论
 
 - 最小根方案是在 `TerminalPaneController` 保留每个 session 上次 Agent 状态与未读集合。
 - 不能把 `done` 等状态永久映射为 badge，否则用户读取后会立即回弹。
 - 分屏中每个 pane 已选中的 tab 都在可见区，应视为已读。
+- 工作区隐藏时，其 pane 的 selected tab 仍是后台，不能按“已选中”直接清除。
+- 新 daemon 事件应携带完整 Agent；桌面端记录 pending 事件，在途旧快照不能回滚它。
 
 ## 技术决策
 
@@ -30,6 +33,7 @@
 | 在元数据快照加入 Agent state | 否则 SwiftUI `onChange` 不会在只改 Agent 状态时触发 |
 | 元数据快照同时加入 `updatedAt` | Runtime hook 每次有效 Agent 事件都更新该值，可区分连续同状态事件 |
 | 布局 restore 不清空未读 | 拖拽或服务端布局刷新不应把未读当成已读 |
+| 旧 daemon 缺少 Agent payload 时返回 false | 复用现有 `scheduleRefresh()` 兼容路径，不强制立即重启持有 PTY 的 daemon |
 
 ## 风险与边界
 
@@ -42,5 +46,7 @@
 - `packages/protocol/src/models.ts:126`
 - `apps/desktop-macos/Sources/TerminalPanesView.swift:47`
 - `apps/desktop-macos/Sources/TerminalPaneController.swift:80,207`
+- `apps/desktop-macos/Sources/RuntimeConnection.swift:524,555,835`
+- `apps/runtime/src/daemon/daemon.ts:724`
 - `apps/desktop-macos/Vendor/Bonsplit/Sources/Bonsplit/Public/BonsplitController.swift:295`
 - `.tmp/cmux/Sources/Workspace.swift:4085`

@@ -62,7 +62,9 @@ struct TerminalPanesView: View {
                 TerminalTabMetadata(
                     sessionId: sessionId,
                     cwd: $0.cwd,
-                    title: $0.title
+                    title: $0.title,
+                    agentState: $0.agent?.state,
+                    agentUpdatedAt: $0.agent?.updatedAt
                 )
             }
         }
@@ -79,6 +81,8 @@ private struct TerminalTabMetadata: Equatable {
     let sessionId: String
     let cwd: String
     let title: String?
+    let agentState: String?
+    let agentUpdatedAt: String?
 }
 
 private struct TerminalPaneContent: View {

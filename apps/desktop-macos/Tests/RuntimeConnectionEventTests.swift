@@ -85,8 +85,50 @@ struct RuntimeConnectionEventTests {
     }
 
     @Test
-    func agentChangedEventFallsBackToAFullSnapshotRefresh() {
+    func agentChangedEventUpdatesTheTargetAndSurvivesAStaleSnapshot() throws {
         let connection = RuntimeConnection()
+        let working = AgentSession(
+            provider: "codex",
+            state: "working",
+            providerSessionId: "provider",
+            codexHome: nil,
+            accountFingerprint: nil,
+            managed: true,
+            interrupted: false,
+            updatedAt: "2026-07-19T00:00:00Z"
+        )
+        let session = Session(
+            id: "session", cwd: "/tmp", command: "zsh", cols: 80, rows: 24,
+            createdAt: "2026-07-19T00:00:00Z", alive: true, exitCode: nil,
+            title: nil, agent: working
+        )
+        connection.commitRefreshSnapshot(
+            workspaceGroups: [], workspaces: [], sessions: [session], focus: [])
+        let revision = connection.snapshotRevision
+
+        #expect(connection.applyIncrementalEvent(
+            "session.agentChanged",
+            payload: [
+                "sessionId": "session",
+                "agent": [
+                    "provider": "codex",
+                    "state": "waiting",
+                    "providerSessionId": "provider",
+                    "codexHome": NSNull(),
+                    "accountFingerprint": NSNull(),
+                    "managed": true,
+                    "interrupted": false,
+                    "updatedAt": "2026-07-19T00:01:00Z",
+                ],
+            ]
+        ))
+        #expect(connection.sessions.first?.agent?.state == "waiting")
+        #expect(connection.snapshotRevision == revision + 1)
+
+        connection.commitRefreshSnapshot(
+            workspaceGroups: [], workspaces: [], sessions: [session], focus: [])
+        #expect(connection.sessions.first?.agent?.state == "waiting")
+
         #expect(!connection.applyIncrementalEvent(
             "session.agentChanged",
             payload: ["sessionId": "session"]
