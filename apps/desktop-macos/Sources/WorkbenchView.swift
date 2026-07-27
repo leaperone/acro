@@ -79,7 +79,9 @@ struct WorkbenchView: View {
             }
             .coordinateSpace(name: "workbench-root")
             .ignoresSafeArea(.container, edges: .top)
-            .background(WindowConfigurator())
+            .background(WindowConfigurator { isFullScreen in
+                model.setMainWindowFullScreen(isFullScreen)
+            })
             .animation(
                 reduceMotion ? nil : .easeInOut(duration: 0.18),
                 value: model.leftSidebarPresentation
@@ -359,10 +361,13 @@ struct WindowDragHandle: NSViewRepresentable {
 // 标签条内嵌的 NSScrollView(SwiftUI ScrollView 桥接)内部视图会返回可拖,
 // 容器级覆盖挡不住;直接关掉窗口级隐式移动才是根治。
 private final class WindowConfigurationView: NSView {
+    var onFullScreenChange: (Bool) -> Void = { _ in }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
         guard let window else { return }
+        onFullScreenChange(window.styleMask.contains(.fullScreen))
         configure(window)
         NotificationCenter.default.addObserver(
             self,
@@ -372,13 +377,13 @@ private final class WindowConfigurationView: NSView {
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(windowGeometryChanged),
+            selector: #selector(windowFullScreenChanged),
             name: NSWindow.didEnterFullScreenNotification,
             object: window
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(windowGeometryChanged),
+            selector: #selector(windowFullScreenChanged),
             name: NSWindow.didExitFullScreenNotification,
             object: window
         )
@@ -397,6 +402,11 @@ private final class WindowConfigurationView: NSView {
     }
 
     @objc private func windowGeometryChanged(_ notification: Notification) {
+        scheduleConfiguration()
+    }
+
+    @objc private func windowFullScreenChanged(_ notification: Notification) {
+        onFullScreenChange(notification.name == NSWindow.didEnterFullScreenNotification)
         scheduleConfiguration()
     }
 
@@ -425,9 +435,15 @@ private final class WindowConfigurationView: NSView {
 }
 
 private struct WindowConfigurator: NSViewRepresentable {
+    let onFullScreenChange: (Bool) -> Void
+
     func makeNSView(context: Context) -> WindowConfigurationView {
-        WindowConfigurationView()
+        let view = WindowConfigurationView()
+        view.onFullScreenChange = onFullScreenChange
+        return view
     }
 
-    func updateNSView(_ nsView: WindowConfigurationView, context: Context) {}
+    func updateNSView(_ nsView: WindowConfigurationView, context: Context) {
+        nsView.onFullScreenChange = onFullScreenChange
+    }
 }

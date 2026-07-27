@@ -1867,23 +1867,36 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
-    func sidebarPresentationOnlyReservesTrafficLightSpaceWhenHidden() throws {
+    func sidebarAndFullScreenPresentationUpdateEveryTrafficLightClearance() {
         let model = WorkbenchModel(hub: RuntimeHub())
-        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
-        model.selectedServerId = key.serverId
-        model.selectedWorkspaceId = key.resourceId
-        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
-            root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
-        )
-        let paneController = try #require(model.currentTerminalPaneController)
+        let keys = ["one", "two"].map {
+            ScopedResourceID(serverId: "server", resourceId: $0)
+        }
+        model.selectedServerId = "server"
+        model.selectedWorkspaceId = keys[0].resourceId
+        for key in keys {
+            model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+                root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+            )
+        }
+        let leadingInsets = {
+            keys.compactMap {
+                model.terminalPaneControllers[$0]?.controller.configuration.appearance
+                    .tabBarLeadingInset
+            }
+        }
 
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 0)
+        #expect(leadingInsets() == [0, 0])
         model.setLeftSidebarPresentation(.compact)
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 0)
+        #expect(leadingInsets() == [0, 0])
         model.setLeftSidebarPresentation(.hidden)
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 80)
+        #expect(leadingInsets() == [80, 80])
+        model.setMainWindowFullScreen(true)
+        #expect(leadingInsets() == [0, 0])
+        model.setMainWindowFullScreen(false)
+        #expect(leadingInsets() == [80, 80])
         model.setLeftSidebarPresentation(.wide)
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 0)
+        #expect(leadingInsets() == [0, 0])
     }
 
     @Test

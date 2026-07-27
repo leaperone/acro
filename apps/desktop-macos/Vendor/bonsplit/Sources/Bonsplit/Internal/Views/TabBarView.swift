@@ -1084,7 +1084,9 @@ struct TabBarView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if appearance.tabBarLeadingInset > 0 && controller.internalController.rootNode.allPaneIds.first == pane.id {
+            if appearance.tabBarLeadingInset > 0
+                && (splitViewController.zoomedPaneId ?? splitViewController.rootNode.allPaneIds.first) == pane.id
+            {
                 TabBarDragZoneView(
                     isMinimalMode: isMinimalMode,
                     isFocusedPane: isFocused,
