@@ -302,34 +302,46 @@ struct WorkbenchView: View {
 
 }
 
-// 顶栏空位的显式窗口拖动(cmux TitlebarAccessoryContainerView 语义):
-// 窗口 isMovable=false(见 WindowConfigurator),这里手动移动窗口——
-// performDrag 在 isMovable=false 下是 no-op,必须自己跟踪拖拽。
+// 顶栏空位的显式窗口拖动(cmux TitlebarAccessoryContainerView 语义)。
+// 窗口平时保持 isMovable=false；这里只在原生拖动事务期间临时开放移动。
 // 单击拖动,双击执行系统缩放
 final class WindowDragNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
-    private var dragOrigin: (window: NSPoint, mouse: NSPoint)?
+    private static let dragStartDistanceSquared: CGFloat = 16
+    private var pendingDragEvent: NSEvent?
+    private var pendingDragStart: NSPoint?
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         if event.clickCount >= 2 {
+            clearPendingDrag()
             window.zoom(nil)
             return
         }
-        dragOrigin = (window.frame.origin, NSEvent.mouseLocation)
+        pendingDragEvent = event
+        pendingDragStart = event.locationInWindow
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let window, let dragOrigin else { return }
-        let mouse = NSEvent.mouseLocation
-        window.setFrameOrigin(NSPoint(
-            x: dragOrigin.window.x + (mouse.x - dragOrigin.mouse.x),
-            y: dragOrigin.window.y + (mouse.y - dragOrigin.mouse.y)
-        ))
+        guard let window, let pendingDragEvent, let pendingDragStart else { return }
+        let dx = event.locationInWindow.x - pendingDragStart.x
+        let dy = event.locationInWindow.y - pendingDragStart.y
+        guard dx * dx + dy * dy >= Self.dragStartDistanceSquared else { return }
+
+        clearPendingDrag()
+        let wasMovable = window.isMovable
+        window.isMovable = true
+        defer { window.isMovable = wasMovable }
+        window.performDrag(with: pendingDragEvent)
     }
 
     override func mouseUp(with event: NSEvent) {
-        dragOrigin = nil
+        clearPendingDrag()
+    }
+
+    private func clearPendingDrag() {
+        pendingDragEvent = nil
+        pendingDragStart = nil
     }
 }
 
