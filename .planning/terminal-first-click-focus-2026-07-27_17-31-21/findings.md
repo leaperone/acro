@@ -38,6 +38,19 @@
 - `acceptsFirstMouse` 可能影响右键的 AppKit 投递，但本轮不修改右键实现；需要行为测试后另定契约。
 - 滚轮不走 first-mouse 左键链，本轮保持后台滚动现状。
 
+## 验证结论
+
+- 新增测试在旧实现稳定失败：终端正文仍接受 inactive-window first mouse。
+- 修复后针对性 3 项测试通过。
+- Acro 桌面完整测试通过：XCTest 86 项、Swift Testing 63 项。
+- `swift build -c release` 通过。
+- 候选 `0.0.8-beta.31` build 62 已打包并热替换 UI/runtime；daemon PID 1151 保持不变。
+- 真实 UI 验证通过：后台窗口首次点击终端正文只激活；当前窗口点击未聚焦 pane 只聚焦；两步均未改变 TUI prompt。
+- 已聚焦终端允许正常左键由策略测试覆盖；未在敏感 TUI 控件上做破坏性点击。
+- 最终审查发现原测试只覆盖 press 决策，没有直接锁定 drag/release 配对；实现已收敛为 `PrimaryPointerState`，同一状态机管理 press、drag、release，并用事件序列测试覆盖 focus-only 与正常手势。
+- `isFocusedPane` 闭包不会形成循环引用：`TerminalPaneController` 对 `WorkbenchModel` 是弱引用，Bonsplit delegate 也是弱引用；闭包每次读取当前 controller，不会固化 restore 前快照。
+- 本分支未修改顶部标签栏入口，Beta.30 的顶部 first-mouse 行为保持不变。
+
 ## 参考指针
 
 - Acro：`apps/desktop-macos/Sources/AcroTerminalView.swift`

@@ -16,6 +16,27 @@ enum TerminalSurfaceExitDisposition: Equatable {
 }
 
 final class AcroTerminalNSView: NSView {
+    struct PrimaryPointerState {
+        private(set) var hasForwardedPress = false
+
+        mutating func begin(
+            wasFocusedBeforePointerDown: Bool,
+            forwardPress: () -> Bool
+        ) {
+            hasForwardedPress = wasFocusedBeforePointerDown && forwardPress()
+        }
+
+        var shouldForwardDrag: Bool { hasForwardedPress }
+
+        mutating func end(forwardRelease: () -> Void) {
+            guard hasForwardedPress else { return }
+            hasForwardedPress = false
+            forwardRelease()
+        }
+
+        mutating func cancel() { hasForwardedPress = false }
+    }
+
     private var surface: ghostty_surface_t?
     private let commandCString: UnsafeMutablePointer<CChar>?
     private var requestedFocusRequest = 0
@@ -28,7 +49,7 @@ final class AcroTerminalNSView: NSView {
     private var keyTextAccumulator: [String] = []
     private var currentKeyEvent: NSEvent?
     private var commandSelectorCalled = false
-    private var leftMousePressed = false
+    private var primaryPointerState = PrimaryPointerState()
     private var tornDown = false
     private var restartPending = false
     var onCloseRequest: (() -> Void)?
@@ -144,7 +165,7 @@ final class AcroTerminalNSView: NSView {
     func surfaceDidRequestClose() {
         guard !tornDown, !restartPending else { return }
         restartPending = true
-        leftMousePressed = false
+        primaryPointerState.cancel()
         if let surface {
             ghostty_surface_free(surface)
             self.surface = nil
@@ -180,7 +201,7 @@ final class AcroTerminalNSView: NSView {
     func teardown() {
         guard !tornDown else { return }
         tornDown = true
-        leftMousePressed = false
+        primaryPointerState.cancel()
         if let surface {
             ghostty_surface_free(surface)
             self.surface = nil
@@ -401,31 +422,25 @@ final class AcroTerminalNSView: NSView {
     }
 
     private func releaseLeftMouseButton(_ event: NSEvent? = nil) {
-        guard leftMousePressed else { return }
-        leftMousePressed = false
-        guard let surface else { return }
-        if let event { forwardMousePos(event) }
-        _ = ghostty_surface_mouse_button(
-            surface,
-            GHOSTTY_MOUSE_RELEASE,
-            GHOSTTY_MOUSE_LEFT,
-            event.map { Self.mods(from: $0.modifierFlags) } ?? GHOSTTY_MODS_NONE
-        )
+        primaryPointerState.end {
+            guard let surface else { return }
+            if let event { forwardMousePos(event) }
+            _ = ghostty_surface_mouse_button(
+                surface,
+                GHOSTTY_MOUSE_RELEASE,
+                GHOSTTY_MOUSE_LEFT,
+                event.map { Self.mods(from: $0.modifierFlags) } ?? GHOSTTY_MODS_NONE
+            )
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
-        let shouldForward = Self.shouldForwardPrimaryClick(
-            wasFocusedBeforePointerDown: isFocusedPane?() == true
-        )
+        let wasFocusedBeforePointerDown = isFocusedPane?() == true
         focusTerminal()
         onFocus?()
-        guard shouldForward else { return }
-        leftMousePressed = forwardMouseButton(
-            event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
-    }
-
-    static func shouldForwardPrimaryClick(wasFocusedBeforePointerDown: Bool) -> Bool {
-        wasFocusedBeforePointerDown
+        primaryPointerState.begin(wasFocusedBeforePointerDown: wasFocusedBeforePointerDown) {
+            forwardMouseButton(event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -442,7 +457,7 @@ final class AcroTerminalNSView: NSView {
 
     override func mouseMoved(with event: NSEvent) { forwardMousePos(event) }
     override func mouseDragged(with event: NSEvent) {
-        guard leftMousePressed else { return }
+        guard primaryPointerState.shouldForwardDrag else { return }
         forwardMousePos(event)
     }
 

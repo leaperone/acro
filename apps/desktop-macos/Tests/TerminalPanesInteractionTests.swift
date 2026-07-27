@@ -816,13 +816,27 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
-    func terminalPrimaryClickOnlyForwardsWhenPaneWasAlreadyFocused() {
-        #expect(!AcroTerminalNSView.shouldForwardPrimaryClick(
-            wasFocusedBeforePointerDown: false
-        ))
-        #expect(AcroTerminalNSView.shouldForwardPrimaryClick(
-            wasFocusedBeforePointerDown: true
-        ))
+    func terminalPrimaryPointerKeepsFocusOnlyGestureOutOfGhostty() {
+        var state = AcroTerminalNSView.PrimaryPointerState()
+        var events: [String] = []
+
+        state.begin(wasFocusedBeforePointerDown: false) {
+            events.append("press")
+            return true
+        }
+        if state.shouldForwardDrag { events.append("drag") }
+        state.end { events.append("release") }
+
+        #expect(events.isEmpty)
+
+        state.begin(wasFocusedBeforePointerDown: true) {
+            events.append("press")
+            return true
+        }
+        if state.shouldForwardDrag { events.append("drag") }
+        state.end { events.append("release") }
+
+        #expect(events == ["press", "drag", "release"])
     }
 
     @Test
