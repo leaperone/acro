@@ -2,7 +2,7 @@
 
 - 任务 ID：`terminal-tab-interactions-2026-07-27_13-38-30`
 - 创建时间：`2026-07-27_13-38-30`
-- 当前状态：`in_progress`
+- 当前状态：`completed`
 
 ## 已完成
 
@@ -15,9 +15,7 @@
 
 ## 进行中
 
-- 删除负 top padding 补偿，改为在现有 AppKit 内容宿主上取消顶部 safe area。
-- 窗口进入层级时同步关闭根 safe area 和隐式背景拖窗，下一轮主线程仅做复核。
-- 执行全量验证、Git 与 Beta 发布收敛。
+- 无。
 
 ## 修改文件
 
@@ -31,10 +29,17 @@
 
 | 检查 | 结果 | 状态 |
 |---|---|---|
-| TerminalPanesInteractionTests | 43 项通过；缺少点击和按钮命中覆盖 | pass |
+| TerminalPanesInteractionTests | 43 项通过；覆盖首次 layout、resize、标签点击、同窗格重排和分屏按钮命中 | pass |
 | 新增真实窗口回归 | 修复前失败，修复后通过 | pass |
 | 全尺寸标题栏根 safe area 回归 | 修复前 32pt，修复后 0pt | pass |
-| 旧全量验证与本机包 | 新窗口根因出现后已失效，必须重跑 | pending |
+| 首帧根 safe area 回归 | 异步修复前首个 layout 为 32pt，同步修复后为 0pt | pass |
+| Acro Desktop 完整测试 | 86 个 XCTest + 56 个 Swift Testing 全部通过 | pass |
+| Bonsplit 完整测试 | 204 项通过 | pass |
+| Swift release build | 通过；仅既有 Swift 6 actor warning | pass |
+| pnpm check | 通过 | pass |
+| pnpm build | 通过；仅既有 `import.meta` warning | pass |
+| 最终只读审查 | Critical / High / Medium 均为 0；保留 fullscreen 自动化覆盖缺口 | pass |
+| 真实 UI / XCUITest | Orca runtime 不可用，未执行 | not_run |
 
 ## 错误与恢复
 
