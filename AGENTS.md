@@ -45,6 +45,13 @@ Acro 是团队内部使用的远程开发控制台。它管理工作区、项目
 - 服务端逻辑使用 TypeScript；桌面客户端和 Computer Use helper 使用 Swift。
 - 只为已确认的需求增加依赖、应用或抽象。
 
+## 本机文件搜索与权限
+
+- 文件搜索默认只覆盖当前仓库、当前任务 worktree 或用户明确指定的路径。优先使用 `rg` / `rg --files`。
+- 禁止从 `$HOME`、`/Users/harry` 或 `~/Library` 根目录执行无边界的 `find`、`du`、递归 `ls` 或等价遍历。跨项目检查时，逐个列出目标项目根目录，不扫描整个用户目录。
+- `~/Library/Application Support`、`~/Library/Containers`、`~/Library/Group Containers`、Desktop、Documents、Downloads、媒体资料库和网络卷属于 macOS 受保护范围。只有用户明确把对应数据放入任务范围时才访问，并在执行前说明访问原因和精确路径。
+- Acro 是终端宿主。终端内 Agent 启动的命令会被 macOS 归因给 Acro；误扫受保护目录会触发“访问其他 App 数据”等权限弹窗。不得用授予 Full Disk Access 掩盖无边界搜索。
+
 ## 本机 dev 实例热替换
 
 把本机正在运行的 dev app 更新到最新 main，**不丢正在跑的终端会话**。适用于：改了桌面 UI 或 runtime（`fs.*`/`git.*`/`ports.list`/`session.*` 等 RPC 由 runtime 处理），想立刻在本机验证。
