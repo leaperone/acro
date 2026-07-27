@@ -1559,7 +1559,10 @@ struct TabBarView: View {
     ) -> some View {
         if button.activatesOnMouseDown {
             splitActionButtonIcon(button.icon)
-                .frame(height: tabBarLayout.splitActionButtonHeight)
+                .frame(
+                    width: TabBarStyling.splitActionButtonReservedWidth,
+                    height: tabBarLayout.splitActionButtonHeight
+                )
                 .contentShape(Rectangle())
                 .foregroundStyle(TabBarColors.splitActionIcon(for: appearance, isPressed: false))
                 .tabBarButtonAnimationsDisabled()
@@ -1835,7 +1838,10 @@ private struct SplitActionButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(height: layout.splitActionButtonHeight)
+            .frame(
+                width: TabBarStyling.splitActionButtonReservedWidth,
+                height: layout.splitActionButtonHeight
+            )
             .contentShape(Rectangle())
             .foregroundStyle(TabBarColors.splitActionIcon(for: appearance, isPressed: configuration.isPressed))
             .opacity(configuration.isPressed ? 0.72 : 1.0)
