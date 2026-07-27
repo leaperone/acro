@@ -321,6 +321,152 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func backgroundAgentAttentionIsUnreadUntilTheTabIsSelected() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let foreground = makeSession(
+            id: UUID().uuidString,
+            agentState: "working",
+            agentUpdatedAt: "2026-07-27T00:00:00Z"
+        )
+        let background = makeSession(
+            id: UUID().uuidString,
+            agentState: "working",
+            agentUpdatedAt: "2026-07-27T00:00:00Z"
+        )
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [foreground.id, background.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let (runtime, hub) = makeRuntimeFixture(
+            workspaces: [workspace],
+            sessions: [foreground, background]
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(
+                sessionIds: [foreground.id, background.id],
+                selectedSessionId: foreground.id
+            ))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+        let pane = try #require(paneController.controller.allPaneIds.first)
+        let backgroundTab = try #require(
+            paneController.controller.tabs(inPane: pane).first(where: {
+                paneController.sessionId(for: $0.id) == background.id
+            })
+        )
+        let foregroundTab = try #require(
+            paneController.controller.tabs(inPane: pane).first(where: {
+                paneController.sessionId(for: $0.id) == foreground.id
+            })
+        )
+
+        let hostingView = NSHostingView(rootView: TerminalPanesView(model: model, runtime: runtime))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 400),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(100))
+
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [foreground, makeSession(
+                id: background.id,
+                agentState: "waiting",
+                agentUpdatedAt: "2026-07-27T00:01:00Z"
+            )],
+            focus: []
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(paneController.controller.tab(backgroundTab.id)?.showsNotificationBadge == true)
+
+        paneController.controller.selectTab(backgroundTab.id)
+        #expect(paneController.controller.tab(backgroundTab.id)?.showsNotificationBadge == false)
+
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [foreground, makeSession(
+                id: background.id,
+                agentState: "waiting",
+                agentUpdatedAt: "2026-07-27T00:01:00Z"
+            )],
+            focus: []
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(paneController.controller.tab(backgroundTab.id)?.showsNotificationBadge == false)
+
+        paneController.controller.selectTab(foregroundTab.id)
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [foreground, makeSession(
+                id: background.id,
+                agentState: "waiting",
+                agentUpdatedAt: "2026-07-27T00:02:00Z"
+            )],
+            focus: []
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(paneController.controller.tab(backgroundTab.id)?.showsNotificationBadge == true)
+    }
+
+    @Test
+    func initialAttentionBadgesOnlyBackgroundTabs() throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let selected = makeSession(id: UUID().uuidString, agentState: "error")
+        let background = makeSession(id: UUID().uuidString, agentState: "done")
+        let (_, hub) = makeRuntimeFixture(
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: [selected.id, background.id],
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [selected, background]
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(
+                sessionIds: [selected.id, background.id],
+                selectedSessionId: selected.id
+            ))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+        let pane = try #require(paneController.controller.allPaneIds.first)
+        let tabs = paneController.controller.tabs(inPane: pane)
+        let selectedTab = try #require(tabs.first(where: {
+            paneController.sessionId(for: $0.id) == selected.id
+        }))
+        let backgroundTab = try #require(tabs.first(where: {
+            paneController.sessionId(for: $0.id) == background.id
+        }))
+
+        #expect(selectedTab.showsNotificationBadge == false)
+        #expect(backgroundTab.showsNotificationBadge == true)
+    }
+
+    @Test
     func switchingToBackgroundWorkspaceAppliesItsPendingTitle() async throws {
         let sessionA = UUID().uuidString
         let sessionB = UUID().uuidString
@@ -1028,7 +1174,11 @@ private func makeRuntimeFixture(
     return (runtime, RuntimeHub(entries: [.init(server: server, connection: runtime)]))
 }
 
-private func makeSession(id: String) -> Session {
+private func makeSession(
+    id: String,
+    agentState: String? = nil,
+    agentUpdatedAt: String = "2026-07-27T00:00:00Z"
+) -> Session {
     Session(
         id: id,
         cwd: "/tmp",
@@ -1039,7 +1189,18 @@ private func makeSession(id: String) -> Session {
         alive: true,
         exitCode: nil,
         title: nil,
-        agent: nil
+        agent: agentState.map {
+            AgentSession(
+                provider: "codex",
+                state: $0,
+                providerSessionId: nil,
+                codexHome: nil,
+                accountFingerprint: nil,
+                managed: true,
+                interrupted: false,
+                updatedAt: agentUpdatedAt
+            )
+        }
     )
 }
 

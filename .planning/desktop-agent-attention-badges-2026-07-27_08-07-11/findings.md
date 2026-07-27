@@ -1,0 +1,46 @@
+# 调研与结论：desktop-agent-attention-badges
+
+- 任务 ID：`desktop-agent-attention-badges-2026-07-27_08-07-11`
+- 创建时间：`2026-07-27_08-07-11`
+
+## 需求事实
+
+- 协议已有 `starting` / `working` / `waiting` / `done` / `error`，不需要扩展 schema。
+- Acro 标签目前只同步 cwd 和 title，后台 Agent 状态变化没有顶部反馈。
+- Bonsplit 已提供 `showsNotificationBadge` 以及未读点渲染。
+
+## 真实调用链
+
+- Runtime `session.agentChanged` 触发快照刷新。
+- `TerminalPanesView.tabMetadata` 生成 Equatable 快照，`onChange` 调用 `refreshTabMetadata()`。
+- `TerminalPaneController.refreshTabMetadata()` 通过 `BonsplitController.updateTab` 同步标签属性。
+- `didSelectTab` 是用户把后台标签标为已读的直接入口。
+
+## 调研结论
+
+- 最小根方案是在 `TerminalPaneController` 保留每个 session 上次 Agent 状态与未读集合。
+- 不能把 `done` 等状态永久映射为 badge，否则用户读取后会立即回弹。
+- 分屏中每个 pane 已选中的 tab 都在可见区，应视为已读。
+
+## 技术决策
+
+| 决策 | 证据 |
+|---|---|
+| 事件跃迁而非永久映射 | 已读后相同 `state + updatedAt` 快照不应重新制造未读 |
+| 在元数据快照加入 Agent state | 否则 SwiftUI `onChange` 不会在只改 Agent 状态时触发 |
+| 元数据快照同时加入 `updatedAt` | Runtime hook 每次有效 Agent 事件都更新该值，可区分连续同状态事件 |
+| 布局 restore 不清空未读 | 拖拽或服务端布局刷新不应把未读当成已读 |
+
+## 风险与边界
+
+- 重复快照必须幂等，否则会造成未读点回弹。
+- session 或 agent 消失必须清理字典，避免长期累积和 ID 复用污染。
+- 不改 `TabItemView`，避免输入热路径和 Equatable 边界回归。
+
+## 参考指针
+
+- `packages/protocol/src/models.ts:126`
+- `apps/desktop-macos/Sources/TerminalPanesView.swift:47`
+- `apps/desktop-macos/Sources/TerminalPaneController.swift:80,207`
+- `apps/desktop-macos/Vendor/Bonsplit/Sources/Bonsplit/Public/BonsplitController.swift:295`
+- `.tmp/cmux/Sources/Workspace.swift:4085`
