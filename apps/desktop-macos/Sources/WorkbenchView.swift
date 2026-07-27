@@ -351,6 +351,7 @@ private final class WindowConfigurationView: NSView {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
         guard let window else { return }
+        configure(window)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(windowGeometryChanged),
@@ -379,16 +380,21 @@ private final class WindowConfigurationView: NSView {
     func scheduleConfiguration() {
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
-            window.styleMask.insert(.fullSizeContentView)
-            window.isMovable = false
-            self.cancelHostingSafeArea(in: window)
+            self.configure(window)
         }
     }
 
     @objc private func windowGeometryChanged(_ notification: Notification) {
         scheduleConfiguration()
+    }
+
+    private func configure(_ window: NSWindow) {
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.isMovableByWindowBackground = false
+        window.isMovable = false
+        cancelHostingSafeArea(in: window)
     }
 
     private func cancelHostingSafeArea(in window: NSWindow) {

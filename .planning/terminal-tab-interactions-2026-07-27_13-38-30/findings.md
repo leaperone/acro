@@ -25,6 +25,7 @@
 - 正式窗口使用 SwiftUI `WindowGroup(.hiddenTitleBar)`，Acro 又用负 top padding 抵消 32pt safe area；这只移动视觉内容，没有消除根 `NSHostingView` 的有效安全区。
 - 将回归窗口按 `.fullSizeContentView`、隐藏透明标题栏创建后，生产 `WorkbenchView` 的根宿主仍报告 32pt top safe area，失败测试稳定复现。
 - cmux 使用零 safe-area 的 `MainWindowHostingView`。Acro 可复用 AppKit 原生 `additionalSafeAreaInsets` 在现有窗口宿主上取消同一安全区，不需要重写 Bonsplit 或迁移整个 App 生命周期。
+- 仅在下一轮主线程异步取消 safe area 会让首帧仍短暂保留 32pt；首次 layout 无等待断言可稳定复现，窗口进入层级时必须同步配置。
 
 ## 技术决策
 
@@ -34,6 +35,7 @@
 | 不新增自定义拖拽实现 | cmux/Bonsplit 已完整提供所需能力 |
 | 只扩大现有按钮 label，不改分屏 action/delegate | 分屏逻辑可直接执行；失败发生在 action 前的命中层 |
 | 删除负 padding，直接取消根宿主 safe area | 根修窗口层级，避免视觉位置与命中层级分离；改动小于重建 programmatic NSWindow |
+| `viewDidMoveToWindow` 同步配置并异步复核 | 首帧立即正确，同时覆盖 SwiftUI Scene 随后调整窗口属性的情况 |
 
 ## 风险与边界
 

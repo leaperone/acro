@@ -11,10 +11,12 @@
 - 运行现有 TerminalPanesInteractionTests：43 项通过。
 - 确认按钮视觉槽内的合法点击修复前失败、修复后通过。
 - 确认全尺寸隐藏标题栏窗口的根宿主修复前仍保留 32pt top safe area。
+- 确认异步配置修复前首个 layout 仍保留 32pt；同步配置后首帧为 0pt。
 
 ## 进行中
 
 - 删除负 top padding 补偿，改为在现有 AppKit 内容宿主上取消顶部 safe area。
+- 窗口进入层级时同步关闭根 safe area 和隐式背景拖窗，下一轮主线程仅做复核。
 - 执行全量验证、Git 与 Beta 发布收敛。
 
 ## 修改文件
