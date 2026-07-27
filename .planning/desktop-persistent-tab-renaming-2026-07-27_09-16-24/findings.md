@@ -45,6 +45,7 @@
 - 旧客户端混合写入不属于本轮可安全解决的范围。
 - 09:08 启动稳定签名 Beta.21 后，`SystemPolicyAppData` 请求为 0。当前应保留已有授权；只有独立 ad-hoc ID 合入后仍复现，才针对正式 Bundle ID 有意识重置。
 - daemon 的旧 inode 是热替换模型的已知结果，不是当前权限弹窗根因；TCC 责任链按 Acro bundle 归因。重启 daemon 会结束 9 个终端，本轮禁止执行。
+- 最终审查补出一个同类入口：仅判断 `ACRO_SIGN_IDENTITY != "-"` 不足以保护正式 Bundle ID。Apple Development 或其他 Team 证书也会形成不同 designated requirement；正式包必须在签名后校验 Developer ID Application、Team `5UAHRS482C` 和稳定证书 requirement。
 
 ## 参考指针
 

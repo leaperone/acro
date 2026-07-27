@@ -12,6 +12,7 @@ VERSION="${1:-0.0.0}"
 BUILD_VERSION="${2:-0}"
 : "${ACRO_SIGN_IDENTITY:?ACRO_SIGN_IDENTITY must be set to a Developer ID identity or explicit - for CI}"
 SIGN_IDENTITY="$ACRO_SIGN_IDENTITY"
+EXPECTED_TEAM_ID="5UAHRS482C"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     BUNDLE_IDENTIFIER="one.leaper.acro.desktop.adhoc"
     APP_DISPLAY_NAME="Acro Ad Hoc"
@@ -151,10 +152,21 @@ fi
 codesign --verify --strict "$BUNDLED_NODE"
 NODE_SIGNED_ENTITLEMENTS="$(codesign -d --entitlements :- "$BUNDLED_NODE" 2>/dev/null)"
 grep -q 'com.apple.security.cs.allow-jit' <<< "$NODE_SIGNED_ENTITLEMENTS"
-if [[ "$SIGN_IDENTITY" != "-" ]] \
-    && grep -q 'com.apple.security.get-task-allow' <<< "$NODE_SIGNED_ENTITLEMENTS"; then
-    echo "bundled node must not allow debugger attachment" >&2
-    exit 1
+if [[ "$SIGN_IDENTITY" != "-" ]]; then
+    APP_SIGNING_INFO="$(codesign -dv --verbose=4 "$APP" 2>&1)"
+    APP_REQUIREMENT="$(codesign -dr - "$APP" 2>&1)"
+    grep -q '^Authority=Developer ID Application:' <<< "$APP_SIGNING_INFO" \
+        || { echo "official bundle ID requires Developer ID Application" >&2; exit 1; }
+    grep -q "^TeamIdentifier=$EXPECTED_TEAM_ID$" <<< "$APP_SIGNING_INFO" \
+        || { echo "unexpected signing team for official bundle ID" >&2; exit 1; }
+    grep -q 'certificate leaf\[field\.1\.2\.840\.113635\.100\.6\.1\.13\]' <<< "$APP_REQUIREMENT" \
+        || { echo "official bundle ID requires a stable Developer ID requirement" >&2; exit 1; }
+    grep -q "certificate leaf\[subject\.OU\] = \"$EXPECTED_TEAM_ID\"" <<< "$APP_REQUIREMENT" \
+        || { echo "official bundle ID requirement has the wrong team" >&2; exit 1; }
+    if grep -q 'com.apple.security.get-task-allow' <<< "$NODE_SIGNED_ENTITLEMENTS"; then
+        echo "bundled node must not allow debugger attachment" >&2
+        exit 1
+    fi
 fi
 if [[ -n "$(find "$RT/node_modules/node-pty/prebuilds" -type f -name "spawn-helper" ! -perm -111 -print -quit)" ]]; then
     echo "spawn-helper is not executable" >&2

@@ -53,6 +53,8 @@
 | Bonsplit 产物资源 | `Contents/Resources/Bonsplit_Bonsplit.bundle` 三语 strings 可解析 | 通过 |
 | `pnpm check` 复验 | TypeScript 与 15 项 Node 测试通过 | 通过 |
 | `git diff --check` | 无空白错误 | 通过 |
+| 最终 diff 审查第 1 轮 | 发现正式 Bundle ID 未拒绝错误证书身份 | 已修复 |
+| 正式签名身份断言 | Beta.21 产物满足 Developer ID Application、Team `5UAHRS482C` 和稳定 requirement | 通过 |
 
 ## 错误与恢复
 

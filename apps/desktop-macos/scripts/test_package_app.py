@@ -16,6 +16,8 @@ class PackageAppTests(unittest.TestCase):
         self.assertIn('BUNDLE_IDENTIFIER="one.leaper.acro.desktop.adhoc"', script)
         self.assertIn('BUNDLE_IDENTIFIER="one.leaper.acro.desktop"', script)
         self.assertIn("<string>${BUNDLE_IDENTIFIER}</string>", script)
+        self.assertIn('EXPECTED_TEAM_ID="5UAHRS482C"', script)
+        self.assertIn("official bundle ID requires Developer ID Application", script)
 
     def test_embeds_bonsplit_resource_bundle_at_swiftpm_runtime_path(self):
         script = PACKAGER.read_text()
