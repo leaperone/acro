@@ -1310,17 +1310,18 @@ struct TerminalPanesInteractionTests {
     func switchingToBackgroundWorkspaceAppliesItsPendingTitle() async throws {
         let sessionA = UUID().uuidString
         let sessionB = UUID().uuidString
+        let sessionB2 = UUID().uuidString
         let workspaces = [
             Workspace(
                 id: "workspace-a", name: "A", sessionIds: [sessionA],
                 createdAt: "2026-07-27T00:00:00Z", layout: nil, layoutRev: nil
             ),
             Workspace(
-                id: "workspace-b", name: "B", sessionIds: [sessionB],
+                id: "workspace-b", name: "B", sessionIds: [sessionB, sessionB2],
                 createdAt: "2026-07-27T00:00:00Z", layout: nil, layoutRev: nil
             ),
         ]
-        let sessions = [sessionA, sessionB].map {
+        let sessions = [sessionA, sessionB, sessionB2].map {
             Session(
                 id: $0, cwd: "/tmp", command: "zsh", cols: 80, rows: 24,
                 createdAt: "2026-07-27T00:00:00Z", alive: true, exitCode: nil,
@@ -1331,13 +1332,12 @@ struct TerminalPanesInteractionTests {
         let model = WorkbenchModel(hub: hub)
         model.selectedServerId = "server"
         model.selectedWorkspaceId = workspaces[0].id
-        for (workspace, session) in zip(workspaces, sessions) {
-            model.workspaceLayouts[ScopedResourceID(
-                serverId: "server", resourceId: workspace.id
-            )] = WorkspaceTerminalLayout(
-                root: .pane(PaneTabGroup(sessionIds: [session.id]))
-            )
-        }
+        model.workspaceLayouts[ScopedResourceID(
+            serverId: "server", resourceId: workspaces[0].id
+        )] = WorkspaceTerminalLayout(root: .pane(PaneTabGroup(sessionIds: [sessionA])))
+        model.workspaceLayouts[ScopedResourceID(
+            serverId: "server", resourceId: workspaces[1].id
+        )] = WorkspaceTerminalLayout(root: .pane(PaneTabGroup(sessionIds: [sessionB, sessionB2])))
         let keyB = ScopedResourceID(serverId: "server", resourceId: workspaces[1].id)
         let controllerB = try #require(model.terminalPaneControllers[keyB])
         let paneB = try #require(controllerB.controller.allPaneIds.first)
@@ -1368,6 +1368,22 @@ struct TerminalPanesInteractionTests {
 
         #expect(model.currentTerminalPaneController === controllerB)
         #expect(controllerB.controller.tabs(inPane: paneB).first?.title == "ssh prod")
+
+        let renderedTabs = renderedTabItemHitRegions(in: hostingView)
+            .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
+        let destination = try #require(renderedTabs.last)
+        let destinationPoint = destination.convert(
+            NSPoint(x: destination.bounds.midX, y: destination.bounds.midY),
+            to: nil
+        )
+        for event in [
+            try mouseEvent(.leftMouseDown, at: destinationPoint, in: window),
+            try mouseEvent(.leftMouseUp, at: destinationPoint, in: window),
+        ] {
+            NSApp.sendEvent(event)
+        }
+
+        #expect(model.workspaceLayouts[keyB]?.focusedSessionId == sessionB2)
     }
 
     @Test
@@ -1423,7 +1439,7 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
-    func mouseDragBetweenRenderedTabsReordersAndPersists() async throws {
+    func mouseClickDragAndSplitButtonUseTheirFullRenderedHitTargets() async throws {
         let defaults = UserDefaults.standard
         let presentationKey = "workspacePresentationMode"
         let previousPresentation = defaults.object(forKey: presentationKey)
@@ -1504,6 +1520,16 @@ struct TerminalPanesInteractionTests {
         try await Task.sleep(for: .milliseconds(150))
         window.contentView?.layoutSubtreeIfNeeded()
 
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(
+                sessionIds: sessions,
+                selectedSessionId: sessions[1]
+            ))
+        )
+        window.contentView?.layoutSubtreeIfNeeded()
+        await Task.yield()
+        window.contentView?.layoutSubtreeIfNeeded()
+
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .hidden)
         #expect(window.titlebarAppearsTransparent)
@@ -1525,6 +1551,15 @@ struct TerminalPanesInteractionTests {
         )
 
         for event in [
+            try mouseEvent(.leftMouseDown, at: destinationPoint, in: window),
+            try mouseEvent(.leftMouseUp, at: destinationPoint, in: window),
+        ] {
+            NSApp.sendEvent(event)
+        }
+
+        #expect(model.workspaceLayouts[key]?.focusedSessionId == sessions[2])
+
+        for event in [
             try mouseEvent(.leftMouseDown, at: sourcePoint, in: window),
             try mouseEvent(.leftMouseDragged, at: destinationPoint, in: window),
             try mouseEvent(.leftMouseUp, at: destinationPoint, in: window),
@@ -1535,6 +1570,22 @@ struct TerminalPanesInteractionTests {
         #expect(model.workspaceLayouts[key]?.root?.sessionIds == [
             sessions[1], sessions[2], sessions[0],
         ])
+
+        defaults.set("standard", forKey: presentationKey)
+        try await Task.sleep(for: .milliseconds(100))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let splitRightPoint = NSPoint(
+            x: hostingView.convert(hostingView.bounds, to: nil).maxX - 45,
+            y: destinationPoint.y
+        )
+        for event in [
+            try mouseEvent(.leftMouseDown, at: splitRightPoint, in: window),
+            try mouseEvent(.leftMouseUp, at: splitRightPoint, in: window),
+        ] {
+            NSApp.sendEvent(event)
+        }
+
+        #expect(model.currentTerminalPaneController?.controller.allPaneIds.count == 2)
     }
 
     @Test
