@@ -2300,6 +2300,8 @@ private struct TabBarDragAndHoverView: NSViewRepresentable {
 
         override var mouseDownCanMoveWindow: Bool { false }
 
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
         deinit {
             removeLocalMouseMonitor()
             removeWindowObservers()
@@ -2558,6 +2560,8 @@ struct TabBarDragZoneView: NSViewRepresentable {
         // window.performDrag flow below. See `NonDraggableHostingView` in
         // SplitNodeView.swift for the same class of bug on pane tab clicks.
         override var mouseDownCanMoveWindow: Bool { false }
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
