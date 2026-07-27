@@ -25,18 +25,45 @@ func postShortcut(_ action: ShortcutAction) {
 final class AcroAppDelegate: NSObject, NSApplicationDelegate {
     static let settingsWindowTitle = "Acro 设置"
     private var keyMonitor: Any?
+    var shortcutPresentationProvider: () -> AppShortcutPresentation = { .normal }
+
+    static func hasSystemShortcutPresentation(
+        eventWindow: NSWindow?,
+        keyWindow: NSWindow?,
+        modalWindow: NSWindow?
+    ) -> Bool {
+        if modalWindow != nil { return true }
+        return [eventWindow, keyWindow].compactMap { $0 }.contains { window in
+            window.title == settingsWindowTitle
+                || window is NSPanel
+                || window.attachedSheet != nil
+                || window.sheetParent != nil
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
         // 在菜单分发之前拦截应用快捷键并路由到 model:
         // 系统 Close(⌘W)、终端按键竞争、菜单状态冻结全部绕开。
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // 设置窗口保持系统语义(⌘W 关窗等)
-            if event.window?.title == Self.settingsWindowTitle { return event }
-            // 应用快捷键只执行一次,但按住产生的重复事件也不能落入终端。
-            if event.isARepeat {
-                return ShortcutSettings.isAppShortcut(event) ? nil : event
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let presentation: AppShortcutPresentation
+            if Self.hasSystemShortcutPresentation(
+                eventWindow: event.window,
+                keyWindow: NSApp.keyWindow,
+                modalWindow: NSApp.modalWindow
+            ) {
+                presentation = .systemPresentation
+            } else {
+                presentation = self?.shortcutPresentationProvider() ?? .normal
+            }
+            switch ShortcutSettings.routingDecision(for: event, presentation: presentation) {
+            case .passToSystem:
+                return event
+            case .consumeWithoutAction:
+                return nil
+            case .routeApp:
+                break
             }
             if let digit = ShortcutSettings.workspaceDigit(event) {
                 NotificationCenter.default.post(
@@ -164,6 +191,9 @@ struct AcroApp: App {
         WindowGroup("Acro") {
             WorkbenchView(model: model, runtime: model.runtime)
                 .onAppear {
+                    appDelegate.shortcutPresentationProvider = { [weak model] in
+                        model?.appShortcutPresentation ?? .normal
+                    }
                     _ = Ghostty.shared // 初始化 libghostty
                     model.applyTerminalChromeAppearance(Ghostty.shared.chromeAppearance)
                     hub.reload() // 为每台已配对服务器建立常驻连接

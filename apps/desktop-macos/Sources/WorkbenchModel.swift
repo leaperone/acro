@@ -158,6 +158,25 @@ final class WorkbenchModel: ObservableObject {
         hub.connection(for: pendingServerId)
     }
 
+    var appShortcutPresentation: AppShortcutPresentation {
+        let application = NSApplication.shared
+        if AcroAppDelegate.hasSystemShortcutPresentation(
+            eventWindow: nil,
+            keyWindow: application.keyWindow,
+            modalWindow: application.modalWindow
+        )
+            || showingWorkspaceGroupEditor
+            || showingWorkspaceEditor
+            || errorMessage != nil
+            || pendingWorkspaceDeletion != nil
+            || pendingWorkspaceGroupRemoval != nil
+            || pendingSessionTerminationRequest != nil
+            || showingDaemonRestartConfirmation {
+            return .systemPresentation
+        }
+        return showingCommandPalette ? .commandPalette : .normal
+    }
+
     private func requirePendingRuntime() -> RuntimeConnection? {
         guard let pendingRuntime else {
             errorMessage = "目标服务器已移除，操作已取消"
@@ -231,6 +250,7 @@ final class WorkbenchModel: ObservableObject {
         ) { [weak self] note in
             guard let digit = note.userInfo?["digit"] as? Int else { return }
             MainActor.assumeIsolated {
+                guard self?.appShortcutPresentation == .normal else { return }
                 self?.selectWorkspace(number: digit)
             }
         }
@@ -239,6 +259,7 @@ final class WorkbenchModel: ObservableObject {
         ) { [weak self] note in
             guard let digit = note.userInfo?["digit"] as? Int else { return }
             MainActor.assumeIsolated {
+                guard self?.appShortcutPresentation == .normal else { return }
                 self?.selectTab(number: digit)
             }
         }
@@ -246,6 +267,7 @@ final class WorkbenchModel: ObservableObject {
             forName: .acroRestartTerminalDaemon, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                guard self?.appShortcutPresentation == .normal else { return }
                 self?.requestRestartTerminalDaemon()
             }
         }
@@ -263,6 +285,7 @@ final class WorkbenchModel: ObservableObject {
 
     // 快捷键与菜单的统一入口;无效时机的调用由各方法的 guard 空操作
     func perform(_ action: ShortcutAction) {
+        guard appShortcutPresentation == .normal else { return }
         switch action {
         case .newTerminalTab:
             if let workspace = selectedWorkspace { requestNewTerminal(in: workspace) }

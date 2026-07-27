@@ -254,6 +254,18 @@ enum NumberedShortcutMapper {
     }
 }
 
+enum AppShortcutPresentation: Equatable {
+    case normal
+    case commandPalette
+    case systemPresentation
+}
+
+enum AppShortcutRoutingDecision: Equatable {
+    case routeApp
+    case consumeWithoutAction
+    case passToSystem
+}
+
 // 旧调用点的静态门面
 enum ShortcutSettings {
     static func stored(_ action: ShortcutAction) -> StoredShortcut {
@@ -291,6 +303,20 @@ enum ShortcutSettings {
         return ShortcutAction.allCases.contains { stored($0).matches(event) }
     }
 
+    static func routingDecision(
+        for event: NSEvent,
+        presentation: AppShortcutPresentation
+    ) -> AppShortcutRoutingDecision {
+        if presentation == .systemPresentation { return .passToSystem }
+        guard isAppShortcut(event) else { return .passToSystem }
+        if presentation == .commandPalette {
+            return isCommandPaletteEditingEquivalent(event)
+                ? .passToSystem
+                : .consumeWithoutAction
+        }
+        return event.isARepeat ? .consumeWithoutAction : .routeApp
+    }
+
     // 事件 → 命中的 action(cmux AppDelegate 路由模式的 acro 版)
     static func action(for event: NSEvent) -> ShortcutAction? {
         if isSystemShortcut(event) { return nil }
@@ -299,6 +325,16 @@ enum ShortcutSettings {
 
     private static func isSystemShortcut(_ event: NSEvent) -> Bool {
         StoredShortcut(key: "q", command: true).matches(event)
+    }
+
+    static func isCommandPaletteEditingEquivalent(_ event: NSEvent) -> Bool {
+        let flags = StoredShortcut.normalizedModifiers(event)
+        let key = StoredShortcut.eventKey(event).lowercased()
+        if flags == .command {
+            if ["a", "c", "v", "x", "z", "y"].contains(key) { return true }
+            return [49, 51, 117, 123, 124].contains(event.keyCode)
+        }
+        return flags == [.command, .shift] && key == "z"
     }
 
     private static func numberedDigit(
