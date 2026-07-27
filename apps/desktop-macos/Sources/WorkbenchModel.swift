@@ -777,7 +777,35 @@ final class WorkbenchModel: ObservableObject {
         return NumberedShortcutMapper.digit(forIndex: index, count: pane.sessionIds.count)
     }
 
-    // 布局层移除(surface 自行退出、会话已死时用);活会话的"关闭标签"走 requestKillTab
+    // 本地 attach bridge 退出不代表远端终端结束；只有服务端快照能决定是否重建 surface。
+    func shouldRestartTerminalSurface(
+        _ sessionId: String,
+        workspaceId: String,
+        serverId: String
+    ) -> Bool {
+        guard let connection = hub.connection(for: serverId),
+              connection.sessions.contains(where: { $0.id == sessionId && $0.alive })
+        else { return false }
+        return connection.workspaces.contains(where: {
+            $0.id == workspaceId && $0.sessionIds.contains(sessionId)
+        })
+    }
+
+    func terminalSurfaceExitDisposition(
+        _ sessionId: String,
+        workspaceId: String,
+        serverId: String
+    ) async -> TerminalSurfaceExitDisposition {
+        guard let connection = hub.connection(for: serverId) else { return .close }
+        _ = await connection.refresh()
+        return .resolve(remoteSessionAlive: shouldRestartTerminalSurface(
+            sessionId,
+            workspaceId: workspaceId,
+            serverId: serverId
+        ))
+    }
+
+    // 布局层移除只用于权威状态已确认会话结束；活会话的"关闭标签"走 requestKillTab。
     func closeTab(_ sessionId: String) {
         guard let serverId = selectedServerId, let workspaceId = selectedWorkspaceId else { return }
         closeTab(sessionId, workspaceId: workspaceId, serverId: serverId)

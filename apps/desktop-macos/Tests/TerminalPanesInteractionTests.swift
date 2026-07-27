@@ -89,6 +89,193 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func attachTransportExitKeepsAliveSessionLayoutAndCustomTitle() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let session = makeSession(id: UUID().uuidString)
+        let (_, hub) = makeRuntimeFixture(
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: [session.id],
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [session]
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        var layout = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [session.id]))
+        )
+        let didSetTitle = layout.setCustomTitle("Build", for: session.id)
+        #expect(didSetTitle)
+        model.workspaceLayouts[key] = layout
+        model.selectedSessionId = session.id
+        let paneController = try #require(model.currentTerminalPaneController)
+
+        let disposition = await model.terminalSurfaceExitDisposition(
+            session.id,
+            workspaceId: key.resourceId,
+            serverId: key.serverId
+        )
+        #expect(disposition == .restartTransport)
+        #expect(model.currentTerminalPaneController === paneController)
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [session.id])
+        #expect(model.workspaceLayouts[key]?.customTitlesBySessionId == [session.id: "Build"])
+        #expect(model.selectedSessionId == session.id)
+    }
+
+    @Test
+    func attachTransportExitDoesNotRestartAfterSessionEnds() async {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let session = makeSession(id: UUID().uuidString)
+        let (runtime, hub) = makeRuntimeFixture(
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: [session.id],
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [session]
+        )
+        let model = WorkbenchModel(hub: hub)
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [session.id]))
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: runtime.workspaces,
+            sessions: [],
+            focus: []
+        )
+
+        let disposition = await model.terminalSurfaceExitDisposition(
+            session.id,
+            workspaceId: key.resourceId,
+            serverId: key.serverId
+        )
+        #expect(disposition == .close)
+        model.reconcileLayoutState()
+        #expect(model.workspaceLayouts[key]?.root == nil)
+    }
+
+    @Test
+    func attachTransportExitRefreshesBeforeRestarting() async {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let session = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [session.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        var refreshCount = 0
+        let runtime = RuntimeConnection(refreshSnapshotProvider: {
+            refreshCount += 1
+            return .init(
+                workspaceGroups: [],
+                workspaces: [workspace],
+                sessions: [],
+                focus: []
+            )
+        })
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [session],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [session.id]))
+        )
+
+        let disposition = await model.terminalSurfaceExitDisposition(
+            session.id,
+            workspaceId: key.resourceId,
+            serverId: key.serverId
+        )
+
+        #expect(refreshCount == 1)
+        #expect(disposition == .close)
+        model.reconcileLayoutState()
+        #expect(model.workspaceLayouts[key]?.root == nil)
+    }
+
+    @Test
+    func terminalSurfaceExitDispositionUsesRemoteSessionAsTheAuthority() {
+        #expect(TerminalSurfaceExitDisposition.resolve(
+            remoteSessionAlive: true
+        ) == .restartTransport)
+        #expect(TerminalSurfaceExitDisposition.resolve(
+            remoteSessionAlive: false
+        ) == .close)
+    }
+
+    @Test
+    func ghosttyCloseActionUsesTheAppTerminationPath() {
+        let view = AcroTerminalNSView(
+            serverId: UUID().uuidString,
+            sessionId: UUID().uuidString,
+            command: "true"
+        )
+        var requestCount = 0
+        view.onCloseRequest = { requestCount += 1 }
+
+        view.requestClose()
+
+        #expect(requestCount == 1)
+    }
+
+    @Test
+    func liveTransportExitKeepsTheCachedSurfaceViewForRestart() async throws {
+        let serverId = UUID().uuidString
+        let sessionId = UUID().uuidString
+        let cache = TerminalSurfaceCache.shared
+        let view = cache.view(serverId: serverId, sessionId: sessionId, command: "true")
+        view.onClose = { .restartTransport }
+        defer { cache.evict(serverId: serverId, sessionId: sessionId) }
+
+        view.surfaceDidRequestClose()
+        #expect(cache.view(serverId: serverId, sessionId: sessionId, command: "true") === view)
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(cache.view(serverId: serverId, sessionId: sessionId, command: "true") === view)
+    }
+
+    @Test
+    func authoritativeTerminalExitEvictsTheCachedSurfaceView() async throws {
+        let serverId = UUID().uuidString
+        let sessionId = UUID().uuidString
+        let cache = TerminalSurfaceCache.shared
+        let view = cache.view(serverId: serverId, sessionId: sessionId, command: "true")
+        view.onClose = { .close }
+
+        view.surfaceDidRequestClose()
+        try await Task.sleep(for: .milliseconds(20))
+        let replacement = cache.view(serverId: serverId, sessionId: sessionId, command: "true")
+        defer { cache.evict(serverId: serverId, sessionId: sessionId) }
+        #expect(replacement !== view)
+    }
+
+    @Test
     func closingBackgroundTabDoesNotReactivateTheTerminal() throws {
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
         let active = makeSession(id: UUID().uuidString)

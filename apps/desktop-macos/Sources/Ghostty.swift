@@ -4,6 +4,11 @@
 import AppKit
 import GhosttyKit
 
+enum GhosttyConfigLoadStep: Equatable {
+    case file(String)
+    case recursiveFiles
+}
+
 struct TerminalChromeAppearance: Equatable {
     let red: UInt8
     let green: UInt8
@@ -121,7 +126,18 @@ final class Ghostty {
         rt.wakeup_cb = { _ in
             Task { @MainActor in Ghostty.shared.tick() }
         }
-        rt.action_cb = { _, _, _ in false }
+        rt.action_cb = { _, target, action in
+            guard target.tag == GHOSTTY_TARGET_SURFACE else { return false }
+            if action.tag == GHOSTTY_ACTION_CLOSE_WINDOW { return true }
+            guard action.tag == GHOSTTY_ACTION_CLOSE_TAB else { return false }
+            guard action.action.close_tab_mode == GHOSTTY_ACTION_CLOSE_TAB_MODE_THIS else {
+                return true
+            }
+            guard let userdata = ghostty_surface_userdata(target.target.surface) else { return true }
+            let view = Unmanaged<AcroTerminalNSView>.fromOpaque(userdata).takeUnretainedValue()
+            Task { @MainActor in view.requestClose() }
+            return true
+        }
         rt.read_clipboard_cb = { userdata, _, state in
             guard let userdata else { return false }
             let view = Unmanaged<AcroTerminalNSView>.fromOpaque(userdata).takeUnretainedValue()
@@ -148,10 +164,16 @@ final class Ghostty {
                 return
             }
         }
-        rt.close_surface_cb = { userdata, _ in
+        rt.close_surface_cb = { userdata, needsConfirmClose in
             guard let userdata else { return }
             let view = Unmanaged<AcroTerminalNSView>.fromOpaque(userdata).takeUnretainedValue()
-            Task { @MainActor in view.surfaceDidRequestClose() }
+            Task { @MainActor in
+                if needsConfirmClose {
+                    view.requestClose()
+                } else {
+                    view.surfaceDidRequestClose()
+                }
+            }
         }
 
         guard let created = ghostty_app_new(&rt, cfg) else {
@@ -168,28 +190,49 @@ final class Ghostty {
         if let app { ghostty_app_tick(app) }
     }
 
-    // 构建一份配置:先吃用户原生的 ghostty XDG 配置作基底,
-    // 再叠加 Acro 设置面板生成的 conf(UI 选的字体/字号/主题 + CJK 回退,后加载覆盖用户值),
-    // 最后处理 config-file include。整个流程只依赖 ghostty 原生 C API,与原生 ghostty 配置兼容。
+    // 构建一份配置:先完整加载用户原生 ghostty XDG 配置及其 config-file include,
+    // 最后叠加 Acro 设置面板生成的 conf(UI 字体/字号/主题、CJK 回退和宿主生命周期约束)。
+    // Acro overlay 必须最后加载，避免用户 include 反向覆盖宿主必须保证的关闭语义。
     private static func makeConfig() -> ghostty_config_t? {
         guard let cfg = ghostty_config_new() else {
             NSLog("ghostty_config_new failed")
             return nil
         }
-        for path in userGhosttyConfigPaths()
-        where FileManager.default.fileExists(atPath: path) {
-            path.withCString { ghostty_config_load_file(cfg, $0) }
-        }
         // 按已存设置(重)生成 Acro 叠加层:新机器也有 CJK 回退链,且按当前字体物化情况重算。
         TerminalAppearance.regenerateFromStoredSettings()
-        if FileManager.default.fileExists(atPath: TerminalAppearance.confPath) {
-            TerminalAppearance.confPath.withCString { ptr in
-                ghostty_config_load_file(cfg, ptr)
-            }
-        }
-        ghostty_config_load_recursive_files(cfg)
+        loadConfigFiles(
+            into: cfg,
+            userPaths: userGhosttyConfigPaths(),
+            overlayPath: TerminalAppearance.confPath
+        )
         ghostty_config_finalize(cfg)
         return cfg
+    }
+
+    static func loadConfigFiles(
+        into config: ghostty_config_t,
+        userPaths: [String],
+        overlayPath: String?
+    ) {
+        for step in configLoadSteps(userPaths: userPaths, overlayPath: overlayPath) {
+            switch step {
+            case .file(let path):
+                path.withCString { ghostty_config_load_file(config, $0) }
+            case .recursiveFiles:
+                ghostty_config_load_recursive_files(config)
+            }
+        }
+    }
+
+    static func configLoadSteps(
+        userPaths: [String],
+        overlayPath: String?,
+        fileExists: (String) -> Bool = FileManager.default.fileExists(atPath:)
+    ) -> [GhosttyConfigLoadStep] {
+        var steps = userPaths.filter(fileExists).map(GhosttyConfigLoadStep.file)
+        steps.append(.recursiveFiles)
+        if let overlayPath, fileExists(overlayPath) { steps.append(.file(overlayPath)) }
+        return steps
     }
 
     nonisolated static func userGhosttyConfigPaths(
