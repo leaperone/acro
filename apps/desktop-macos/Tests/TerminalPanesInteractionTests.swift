@@ -1502,10 +1502,12 @@ struct TerminalPanesInteractionTests {
         let hostingView = NSHostingView(rootView: WorkbenchView(model: model, runtime: runtime))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
-            styleMask: [.titled, .closable, .resizable],
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
         let previousKeyWindow = NSApp.keyWindow
         defer {
             window.orderOut(nil)
@@ -1534,6 +1536,7 @@ struct TerminalPanesInteractionTests {
         #expect(window.titleVisibility == .hidden)
         #expect(window.titlebarAppearsTransparent)
         #expect(!window.isMovable)
+        #expect(hostingView.safeAreaInsets.top == 0)
 
         let tabViews = renderedTabItemHitRegions(in: hostingView)
             .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
