@@ -1500,7 +1500,7 @@ struct TerminalPanesInteractionTests {
         )
 
         let hostingView = NSHostingView(rootView: WorkbenchView(model: model, runtime: runtime))
-        let window = NSWindow(
+        let window = WindowDragSpyWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -1595,6 +1595,7 @@ struct TerminalPanesInteractionTests {
         }
 
         #expect(model.currentTerminalPaneController?.controller.allPaneIds.count == 2)
+        #expect(window.performDragCallCount == 0)
     }
 
     @Test
@@ -1616,6 +1617,18 @@ struct TerminalPanesInteractionTests {
         #expect(window.performDragCallCount == 1)
         #expect(window.receivedDragEvent === event)
         #expect(window.wasMovableDuringPerformDrag)
+        #expect(!window.isMovable)
+
+        let doubleClick = try mouseEvent(
+            .leftMouseDown,
+            at: NSPoint(x: 20, y: 20),
+            in: window,
+            clickCount: 2
+        )
+        dragHandle.mouseDown(with: doubleClick)
+
+        #expect(window.zoomCallCount == 1)
+        #expect(window.performDragCallCount == 1)
         #expect(!window.isMovable)
     }
 
@@ -2192,11 +2205,16 @@ private final class WindowDragSpyWindow: NSWindow {
     private(set) var performDragCallCount = 0
     private(set) var receivedDragEvent: NSEvent?
     private(set) var wasMovableDuringPerformDrag = false
+    private(set) var zoomCallCount = 0
 
     override func performDrag(with event: NSEvent) {
         performDragCallCount += 1
         receivedDragEvent = event
         wasMovableDuringPerformDrag = isMovable
+    }
+
+    override func zoom(_ sender: Any?) {
+        zoomCallCount += 1
     }
 }
 
@@ -2221,7 +2239,8 @@ private func renderedTabItemHitRegions(in root: NSView) -> [NSView] {
 private func mouseEvent(
     _ type: NSEvent.EventType,
     at point: NSPoint,
-    in window: NSWindow
+    in window: NSWindow,
+    clickCount: Int = 1
 ) throws -> NSEvent {
     try #require(NSEvent.mouseEvent(
         with: type,
@@ -2231,7 +2250,7 @@ private func mouseEvent(
         windowNumber: window.windowNumber,
         context: nil,
         eventNumber: 0,
-        clickCount: 1,
+        clickCount: clickCount,
         pressure: 1
     ))
 }

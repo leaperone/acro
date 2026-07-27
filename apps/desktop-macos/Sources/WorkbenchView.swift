@@ -302,13 +302,11 @@ struct WorkbenchView: View {
 
 }
 
-// 顶栏空位的显式窗口拖动(cmux TitlebarAccessoryContainerView 语义):
-// 窗口 isMovable=false(见 WindowConfigurator),这里手动移动窗口——
-// performDrag 在 isMovable=false 下是 no-op,必须自己跟踪拖拽。
+// 顶栏空位的显式窗口拖动(cmux TitlebarAccessoryContainerView 语义)。
+// 窗口平时保持 isMovable=false；这里只在原生拖动事务期间临时开放移动。
 // 单击拖动,双击执行系统缩放
 final class WindowDragNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
-    private var dragOrigin: (window: NSPoint, mouse: NSPoint)?
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
@@ -316,20 +314,10 @@ final class WindowDragNSView: NSView {
             window.zoom(nil)
             return
         }
-        dragOrigin = (window.frame.origin, NSEvent.mouseLocation)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let window, let dragOrigin else { return }
-        let mouse = NSEvent.mouseLocation
-        window.setFrameOrigin(NSPoint(
-            x: dragOrigin.window.x + (mouse.x - dragOrigin.mouse.x),
-            y: dragOrigin.window.y + (mouse.y - dragOrigin.mouse.y)
-        ))
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        dragOrigin = nil
+        let wasMovable = window.isMovable
+        window.isMovable = true
+        defer { window.isMovable = wasMovable }
+        window.performDrag(with: event)
     }
 }
 
