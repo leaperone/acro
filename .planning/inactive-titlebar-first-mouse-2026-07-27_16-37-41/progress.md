@@ -16,10 +16,12 @@
 - 候选 Beta.30 热替换 UI/runtime，daemon PID 1151 保持不变。
 - 真实双窗口验证：Finder 在前台时第一次点击 Acro 的非选中标签，Acro 同次点击完成激活和标签切换。
 - 清理真实 UI 验收中新建的临时终端标签，用户原有会话未删除。
+- PR #146 最终代码审查未发现 critical、high、medium 或 low 问题。
+- 预检的 TypeScript check/build 与 `origin/main` 合并冲突探测通过。
 
 ## 进行中
 
-- 推送分支、创建 PR 并执行 preflight。
+- 等待 PR CI 完成后 squash merge，并发布正式 Beta.30。
 
 ## 修改文件
 
@@ -46,6 +48,10 @@
 | 候选包 | `0.0.8-beta.30` build 61，ad-hoc 打包成功 | 通过 |
 | 真实 UI | 后台窗口首次点击标签直接切换；临时标签已清理 | 通过 |
 | 会话保持 | daemon PID 1151 未重启，原有终端会话仍在 | 通过 |
+| Root check | `pnpm check` | 通过 |
+| Root build | `pnpm build` | 通过（仅既有 esbuild `import.meta` 警告） |
+| Base merge probe | 与 `origin/main` 无冲突 | 通过 |
+| 最终代码审查 | Critical / High / Medium / Low 均为 0 | 通过 |
 
 ## 错误与恢复
 
