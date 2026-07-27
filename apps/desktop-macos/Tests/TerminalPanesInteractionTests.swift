@@ -816,6 +816,44 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func terminalPrimaryClickOnlyForwardsWhenPaneWasAlreadyFocused() {
+        #expect(!AcroTerminalNSView.shouldForwardPrimaryClick(
+            wasFocusedBeforePointerDown: false
+        ))
+        #expect(AcroTerminalNSView.shouldForwardPrimaryClick(
+            wasFocusedBeforePointerDown: true
+        ))
+    }
+
+    @Test
+    func unfocusedTerminalClickFocusesPaneBeforeAnyTerminalAction() throws {
+        let view = AcroTerminalNSView(
+            serverId: UUID().uuidString,
+            sessionId: UUID().uuidString,
+            command: "true"
+        )
+        var focused = false
+        view.isFocusedPane = { focused }
+        view.onFocus = { focused = true }
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        window.contentView = view
+
+        view.mouseDown(with: try mouseEvent(
+            .leftMouseDown,
+            at: NSPoint(x: 0.5, y: 0.5),
+            in: window
+        ))
+
+        #expect(focused)
+    }
+
+    @Test
     func liveTransportExitKeepsTheCachedSurfaceViewForRestart() async throws {
         let serverId = UUID().uuidString
         let sessionId = UUID().uuidString

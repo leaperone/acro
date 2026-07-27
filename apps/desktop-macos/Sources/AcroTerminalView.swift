@@ -38,6 +38,8 @@ final class AcroTerminalNSView: NSView {
     // 是否为所在窗格的选中标签。背景标签的 surface 常驻渲染但不接管鼠标,
     // 见 hitTest 覆写。
     var isActive = false
+    // 必须在 pointer-down 当下查询，不能使用 SwiftUI 上一次渲染的焦点快照。
+    var isFocusedPane: (() -> Bool)?
 
     init(serverId: String, sessionId: String, command: String) {
         self.serverId = serverId
@@ -57,7 +59,6 @@ final class AcroTerminalNSView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     // 同一窗格的多个标签 surface 叠在 ZStack 里全程常驻(切换零延迟)。非选中标签是
     // 复用的缓存 NSView,SwiftUI 的 .allowsHitTesting(false) 对内嵌复用视图不可靠——拖拽
@@ -413,10 +414,18 @@ final class AcroTerminalNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        let shouldForward = Self.shouldForwardPrimaryClick(
+            wasFocusedBeforePointerDown: isFocusedPane?() == true
+        )
         focusTerminal()
+        onFocus?()
+        guard shouldForward else { return }
         leftMousePressed = forwardMouseButton(
             event, state: GHOSTTY_MOUSE_PRESS, button: GHOSTTY_MOUSE_LEFT)
-        onFocus?()
+    }
+
+    static func shouldForwardPrimaryClick(wasFocusedBeforePointerDown: Bool) -> Bool {
+        wasFocusedBeforePointerDown
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -432,7 +441,10 @@ final class AcroTerminalNSView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) { forwardMousePos(event) }
-    override func mouseDragged(with event: NSEvent) { forwardMousePos(event) }
+    override func mouseDragged(with event: NSEvent) {
+        guard leftMousePressed else { return }
+        forwardMousePos(event)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
@@ -643,6 +655,7 @@ struct AcroTerminalView: NSViewRepresentable {
     let command: String
     let focusRequest: Int
     var isActive = false
+    var isFocusedPane: () -> Bool = { false }
     var onCloseRequest: (() -> Void)? = nil
     var onClose: (() async -> TerminalSurfaceExitDisposition)? = nil
     var onFocus: (() -> Void)? = nil
@@ -659,6 +672,7 @@ struct AcroTerminalView: NSViewRepresentable {
         view.onFocus = onFocus
         view.onFileDrop = onFileDrop
         view.isActive = isActive
+        view.isFocusedPane = isFocusedPane
         view.applyFocusRequest(focusRequest)
         return view
     }
@@ -669,6 +683,7 @@ struct AcroTerminalView: NSViewRepresentable {
         nsView.onFocus = onFocus
         nsView.onFileDrop = onFileDrop
         nsView.isActive = isActive
+        nsView.isFocusedPane = isFocusedPane
         nsView.applyFocusRequest(focusRequest)
     }
 }
