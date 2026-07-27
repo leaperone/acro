@@ -14,7 +14,7 @@ final class TerminalPaneController: BonsplitDelegate {
     @ObservationIgnored private var representedLayout: WorkspaceTerminalLayout
     @ObservationIgnored private var sessionIdsByTabId: [TabID: String] = [:]
     @ObservationIgnored private var tabIdsBySessionId: [String: TabID] = [:]
-    @ObservationIgnored private var lastAgentEventBySessionId: [String: AgentAttentionEvent] = [:]
+    @ObservationIgnored private var lastAgentEventBySessionId: [String: AgentAttentionSignal] = [:]
     @ObservationIgnored private var unreadAgentSessionIds: Set<String> = []
     @ObservationIgnored private var forcedCloseTabIds: Set<TabID> = []
     @ObservationIgnored private var trafficLightClearance: Bool
@@ -81,10 +81,7 @@ final class TerminalPaneController: BonsplitDelegate {
 
     func refreshTabMetadata() {
         guard let model else { return }
-        let sessionsById = Dictionary(
-            model.hub.connection(for: key.serverId)?.sessions.map { ($0.id, $0) } ?? [],
-            uniquingKeysWith: { first, _ in first }
-        )
+        let attentionSignals = model.hub.connection(for: key.serverId)?.agentAttentionSignals ?? [:]
         let representedSessionIds = Set(sessionIdsByTabId.values)
         lastAgentEventBySessionId = lastAgentEventBySessionId.filter {
             representedSessionIds.contains($0.key)
@@ -94,7 +91,7 @@ final class TerminalPaneController: BonsplitDelegate {
             && model.selectedWorkspaceId == key.resourceId
 
         for (tabId, sessionId) in sessionIdsByTabId {
-            let event = sessionsById[sessionId]?.agent.map(AgentAttentionEvent.init)
+            let event = attentionSignals[sessionId]
             let isSelected = workspaceIsVisible && (
                 controller.paneId(containing: tabId).map {
                     controller.selectedTabId(inPane: $0) == tabId
@@ -533,7 +530,7 @@ final class TerminalPaneController: BonsplitDelegate {
     }
 
     private func updateAgentAttention(
-        _ event: AgentAttentionEvent?,
+        _ event: AgentAttentionSignal?,
         for sessionId: String,
         isSelected: Bool
     ) {
@@ -544,7 +541,7 @@ final class TerminalPaneController: BonsplitDelegate {
         let previous = lastAgentEventBySessionId.updateValue(event, forKey: sessionId)
         if isSelected {
             unreadAgentSessionIds.remove(sessionId)
-        } else if previous != event, event.requestsAttention {
+        } else if previous != event {
             unreadAgentSessionIds.insert(sessionId)
         }
     }
@@ -702,25 +699,6 @@ final class TerminalPaneController: BonsplitDelegate {
                 first: layoutNode(from: split.first),
                 second: layoutNode(from: split.second)
             ))
-        }
-    }
-}
-
-private struct AgentAttentionEvent: Equatable {
-    let state: String
-    let updatedAt: String
-
-    init(_ agent: AgentSession) {
-        state = agent.state
-        updatedAt = agent.updatedAt
-    }
-
-    var requestsAttention: Bool {
-        switch state {
-        case "waiting", "done", "error":
-            true
-        default:
-            false
         }
     }
 }

@@ -515,6 +515,7 @@ struct TerminalPanesInteractionTests {
             sessions: [sessionA, sessionB]
         )
         let model = WorkbenchModel(hub: hub)
+        model.restoreLayoutIfNeeded()
         model.selectedServerId = serverId
         model.selectedWorkspaceId = workspaceA.id
         for workspace in [workspaceA, workspaceB] {
@@ -529,8 +530,6 @@ struct TerminalPanesInteractionTests {
             )
         }
         let keyB = ScopedResourceID(serverId: serverId, resourceId: workspaceB.id)
-        let controllerB = try #require(model.terminalPaneControllers[keyB])
-        let tabB = try #require(controllerB.controller.allTabIds.first)
 
         let hostingView = NSHostingView(rootView: WorkbenchView(model: model, runtime: runtime))
         let window = NSWindow(
@@ -559,11 +558,19 @@ struct TerminalPanesInteractionTests {
             focus: []
         )
         try await Task.sleep(for: .milliseconds(150))
-        #expect(controllerB.controller.tab(tabB)?.showsNotificationBadge == true)
+        let unreadControllerB = try #require(model.terminalPaneControllers[keyB])
+        let unreadTabB = try #require(unreadControllerB.controller.allTabIds.first(where: {
+            unreadControllerB.sessionId(for: $0) == sessionB.id
+        }))
+        #expect(unreadControllerB.controller.tab(unreadTabB)?.showsNotificationBadge == true)
 
         model.selectedWorkspaceId = workspaceB.id
         try await Task.sleep(for: .milliseconds(100))
-        #expect(controllerB.controller.tab(tabB)?.showsNotificationBadge == false)
+        let visibleControllerB = try #require(model.terminalPaneControllers[keyB])
+        let visibleTabB = try #require(visibleControllerB.controller.allTabIds.first(where: {
+            visibleControllerB.sessionId(for: $0) == sessionB.id
+        }))
+        #expect(visibleControllerB.controller.tab(visibleTabB)?.showsNotificationBadge == false)
     }
 
     @Test
