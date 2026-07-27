@@ -463,25 +463,13 @@ final class WorkbenchLayoutStateTests: XCTestCase {
     @MainActor
     func testPendingDestructiveActionFailsClosedWhenOriginServerDisappears() async throws {
         let model = WorkbenchModel(hub: RuntimeHub())
-        let session = Session(
-            id: "shared-session",
-            cwd: "/tmp",
-            command: "zsh",
-            cols: 80,
-            rows: 24,
-            createdAt: "2026-07-18T00:00:00Z",
-            alive: true,
-            exitCode: nil,
-            title: nil,
-            agent: nil
+        let request = PendingSessionTerminationRequest(
+            key: ScopedResourceID(serverId: "server-a", resourceId: "workspace"),
+            sessionIds: ["shared-session"]
         )
-        model.selectedServerId = "server-a"
-        model.pendingSessionTermination = session
-        model.selectedServerId = "server-b"
 
-        await model.terminateSession(session)
+        await model.confirmSessionTermination(request)
 
-        XCTAssertNil(model.pendingSessionTermination)
         XCTAssertEqual(model.errorMessage, "目标服务器已移除，操作已取消")
     }
 

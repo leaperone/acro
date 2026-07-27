@@ -1220,9 +1220,149 @@ struct TerminalPanesInteractionTests {
             inPane: pane
         )
 
-        #expect(Set(model.pendingSessionTerminations.map(\.id)) == [sessions[0].id, sessions[2].id])
-        #expect(model.pendingSessionTermination == nil)
+        #expect(Set(model.pendingSessionTerminationRequest?.sessionIds ?? []) == [
+            sessions[0].id,
+            sessions[2].id,
+        ])
+        #expect(model.pendingSessionTerminationRequest?.key == key)
         #expect(paneController.controller.allTabIds.count == 3)
+    }
+
+    @Test
+    func secondCloseRequestCannotReplaceThePendingTransaction() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let first = makeSession(id: UUID().uuidString)
+        let second = makeSession(id: UUID().uuidString)
+        let remainingWorkspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [second.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        var removedSessionIds: [String] = []
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                .init(
+                    workspaceGroups: [],
+                    workspaces: [remainingWorkspace],
+                    sessions: [second],
+                    focus: []
+                )
+            },
+            rpcProvider: { method, params in
+                if method == "session.remove", let sessionId = params["sessionId"] as? String {
+                    removedSessionIds.append(sessionId)
+                }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: [first.id, second.id],
+                createdAt: remainingWorkspace.createdAt,
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [first, second],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [first.id, second.id]))
+        )
+
+        model.requestSessionTermination(first, for: key)
+        model.requestSessionTermination(second, for: key)
+
+        let request = try #require(model.takePendingSessionTerminationRequest())
+        #expect(request.sessionIds == [first.id])
+        await model.confirmSessionTermination(request)
+        #expect(removedSessionIds == [first.id])
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [second.id])
+    }
+
+    @Test
+    func pendingCloseKeepsItsOriginServerAndCancelAllowsANewRequest() throws {
+        let firstKey = ScopedResourceID(serverId: "server-a", resourceId: "workspace")
+        let secondKey = ScopedResourceID(serverId: "server-b", resourceId: "workspace")
+        let first = makeSession(id: UUID().uuidString)
+        let second = makeSession(id: UUID().uuidString)
+        let firstRuntime = RuntimeConnection()
+        firstRuntime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [Workspace(
+                id: firstKey.resourceId,
+                name: "A",
+                sessionIds: [first.id],
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [first],
+            focus: []
+        )
+        let secondRuntime = RuntimeConnection()
+        secondRuntime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [Workspace(
+                id: secondKey.resourceId,
+                name: "B",
+                sessionIds: [second.id],
+                createdAt: "2026-07-27T00:00:00Z",
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [second],
+            focus: []
+        )
+        let model = WorkbenchModel(hub: RuntimeHub(entries: [
+            .init(server: ServerEntry(
+                localId: firstKey.serverId,
+                name: "A",
+                deviceId: "device-a",
+                token: "token-a",
+                pub: "public-key-a",
+                endpoints: []
+            ), connection: firstRuntime),
+            .init(server: ServerEntry(
+                localId: secondKey.serverId,
+                name: "B",
+                deviceId: "device-b",
+                token: "token-b",
+                pub: "public-key-b",
+                endpoints: []
+            ), connection: secondRuntime),
+        ]))
+
+        model.requestSessionTermination(first, for: firstKey)
+        model.requestSessionTermination(second, for: secondKey)
+        #expect(model.pendingSessionTerminationRequest == PendingSessionTerminationRequest(
+            key: firstKey,
+            sessionIds: [first.id]
+        ))
+
+        model.cancelPendingSessionTermination()
+        #expect(model.pendingSessionTerminationRequest == nil)
+        model.requestSessionTermination(second, for: secondKey)
+        #expect(model.pendingSessionTerminationRequest == PendingSessionTerminationRequest(
+            key: secondKey,
+            sessionIds: [second.id]
+        ))
     }
 
     @Test

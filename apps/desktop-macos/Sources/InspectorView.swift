@@ -39,7 +39,7 @@ struct InspectorView: View {
                                 .help("聚焦终端")
                                 .accessibilityLabel("聚焦终端")
                                 Button(role: .destructive) {
-                                    model.pendingSessionTermination = selectedSession
+                                    model.requestKillTab(selectedSession.id)
                                 } label: {
                                     Image(systemName: "xmark")
                                 }
