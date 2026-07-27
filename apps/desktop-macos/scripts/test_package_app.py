@@ -10,6 +10,19 @@ PACKAGER = DESKTOP / "scripts" / "package-app.sh"
 
 
 class PackageAppTests(unittest.TestCase):
+    def test_adhoc_package_has_separate_permission_identity(self):
+        script = PACKAGER.read_text()
+
+        self.assertIn('BUNDLE_IDENTIFIER="one.leaper.acro.desktop.adhoc"', script)
+        self.assertIn('BUNDLE_IDENTIFIER="one.leaper.acro.desktop"', script)
+        self.assertIn("<string>${BUNDLE_IDENTIFIER}</string>", script)
+
+    def test_embeds_bonsplit_resource_bundle_at_swiftpm_runtime_path(self):
+        script = PACKAGER.read_text()
+
+        self.assertIn('BONSPLIT_RESOURCES=".build/release/Bonsplit_Bonsplit.bundle"', script)
+        self.assertIn('cp -R "$BONSPLIT_RESOURCES" "$APP/Contents/Resources/"', script)
+
     def test_requires_explicit_signing_policy_before_build(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp = Path(temp_dir)

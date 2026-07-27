@@ -7,18 +7,23 @@
 
 让用户从顶部标签右键菜单重命名或清除名称；自定义标题跨刷新、重启、窗格移动和多设备布局同步保持，并始终优先于终端 OSC 标题。
 
+同时修复本地 ad-hoc 测试包与正式 Acro 共用 Bundle ID 导致 macOS 反复询问“访问其他 App 数据”的权限身份冲突，并确保发布包携带 Bonsplit 菜单资源。
+
 ## 范围
 
 - 在 `WorkspaceTerminalLayout` 建立按 session 保存的自定义标题真源。
 - 开放 Bonsplit 的 rename / clearName 动作并实现原生 macOS 输入对话框。
 - 统一顶部标签、侧边栏、命令面板和检查器的标题解析。
 - 增加旧布局兼容、清理、持久化和真实菜单动作测试。
+- ad-hoc 包使用独立 Bundle ID，不再污染正式签名 Acro 的 TCC 权限记录。
+- 打包时嵌入 `Bonsplit_Bonsplit.bundle`，避免离开源码目录后打开菜单崩溃。
 
 ## 非目标
 
 - 不把自定义标题写入 daemon Session 或协议 schema。
 - 不增加标签快捷键、命令面板重命名入口或服务端独立 metadata RPC。
 - 不修改终端 OSC 标题采集行为。
+- 不重启当前 daemon，不结束现有终端会话，不自动授予或绕过 macOS 权限。
 
 ## 关键约束
 
@@ -34,7 +39,7 @@
 - `apps/desktop-macos/Sources/WorkbenchLayoutState.swift`
 - `apps/desktop-macos/Sources/WorkbenchModel.swift`
 - `apps/desktop-macos/Sources/TerminalPaneController.swift`
-- `apps/desktop-macos/Resources/*/Localizable.strings`
+- `apps/desktop-macos/Localization/*/Localizable.strings`
 - `apps/desktop-macos/scripts/package-app.sh`
 - `apps/desktop-macos/Tests/WorkbenchLayoutStateTests.swift`
 - `apps/desktop-macos/Tests/TerminalPanesInteractionTests.swift`
@@ -44,6 +49,7 @@
 - 针对性 Swift Testing：布局兼容、标题优先级、菜单动作、metadata-only 更新。
 - Desktop 全量 Swift 测试、Bonsplit 测试、`pnpm check`、`pnpm build`。
 - 打包产物验证三种语言资源与稳定签名。
+- 分别验证 ad-hoc / Developer ID 包的 Bundle ID，并验证 Bonsplit 资源可脱离 `.build` 加载。
 - 热替换 UI/runtime，保留当前 daemon 和终端会话。
 
 ## 验收标准
@@ -53,6 +59,8 @@
 - 重排、跨窗格移动、重启和服务端 layoutRev 刷新后仍保留名称。
 - 关闭或移除 session 后不残留名称。
 - 只有名称变化时终端 surface 不重建。
+- ad-hoc 测试包不再使用 `one.leaper.acro.desktop`；正式签名包继续使用该稳定标识。
+- 发布包 `Contents/Resources` 包含 `Bonsplit_Bonsplit.bundle`，三语菜单资源完整。
 
 ## 未确认事项
 
@@ -63,9 +71,9 @@
 ## 执行状态
 
 - [x] 完成只读探索并确认真实调用链
-- [ ] 完成实现
-- [ ] 完成验证
-- [ ] 完成交付前收敛检查
+- [x] 完成实现
+- [x] 完成验证
+- [x] 完成交付前收敛检查
 
 ## 决策
 
@@ -75,9 +83,12 @@
 | 不写 daemon Session.title | 该字段属于终端 OSC 动态标题，混写会产生双真源 |
 | metadata-only 更新不 restore | restore 会重建 Bonsplit 与终端 surface，属于可见抖动 |
 | 使用同一 mutation 处理 rename / clear | 避免菜单两个入口产生不同 trim、清理和持久化语义 |
+| ad-hoc App 使用独立身份 | 避免易变 cdhash 覆盖正式 Developer ID Acro 的 TCC 记录 |
+| 不重置 TCC、不重启 daemon | 稳定签名 Beta.21 启动后没有新 AppData 请求；重启 daemon 会结束 9 个终端且无助于当前根因 |
 
 ## 错误与处理
 
 | 错误 | 尝试 | 处理结果 |
 |---|---:|---|
-| 无 | 0 | 无 |
+| Swift Testing 宏不能直接包裹 mutating 调用 | 1 | 先保存返回值，再用 `#expect` 断言 |
+| 动态 key 不匹配 `String(localized:)` 静态签名 | 1 | 删除动态 helper，所有文案使用静态 localization key |

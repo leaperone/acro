@@ -12,6 +12,13 @@ VERSION="${1:-0.0.0}"
 BUILD_VERSION="${2:-0}"
 : "${ACRO_SIGN_IDENTITY:?ACRO_SIGN_IDENTITY must be set to a Developer ID identity or explicit - for CI}"
 SIGN_IDENTITY="$ACRO_SIGN_IDENTITY"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    BUNDLE_IDENTIFIER="one.leaper.acro.desktop.adhoc"
+    APP_DISPLAY_NAME="Acro Ad Hoc"
+else
+    BUNDLE_IDENTIFIER="one.leaper.acro.desktop"
+    APP_DISPLAY_NAME="Acro"
+fi
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_ENTITLEMENTS="$DIR/Node.entitlements"
 APP_ICON="$DIR/Assets/Acro.icns"
@@ -30,6 +37,18 @@ cp .build/release/AcroDesktop "$APP/Contents/MacOS/AcroDesktop"
 cp "$APP_ICON" "$APP/Contents/Resources/Acro.icns"
 cp -RL Resources/ghostty "$APP/Contents/Resources/ghostty"
 cp -RL Resources/terminfo "$APP/Contents/Resources/terminfo"
+cp -R Localization/*.lproj "$APP/Contents/Resources/"
+for LOCALE in en ja zh-Hans; do
+    [[ -f "$APP/Contents/Resources/$LOCALE.lproj/Localizable.strings" ]] \
+        || { echo "missing localization: $LOCALE" >&2; exit 1; }
+done
+BONSPLIT_RESOURCES=".build/release/Bonsplit_Bonsplit.bundle"
+[[ -d "$BONSPLIT_RESOURCES" ]] || { echo "missing Bonsplit resources" >&2; exit 1; }
+cp -R "$BONSPLIT_RESOURCES" "$APP/Contents/Resources/"
+for LOCALE in en ja zh-hans; do
+    [[ -f "$APP/Contents/Resources/Bonsplit_Bonsplit.bundle/$LOCALE.lproj/Localizable.strings" ]] \
+        || { echo "missing Bonsplit localization: $LOCALE" >&2; exit 1; }
+done
 
 # GUI 进程不能依赖用户安装 Node。复制 CI/开发机当前 Node，发布包自包含。
 NODE_SOURCE="$(command -v node || true)"
@@ -74,9 +93,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>AcroDesktop</string>
-    <key>CFBundleIdentifier</key><string>one.leaper.acro.desktop</string>
-    <key>CFBundleName</key><string>Acro</string>
-    <key>CFBundleDisplayName</key><string>Acro</string>
+    <key>CFBundleIdentifier</key><string>${BUNDLE_IDENTIFIER}</string>
+    <key>CFBundleName</key><string>${APP_DISPLAY_NAME}</string>
+    <key>CFBundleDisplayName</key><string>${APP_DISPLAY_NAME}</string>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleIconFile</key><string>Acro</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>

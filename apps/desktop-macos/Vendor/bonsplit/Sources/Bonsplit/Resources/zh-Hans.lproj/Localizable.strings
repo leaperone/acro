@@ -1,5 +1,7 @@
 "command.moveTabToLeftPane.title" = "移到左侧窗格";
 "command.moveTabToRightPane.title" = "移到右侧窗格";
+"tabContext.renameTab" = "重命名标签…";
+"tabContext.removeCustomTabName" = "移除自定义标签名称";
 "tabContext.closeTabsToLeft" = "关闭左侧标签";
 "tabContext.closeTabsToRight" = "关闭右侧标签";
 "tabContext.closeOtherTabs" = "关闭其他标签";

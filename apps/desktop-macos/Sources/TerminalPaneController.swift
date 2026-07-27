@@ -1,3 +1,4 @@
+import AppKit
 import Bonsplit
 import CmuxPanes
 import Foundation
@@ -58,10 +59,12 @@ final class TerminalPaneController: BonsplitDelegate {
     func update(layout: WorkspaceTerminalLayout, trafficLightClearance: Bool) {
         self.trafficLightClearance = trafficLightClearance
         controller.configuration.appearance.tabBarLeadingInset = trafficLightClearance ? 80 : 0
-        if representedLayout != layout {
+        if representedLayout.root != layout.root
+            || representedLayout.focusedPaneId != layout.focusedPaneId {
             representedLayout = layout
             restore(layout)
         } else {
+            representedLayout = layout
             refreshTabMetadata()
         }
     }
@@ -107,6 +110,7 @@ final class TerminalPaneController: BonsplitDelegate {
                 title: model.terminalTabTitle(sessionId, for: key),
                 icon: .some("terminal.fill"),
                 kind: .some("terminal"),
+                hasCustomTitle: representedLayout.customTitlesBySessionId[sessionId] != nil,
                 showsNotificationBadge: unreadAgentSessionIds.contains(sessionId)
             )
         }
@@ -306,6 +310,17 @@ final class TerminalPaneController: BonsplitDelegate {
         inPane pane: PaneID
     ) {
         switch action {
+        case .rename:
+            guard let sessionId = sessionIdsByTabId[tab.id],
+                  let model,
+                  let title = promptForTabTitle(
+                      currentTitle: model.terminalTabTitle(sessionId, for: key)
+                  )
+            else { return }
+            _ = model.setTerminalTabCustomTitle(title, for: sessionId, in: key)
+        case .clearName:
+            guard let sessionId = sessionIdsByTabId[tab.id] else { return }
+            _ = model?.setTerminalTabCustomTitle(nil, for: sessionId, in: key)
         case .closeToLeft, .closeToRight, .closeOthers:
             let tabs = controller.tabs(inPane: pane)
             guard let anchor = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
@@ -381,6 +396,8 @@ final class TerminalPaneController: BonsplitDelegate {
             allowCrossPaneTabMove: true,
             allowsTabContextMenu: true,
             allowedTabContextActions: [
+                .rename,
+                .clearName,
                 .closeToLeft,
                 .closeToRight,
                 .closeOthers,
@@ -469,6 +486,7 @@ final class TerminalPaneController: BonsplitDelegate {
             for sessionId in pane.sessionIds {
                 guard let tabId = controller.createTab(
                     title: model?.terminalTabTitle(sessionId, for: key) ?? "终端",
+                    hasCustomTitle: representedLayout.customTitlesBySessionId[sessionId] != nil,
                     icon: "terminal.fill",
                     kind: "terminal",
                     inPane: paneId
@@ -554,6 +572,47 @@ final class TerminalPaneController: BonsplitDelegate {
     private func clearAgentAttention(for sessionId: String) {
         lastAgentEventBySessionId.removeValue(forKey: sessionId)
         unreadAgentSessionIds.remove(sessionId)
+    }
+
+    private func promptForTabTitle(currentTitle: String) -> String? {
+        let alert = NSAlert()
+        alert.messageText = String(localized:
+            "tab.rename.title",
+            defaultValue: "Rename Tab"
+        )
+        alert.informativeText = String(localized:
+            "tab.rename.message",
+            defaultValue: "Enter a custom name for this tab."
+        )
+        let input = NSTextField(string: currentTitle)
+        input.placeholderString = String(localized:
+            "tab.rename.placeholder",
+            defaultValue: "Tab name"
+        )
+        input.frame = NSRect(x: 0, y: 0, width: 240, height: 22)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "common.rename", defaultValue: "Rename"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        alert.window.initialFirstResponder = input
+        if NSApp.activationPolicy() == .regular {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        let hostWindow = NSApp.keyWindow ?? NSApp.mainWindow
+        let response: NSApplication.ModalResponse
+        if let hostWindow, hostWindow.isVisible, hostWindow.attachedSheet == nil {
+            alert.beginSheetModal(for: hostWindow) { result in
+                NSApp.stopModal(withCode: result)
+            }
+            alert.window.makeFirstResponder(input)
+            input.selectText(nil)
+            response = NSApp.runModal(for: alert.window)
+        } else {
+            alert.window.makeFirstResponder(input)
+            input.selectText(nil)
+            response = alert.runModal()
+        }
+        guard response == .alertFirstButtonReturn else { return nil }
+        return input.stringValue
     }
 
     private func createTerminal(in pane: PaneID, inheritFrom: String?) {
@@ -671,7 +730,10 @@ final class TerminalPaneController: BonsplitDelegate {
         else { return }
         let layout = WorkspaceTerminalLayout(
             root: layoutNode(from: controller.treeSnapshot()),
-            focusedPaneId: controller.focusedPaneId?.id.uuidString
+            focusedPaneId: controller.focusedPaneId?.id.uuidString,
+            customTitlesBySessionId: representedLayout.customTitlesBySessionId.filter {
+                sessionIdsByTabId.values.contains($0.key)
+            }
         )
         representedLayout = layout
         model?.applyTerminalPaneLayout(layout, for: key, markDirty: markDirty)
