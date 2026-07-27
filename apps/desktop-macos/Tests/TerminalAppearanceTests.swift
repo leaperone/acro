@@ -4,6 +4,23 @@ import GhosttyKit
 
 // Acro 的 ghostty 叠加层配置行生成:字体覆盖语义 + CJK 回退。
 final class TerminalAppearanceTests: XCTestCase {
+    func testSurfaceCloseAlwaysReportsAnExplicitCloseRequest() {
+        let lines = TerminalAppearance.confLines(fontFamily: "", fontSize: 0, theme: "")
+        XCTAssertTrue(lines.contains("confirm-close-surface = always"))
+    }
+
+    @MainActor
+    func testAcroOverlayLoadsAfterUserRecursiveConfig() {
+        XCTAssertEqual(
+            Ghostty.configLoadSteps(
+                userPaths: ["user"],
+                overlayPath: "acro",
+                fileExists: { _ in true }
+            ),
+            [.file("user"), .recursiveFiles, .file("acro")]
+        )
+    }
+
     // 用户没在 Acro 选字体:不重置基底,主字体兜到 Menlo,让原生 ghostty config 的字体仍能作主字体。
     func testEmptyFontDoesNotResetBaseChain() {
         let lines = TerminalAppearance.confLines(fontFamily: "", fontSize: 0, theme: "")

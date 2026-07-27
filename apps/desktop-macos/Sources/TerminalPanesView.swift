@@ -109,8 +109,11 @@ private struct TerminalPaneContent: View {
                     ),
                     focusRequest: selected && focused ? model.terminalFocusRequest : 0,
                     isActive: selected,
+                    onCloseRequest: {
+                        model.requestKillTab(sessionId, for: paneController.key)
+                    },
                     onClose: {
-                        model.closeTab(
+                        await model.terminalSurfaceExitDisposition(
                             sessionId,
                             workspaceId: paneController.key.resourceId,
                             serverId: paneController.key.serverId

@@ -6,14 +6,22 @@ import AppKit
 import GhosttyKit
 import SwiftUI
 
+enum TerminalSurfaceExitDisposition: Equatable {
+    case restartTransport
+    case close
+
+    static func resolve(remoteSessionAlive: Bool) -> Self {
+        return remoteSessionAlive ? .restartTransport : .close
+    }
+}
+
 final class AcroTerminalNSView: NSView {
     private var surface: ghostty_surface_t?
-    private var cStrings: [UnsafeMutablePointer<CChar>] = []
+    private let commandCString: UnsafeMutablePointer<CChar>?
     private var requestedFocusRequest = 0
     private var appliedFocusRequest = 0
     let serverId: String
     let sessionId: String
-    private let command: String
     private var markedText = ""
     private var _markedRange = NSRange(location: NSNotFound, length: 0)
     private var _selectedMarkedRange = NSRange(location: 0, length: 0)
@@ -21,7 +29,10 @@ final class AcroTerminalNSView: NSView {
     private var currentKeyEvent: NSEvent?
     private var commandSelectorCalled = false
     private var leftMousePressed = false
-    var onClose: (() -> Void)?
+    private var tornDown = false
+    private var restartPending = false
+    var onCloseRequest: (() -> Void)?
+    var onClose: (() async -> TerminalSurfaceExitDisposition)?
     var onFocus: (() -> Void)?
     var onFileDrop: (([URL]) -> Bool)?
     // 是否为所在窗格的选中标签。背景标签的 surface 常驻渲染但不接管鼠标,
@@ -31,7 +42,7 @@ final class AcroTerminalNSView: NSView {
     init(serverId: String, sessionId: String, command: String) {
         self.serverId = serverId
         self.sessionId = sessionId
-        self.command = command
+        commandCString = strdup(command)
         super.init(frame: .zero)
         wantsLayer = true
         registerForDraggedTypes(TerminalFileDrop.pasteboardTypes)
@@ -42,7 +53,7 @@ final class AcroTerminalNSView: NSView {
 
     deinit {
         if let surface { ghostty_surface_free(surface) }
-        for ptr in cStrings { free(ptr) }
+        if let commandCString { free(commandCString) }
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -85,7 +96,9 @@ final class AcroTerminalNSView: NSView {
     }
 
     private func createSurfaceIfNeeded() {
-        guard surface == nil,
+        guard !tornDown,
+              !restartPending,
+              surface == nil,
               let app = Ghostty.shared.app,
               let window,
               bounds.width > 1, bounds.height > 1
@@ -100,9 +113,8 @@ final class AcroTerminalNSView: NSView {
         config.scale_factor = Double(window.backingScaleFactor)
         config.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
         config.wait_after_command = false
-        if let cmd = strdup(command) {
-            cStrings.append(cmd)
-            config.command = UnsafePointer(cmd)
+        if let commandCString {
+            config.command = UnsafePointer(commandCString)
         }
 
         surface = ghostty_surface_new(app, &config)
@@ -129,21 +141,44 @@ final class AcroTerminalNSView: NSView {
     }
 
     func surfaceDidRequestClose() {
+        guard !tornDown, !restartPending else { return }
+        restartPending = true
         leftMousePressed = false
         if let surface {
             ghostty_surface_free(surface)
             self.surface = nil
         }
-        TerminalSurfaceCache.shared.evict(
-            serverId: serverId,
-            sessionId: sessionId,
-            teardown: false
-        )
-        onClose?()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let disposition = await self.onClose?() ?? .close
+            guard !self.tornDown else { return }
+            if disposition == .restartTransport {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !self.tornDown else { return }
+                self.restartPending = false
+                guard self.window != nil else { return }
+                self.createSurfaceIfNeeded()
+            } else {
+                self.restartPending = false
+                self.tornDown = true
+                TerminalSurfaceCache.shared.evict(
+                    serverId: self.serverId,
+                    sessionId: self.sessionId,
+                    teardown: false
+                )
+            }
+        }
+    }
+
+    func requestClose() {
+        guard !tornDown else { return }
+        onCloseRequest?()
     }
 
     // 缓存逐出时显式释放;deinit 兜底
     func teardown() {
+        guard !tornDown else { return }
+        tornDown = true
         leftMousePressed = false
         if let surface {
             ghostty_surface_free(surface)
@@ -608,7 +643,8 @@ struct AcroTerminalView: NSViewRepresentable {
     let command: String
     let focusRequest: Int
     var isActive = false
-    var onClose: (() -> Void)? = nil
+    var onCloseRequest: (() -> Void)? = nil
+    var onClose: (() async -> TerminalSurfaceExitDisposition)? = nil
     var onFocus: (() -> Void)? = nil
     var onFileDrop: (([URL]) -> Bool)? = nil
 
@@ -618,6 +654,7 @@ struct AcroTerminalView: NSViewRepresentable {
             sessionId: sessionId,
             command: command
         )
+        view.onCloseRequest = onCloseRequest
         view.onClose = onClose
         view.onFocus = onFocus
         view.onFileDrop = onFileDrop
@@ -627,6 +664,7 @@ struct AcroTerminalView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: AcroTerminalNSView, context: Context) {
+        nsView.onCloseRequest = onCloseRequest
         nsView.onClose = onClose
         nsView.onFocus = onFocus
         nsView.onFileDrop = onFileDrop

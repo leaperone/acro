@@ -782,7 +782,11 @@ enum TerminalAppearance {
 
     // 生成叠加在用户原生 ~/.config/ghostty/config 之上的 Acro 配置行(见 Ghostty.makeConfig)。
     static func confLines(fontFamily: String, fontSize: Int, theme: String) -> [String] {
-        var lines: [String] = ["# 由 Acro 设置窗口生成,叠加在 ~/.config/ghostty/config 之上;改动即时生效"]
+        var lines: [String] = [
+            "# 由 Acro 设置窗口生成,叠加在 ~/.config/ghostty/config 之上;改动即时生效",
+            // Acro 需要稳定区分“用户请求关闭”和“attach 子进程已经退出”。
+            "confirm-close-surface = always",
+        ]
         let family = fontFamily.trimmingCharacters(in: .whitespaces)
         if family.isEmpty {
             // 用户没在 Acro 选字体:不重置,让原生 ghostty config 的字体(若有)作主字体,
