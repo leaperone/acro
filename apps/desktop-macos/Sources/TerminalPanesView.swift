@@ -144,6 +144,9 @@ private struct TerminalPaneContent: View {
                     ),
                     focusRequest: selected && focused ? model.terminalFocusRequest : 0,
                     isActive: selected,
+                    isFocusedPane: {
+                        paneController.controller.focusedPaneId == paneId
+                    },
                     onCloseRequest: {
                         model.requestKillTab(sessionId, for: paneController.key)
                     },
