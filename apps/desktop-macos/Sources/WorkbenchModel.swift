@@ -1163,10 +1163,19 @@ final class WorkbenchModel: ObservableObject {
         _ sessionId: String,
         on connection: RuntimeConnection
     ) async throws {
+        try await connection.removeSession(sessionId)
+    }
+
+    func removeCancelledCreatedSession(_ sessionId: String, for key: ScopedResourceID) async {
+        closeTab(sessionId, workspaceId: key.resourceId, serverId: key.serverId)
+        guard let connection = hub.connection(for: key.serverId) else {
+            errorMessage = "目标服务器已移除，无法清理已取消的终端"
+            return
+        }
         do {
-            _ = try await connection.rpc("session.remove", ["sessionId": sessionId])
-        } catch where error.localizedDescription == "session.remove" {
-            _ = try await connection.rpc("session.kill", ["sessionId": sessionId])
+            try await connection.requestPersistentSessionRemoval(sessionId)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

@@ -3,3 +3,7 @@
 "tab.rename.placeholder" = "Tab name";
 "common.rename" = "Rename";
 "common.cancel" = "Cancel";
+"terminal.creating" = "Creating terminal…";
+"terminal.connecting" = "Connecting terminal…";
+"terminal.ended" = "Terminal ended";
+"runtime.connecting" = "Connecting to Runtime…";

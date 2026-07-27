@@ -3,3 +3,7 @@
 "tab.rename.placeholder" = "タブ名";
 "common.rename" = "変更";
 "common.cancel" = "キャンセル";
+"terminal.creating" = "ターミナルを作成中…";
+"terminal.connecting" = "ターミナルに接続中…";
+"terminal.ended" = "ターミナルは終了しました";
+"runtime.connecting" = "Runtime に接続中…";
