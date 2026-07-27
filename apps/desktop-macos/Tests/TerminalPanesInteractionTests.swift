@@ -40,12 +40,16 @@ struct TerminalPanesInteractionTests {
             layout: nil,
             layoutRev: nil
         )
+        var removalAttempts = 0
         let runtime = RuntimeConnection(
             refreshSnapshotProvider: {
                 Issue.record("refresh must not run after a failed mutation")
                 throw RpcError(message: "unexpected refresh")
             },
-            rpcProvider: { _, _ in throw RpcError(message: "remove failed") }
+            rpcProvider: { method, _ in
+                if method == "session.remove" { removalAttempts += 1 }
+                throw RpcError(message: "remove failed")
+            }
         )
         runtime.commitRefreshSnapshot(
             workspaceGroups: [],
@@ -86,6 +90,16 @@ struct TerminalPanesInteractionTests {
         #expect(model.selectedSessionId == closing.id)
         #expect(model.terminalFocusRequest == initialFocusRequest)
         #expect(model.errorMessage == "remove failed")
+        #expect(removalAttempts == 1)
+
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [fallback, closing],
+            focus: []
+        )
+        await Task.yield()
+        #expect(removalAttempts == 1)
     }
 
     @Test
@@ -228,6 +242,538 @@ struct TerminalPanesInteractionTests {
         #expect(TerminalSurfaceExitDisposition.resolve(
             remoteSessionAlive: false
         ) == .close)
+    }
+
+    @Test
+    func terminalContentStateDoesNotTreatUnknownOrPendingAsEnded() {
+        #expect(TerminalPaneContentState.resolve(
+            hasSessionMapping: false,
+            isTabLoading: true,
+            snapshotLoaded: true,
+            remoteSessionAlive: false
+        ) == .creating)
+        #expect(TerminalPaneContentState.resolve(
+            hasSessionMapping: true,
+            isTabLoading: false,
+            snapshotLoaded: false,
+            remoteSessionAlive: false
+        ) == .connecting)
+        #expect(TerminalPaneContentState.resolve(
+            hasSessionMapping: true,
+            isTabLoading: false,
+            snapshotLoaded: true,
+            remoteSessionAlive: true
+        ) == .active)
+        #expect(TerminalPaneContentState.resolve(
+            hasSessionMapping: true,
+            isTabLoading: false,
+            snapshotLoaded: true,
+            remoteSessionAlive: false
+        ) == .ended)
+    }
+
+    @Test
+    func splitKeepsOneLoadingTabUntilCreatedSessionEntersTheSnapshot() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let existing = makeSession(id: UUID().uuidString)
+        let created = makeSession(id: UUID().uuidString)
+        let initialWorkspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [existing.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let refreshGate = RefreshSnapshotGate()
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: { try await refreshGate.wait() },
+            rpcProvider: { method, _ in
+                if method == "session.create" { return try jsonObject(created) }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [initialWorkspace],
+            sessions: [existing],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [existing.id]))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+        let controller = paneController.controller
+        let originalPane = try #require(controller.allPaneIds.first)
+
+        paneController.split(.horizontal)
+
+        let createdPane = try #require(controller.allPaneIds.first { $0 != originalPane })
+        let placeholder = try #require(controller.tabs(inPane: createdPane).first)
+        #expect(placeholder.isLoading)
+        #expect(paneController.sessionId(for: placeholder.id) == nil)
+
+        #expect(await waitUntil { refreshGate.isWaiting })
+        let pendingTab = try #require(controller.tabs(inPane: createdPane).first)
+        #expect(pendingTab.id == placeholder.id)
+        #expect(pendingTab.isLoading)
+        #expect(paneController.sessionId(for: pendingTab.id) == created.id)
+        #expect(!runtime.sessions.contains(where: { $0.id == created.id }))
+
+        refreshGate.resume(returning: .init(
+            workspaceGroups: [],
+            workspaces: [Workspace(
+                id: key.resourceId,
+                name: "Workspace",
+                sessionIds: [existing.id, created.id],
+                createdAt: initialWorkspace.createdAt,
+                layout: nil,
+                layoutRev: nil
+            )],
+            sessions: [existing, created],
+            focus: []
+        ))
+        #expect(await waitUntil {
+            controller.tabs(inPane: createdPane).first?.isLoading == false
+        })
+
+        let resolvedTab = try #require(controller.tabs(inPane: createdPane).first)
+        #expect(paneController.controller === controller)
+        #expect(resolvedTab.id == placeholder.id)
+        #expect(!resolvedTab.isLoading)
+        #expect(paneController.sessionId(for: resolvedTab.id) == created.id)
+    }
+
+    @Test
+    func failedSplitCreationRemovesTheLoadingPlaceholderAndEmptyPane() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let existing = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [existing.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let runtime = RuntimeConnection(
+            rpcProvider: { _, _ in throw RpcError(message: "create failed") }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [existing],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [existing.id]))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+
+        paneController.split(.horizontal)
+        #expect(paneController.controller.allPaneIds.count == 2)
+        #expect(paneController.controller.allTabIds.count == 2)
+        #expect(paneController.controller.allPaneIds.contains { pane in
+            paneController.controller.tabs(inPane: pane).contains { $0.isLoading }
+        })
+
+        #expect(await waitUntil { model.errorMessage != nil })
+
+        #expect(model.errorMessage == "create failed")
+        #expect(paneController.controller.allPaneIds.count == 1)
+        #expect(paneController.controller.allTabIds.count == 1)
+        #expect(paneController.controller.allPaneIds.allSatisfy { pane in
+            paneController.controller.tabs(inPane: pane).allSatisfy { !$0.isLoading }
+        })
+    }
+
+    @Test
+    func closingPendingCreationDoesNotResurrectItsPlaceholder() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let existing = makeSession(id: UUID().uuidString)
+        let created = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [existing.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let createGate = RpcResultGate()
+        var removedSessionIds: [String] = []
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                .init(
+                    workspaceGroups: [],
+                    workspaces: [workspace],
+                    sessions: [existing],
+                    focus: []
+                )
+            },
+            rpcProvider: { method, params in
+                if method == "session.create" { return try await createGate.wait() }
+                if method == "session.remove", let sessionId = params["sessionId"] as? String {
+                    removedSessionIds.append(sessionId)
+                }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [existing],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [existing.id]))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+
+        paneController.split(.horizontal)
+        #expect(await waitUntil { createGate.isWaiting })
+        let placeholder = try #require(paneController.controller.allPaneIds
+            .flatMap { paneController.controller.tabs(inPane: $0) }
+            .first { $0.isLoading })
+        #expect(paneController.controller.closeTab(placeholder.id))
+
+        createGate.resume(returning: try jsonObject(created))
+        #expect(await waitUntil { !removedSessionIds.isEmpty })
+        model.reconcileLayoutState()
+
+        #expect(removedSessionIds == [created.id])
+        #expect(!paneController.controller.allTabIds.contains(placeholder.id))
+        #expect(!runtime.sessions.contains(where: { $0.id == created.id }))
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [existing.id])
+        #expect(paneController.controller.allPaneIds.flatMap {
+            paneController.controller.tabs(inPane: $0)
+        }.allSatisfy { !$0.isLoading })
+    }
+
+    @Test
+    func closingBoundPendingCreationRetriesFailedRemovalWithoutResurrection() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let existing = makeSession(id: UUID().uuidString)
+        let created = makeSession(id: UUID().uuidString)
+        let initialWorkspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [existing.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let createdWorkspace = Workspace(
+            id: key.resourceId,
+            name: initialWorkspace.name,
+            sessionIds: [existing.id, created.id],
+            createdAt: initialWorkspace.createdAt,
+            layout: nil,
+            layoutRev: nil
+        )
+        let refreshGate = RefreshSnapshotGate()
+        var refreshCount = 0
+        var removalAttempts = 0
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                refreshCount += 1
+                if refreshCount == 1 { return try await refreshGate.wait() }
+                return .init(
+                    workspaceGroups: [],
+                    workspaces: [initialWorkspace],
+                    sessions: [existing],
+                    focus: []
+                )
+            },
+            rpcProvider: { method, _ in
+                if method == "session.create" { return try jsonObject(created) }
+                if method == "session.remove" {
+                    removalAttempts += 1
+                    if removalAttempts == 1 { throw RpcError(message: "remove failed") }
+                }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [initialWorkspace],
+            sessions: [existing],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [existing.id]))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+
+        paneController.split(.horizontal)
+        #expect(await waitUntil { refreshGate.isWaiting })
+        let placeholder = try #require(paneController.controller.allPaneIds
+            .flatMap { paneController.controller.tabs(inPane: $0) }
+            .first { paneController.sessionId(for: $0.id) == created.id })
+        model.requestKillTab(created.id, for: key)
+        #expect(!paneController.controller.allTabIds.contains(placeholder.id))
+
+        refreshGate.resume(returning: .init(
+            workspaceGroups: [],
+            workspaces: [createdWorkspace],
+            sessions: [existing, created],
+            focus: []
+        ))
+        #expect(await waitUntil { removalAttempts >= 1 })
+
+        #expect(removalAttempts == 1)
+        #expect(model.errorMessage == "remove failed")
+        #expect(!runtime.sessions.contains(where: { $0.id == created.id }))
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [existing.id])
+
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [createdWorkspace],
+            sessions: [existing, created],
+            focus: []
+        )
+        #expect(await waitUntil { removalAttempts >= 2 && refreshCount >= 2 })
+
+        #expect(removalAttempts == 2)
+        #expect(refreshCount == 2)
+        #expect(!runtime.sessions.contains(where: { $0.id == created.id }))
+        #expect(model.workspaceLayouts[key]?.root?.sessionIds == [existing.id])
+        #expect(!paneController.controller.allTabIds.contains(placeholder.id))
+    }
+
+    @Test
+    func pendingRemovalSurvivesAnOlderSnapshotUntilTheRpcIsAcknowledged() async {
+        let session = makeSession(id: UUID().uuidString)
+        let firstRemoval = RpcResultGate()
+        var removalAttempts = 0
+        var refreshCount = 0
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                refreshCount += 1
+                return .init(workspaceGroups: [], workspaces: [], sessions: [], focus: [])
+            },
+            rpcProvider: { method, _ in
+                guard method == "session.remove" else { return [:] }
+                removalAttempts += 1
+                if removalAttempts == 1 { return try await firstRemoval.wait() }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [session],
+            focus: []
+        )
+
+        let removal = Task {
+            try? await runtime.requestPersistentSessionRemoval(session.id)
+        }
+        #expect(await waitUntil { firstRemoval.isWaiting })
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [],
+            focus: []
+        )
+        firstRemoval.resume(throwing: RpcError(message: "remove failed"))
+        await removal.value
+
+        #expect(removalAttempts == 1)
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [],
+            focus: []
+        )
+        #expect(await waitUntil { removalAttempts >= 2 && refreshCount >= 1 })
+
+        #expect(removalAttempts == 2)
+        #expect(refreshCount == 1)
+        #expect(runtime.sessions.isEmpty)
+    }
+
+    @Test
+    func acknowledgedRemovalIgnoresSnapshotsStartedBeforeTheRpcSucceeded() async {
+        let session = makeSession(id: UUID().uuidString)
+        let olderRefresh = RefreshSnapshotGate()
+        var refreshCount = 0
+        var removalAttempts = 0
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                refreshCount += 1
+                if refreshCount == 1 { return try await olderRefresh.wait() }
+                if refreshCount == 2 {
+                    return .init(
+                        workspaceGroups: [], workspaces: [], sessions: [session], focus: []
+                    )
+                }
+                return .init(workspaceGroups: [], workspaces: [], sessions: [], focus: [])
+            },
+            rpcProvider: { method, _ in
+                if method == "session.remove" { removalAttempts += 1 }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [session],
+            focus: []
+        )
+
+        let olderRefreshTask = Task { await runtime.refresh() }
+        #expect(await waitUntil { olderRefresh.isWaiting })
+        let removal = Task {
+            try? await runtime.requestPersistentSessionRemoval(session.id)
+        }
+        #expect(await waitUntil { removalAttempts == 1 })
+        olderRefresh.resume(returning: .init(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [],
+            focus: []
+        ))
+        _ = await olderRefreshTask.value
+        await removal.value
+
+        #expect(removalAttempts == 1)
+        #expect(refreshCount == 2)
+        #expect(!runtime.sessions.contains(where: { $0.id == session.id }))
+
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [session],
+            focus: []
+        )
+        #expect(await waitUntil { removalAttempts >= 2 && refreshCount >= 3 })
+
+        #expect(removalAttempts == 2)
+        #expect(refreshCount == 3)
+        #expect(runtime.sessions.isEmpty)
+    }
+
+    @Test
+    func restoringTopologyCancelsAndCleansUpPendingCreation() async throws {
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        let existing = makeSession(id: UUID().uuidString)
+        let created = makeSession(id: UUID().uuidString)
+        let workspace = Workspace(
+            id: key.resourceId,
+            name: "Workspace",
+            sessionIds: [existing.id],
+            createdAt: "2026-07-27T00:00:00Z",
+            layout: nil,
+            layoutRev: nil
+        )
+        let createGate = RpcResultGate()
+        var removedSessionIds: [String] = []
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                .init(
+                    workspaceGroups: [],
+                    workspaces: [workspace],
+                    sessions: [existing],
+                    focus: []
+                )
+            },
+            rpcProvider: { method, params in
+                if method == "session.create" { return try await createGate.wait() }
+                if method == "session.remove", let sessionId = params["sessionId"] as? String {
+                    removedSessionIds.append(sessionId)
+                }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [workspace],
+            sessions: [existing],
+            focus: []
+        )
+        let server = ServerEntry(
+            localId: key.serverId,
+            name: "Server",
+            deviceId: "device",
+            token: "token",
+            pub: "public-key",
+            endpoints: []
+        )
+        let model = WorkbenchModel(
+            hub: RuntimeHub(entries: [.init(server: server, connection: runtime)])
+        )
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [existing.id]))
+        )
+        let paneController = try #require(model.currentTerminalPaneController)
+
+        paneController.split(.horizontal)
+        #expect(await waitUntil { createGate.isWaiting })
+        paneController.update(layout: WorkspaceTerminalLayout(), trafficLightClearance: false)
+
+        createGate.resume(returning: try jsonObject(created))
+        #expect(await waitUntil { !removedSessionIds.isEmpty })
+
+        #expect(removedSessionIds == [created.id])
+        #expect(!runtime.sessions.contains(where: { $0.id == created.id }))
+        #expect(paneController.controller.allPaneIds.flatMap {
+            paneController.controller.tabs(inPane: $0)
+        }.allSatisfy { !$0.isLoading })
     }
 
     @Test
@@ -1525,6 +2071,14 @@ struct TerminalPanesInteractionTests {
         ) == false)
     }
 
+    private func waitUntil(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<1_000 {
+            if condition() { return true }
+            await Task.yield()
+        }
+        return condition()
+    }
+
     private func makeSplitFixture() -> (
         model: WorkbenchModel,
         key: ScopedResourceID,
@@ -1640,6 +2194,10 @@ private func makeSession(
     )
 }
 
+private func jsonObject<T: Encodable>(_ value: T) throws -> Any {
+    try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+}
+
 @MainActor
 private final class RefreshSnapshotGate {
     private var continuation: CheckedContinuation<RuntimeConnection.RefreshSnapshot, Error>?
@@ -1652,6 +2210,27 @@ private final class RefreshSnapshotGate {
 
     func resume(returning snapshot: RuntimeConnection.RefreshSnapshot) {
         continuation?.resume(returning: snapshot)
+        continuation = nil
+    }
+}
+
+@MainActor
+private final class RpcResultGate {
+    private var continuation: CheckedContinuation<Any, Error>?
+    private(set) var isWaiting = false
+
+    func wait() async throws -> Any {
+        isWaiting = true
+        return try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    func resume(returning value: Any) {
+        continuation?.resume(returning: value)
+        continuation = nil
+    }
+
+    func resume(throwing error: Error) {
+        continuation?.resume(throwing: error)
         continuation = nil
     }
 }

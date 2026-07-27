@@ -3,3 +3,7 @@
 "tab.rename.placeholder" = "标签名称";
 "common.rename" = "重命名";
 "common.cancel" = "取消";
+"terminal.creating" = "正在创建终端…";
+"terminal.connecting" = "正在连接终端…";
+"terminal.ended" = "终端已结束";
+"runtime.connecting" = "正在连接 Runtime…";

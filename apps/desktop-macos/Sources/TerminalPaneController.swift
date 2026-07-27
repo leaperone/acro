@@ -8,6 +8,15 @@ import SwiftUI
 @MainActor
 @Observable
 final class TerminalPaneController: BonsplitDelegate {
+    private final class PendingTerminalCreation {
+        enum State: Equatable { case pending, cancelledNeedsCleanup, completed }
+
+        let tabId: TabID
+        var state = State.pending
+
+        init(tabId: TabID) { self.tabId = tabId }
+    }
+
     let key: ScopedResourceID
     private(set) var controller: BonsplitController
 
@@ -18,6 +27,7 @@ final class TerminalPaneController: BonsplitDelegate {
     @ObservationIgnored private var lastAgentEventBySessionId: [String: AgentAttentionSignal] = [:]
     @ObservationIgnored private var unreadAgentSessionIds: Set<String> = []
     @ObservationIgnored private var forcedCloseTabIds: Set<TabID> = []
+    @ObservationIgnored private var pendingCreations: [TabID: PendingTerminalCreation] = [:]
     @ObservationIgnored private var trafficLightClearance: Bool
     @ObservationIgnored private var terminalChromeAppearance: TerminalChromeAppearance
     @ObservationIgnored private let fileDropHandler: @MainActor (ScopedResourceID, [URL]) -> Bool
@@ -84,7 +94,8 @@ final class TerminalPaneController: BonsplitDelegate {
 
     func refreshTabMetadata() {
         guard let model else { return }
-        let attentionSignals = model.hub.connection(for: key.serverId)?.agentAttentionSignals ?? [:]
+        let connection = model.hub.connection(for: key.serverId)
+        let attentionSignals = connection?.agentAttentionSignals ?? [:]
         let representedSessionIds = Set(sessionIdsByTabId.values)
         lastAgentEventBySessionId = lastAgentEventBySessionId.filter {
             representedSessionIds.contains($0.key)
@@ -94,6 +105,9 @@ final class TerminalPaneController: BonsplitDelegate {
             && model.selectedWorkspaceId == key.resourceId
 
         for (tabId, sessionId) in sessionIdsByTabId {
+            if connection?.sessions.contains(where: { $0.id == sessionId && $0.alive }) == true {
+                completeTerminalCreation(tabId)
+            }
             let event = attentionSignals[sessionId]
             let isSelected = workspaceIsVisible && (
                 controller.paneId(containing: tabId).map {
@@ -111,7 +125,8 @@ final class TerminalPaneController: BonsplitDelegate {
                 icon: .some("terminal.fill"),
                 kind: .some("terminal"),
                 hasCustomTitle: representedLayout.customTitlesBySessionId[sessionId] != nil,
-                showsNotificationBadge: unreadAgentSessionIds.contains(sessionId)
+                showsNotificationBadge: unreadAgentSessionIds.contains(sessionId),
+                isLoading: pendingCreations[tabId]?.state == .pending
             )
         }
     }
@@ -204,6 +219,7 @@ final class TerminalPaneController: BonsplitDelegate {
         let closed = controller.closeTab(tabId)
         forcedCloseTabIds.remove(tabId)
         if closed {
+            completeTerminalCreation(tabId)
             sessionIdsByTabId.removeValue(forKey: tabId)
             tabIdsBySessionId.removeValue(forKey: sessionId)
             clearAgentAttention(for: sessionId)
@@ -225,6 +241,11 @@ final class TerminalPaneController: BonsplitDelegate {
         didCloseTab tabId: TabID,
         fromPane pane: PaneID
     ) {
+        if pendingCreations[tabId] != nil {
+            cancelTerminalCreation(tabId)
+        } else {
+            completeTerminalCreation(tabId)
+        }
         if let sessionId = sessionIdsByTabId.removeValue(forKey: tabId) {
             tabIdsBySessionId.removeValue(forKey: sessionId)
             clearAgentAttention(for: sessionId)
@@ -450,6 +471,10 @@ final class TerminalPaneController: BonsplitDelegate {
             )
         )
         controller = restoredController
+        for creation in pendingCreations.values {
+            creation.state = .cancelledNeedsCleanup
+        }
+        pendingCreations.removeAll()
         sessionIdsByTabId.removeAll()
         tabIdsBySessionId.removeAll()
 
@@ -616,13 +641,18 @@ final class TerminalPaneController: BonsplitDelegate {
     }
 
     private func createTerminal(in pane: PaneID, inheritFrom: String?) {
+        guard let creation = beginTerminalCreation(in: pane) else { return }
         Task { [weak self] in
             guard let self, let model = self.model else { return }
             guard let session = await model.createTerminalForPaneController(
                 key: self.key,
                 inheritFrom: inheritFrom
             ) else {
+                self.completeTerminalCreation(creation, closePlaceholder: true)
                 self.removeEmptyPaneIfPossible(pane)
+                return
+            }
+            if await self.stopIfCreationWasCancelled(creation, session: session, model: model) {
                 return
             }
             let targetPane = self.controller.allPaneIds.contains(pane)
@@ -630,25 +660,37 @@ final class TerminalPaneController: BonsplitDelegate {
                 : self.controller.focusedPaneId
             if let targetPane,
                self.placeExistingTab(session.id, in: targetPane) {
+                self.completeTerminalCreation(creation, closePlaceholder: true)
                 await model.refreshRuntime(for: self.key)
                 model.applyTerminalPaneSelection(session.id, for: self.key)
                 return
             }
             guard let targetPane,
-                  let tabId = self.controller.createTab(
-                    title: model.sessionDisplayName(session),
-                    icon: "terminal.fill",
-                    kind: "terminal",
-                    inPane: targetPane
-                  )
+                  self.controller.allPaneIds.contains(targetPane),
+                  self.controller.allTabIds.contains(creation.tabId)
             else {
-                await model.refreshRuntime(for: self.key)
+                creation.state = .cancelledNeedsCleanup
+                _ = await self.stopIfCreationWasCancelled(
+                    creation, session: session, model: model
+                )
                 return
             }
+            let tabId = creation.tabId
             self.register(tabId: tabId, sessionId: session.id)
+            self.controller.updateTab(
+                tabId,
+                title: model.sessionDisplayName(session),
+                icon: .some("terminal.fill"),
+                kind: .some("terminal"),
+                isLoading: true
+            )
             self.controller.selectTab(tabId)
             self.persist(markDirty: true)
             await model.refreshRuntime(for: self.key)
+            if await self.stopIfCreationWasCancelled(creation, session: session, model: model) {
+                return
+            }
+            self.refreshTabMetadata()
             model.applyTerminalPaneSelection(session.id, for: self.key)
         }
     }
@@ -656,25 +698,45 @@ final class TerminalPaneController: BonsplitDelegate {
     private func repairPlaceholderPaneIfNeeded(_ pane: PaneID, inheritFrom: String?) {
         let placeholders = controller.tabs(inPane: pane).filter { sessionIdsByTabId[$0.id] == nil }
         guard let placeholder = placeholders.first else { return }
+        let creation = PendingTerminalCreation(tabId: placeholder.id)
+        pendingCreations[placeholder.id] = creation
+        controller.updateTab(
+            placeholder.id,
+            title: String(
+                localized: "terminal.creating",
+                defaultValue: "Creating terminal…"
+            ),
+            icon: .some("terminal.fill"),
+            kind: .some("terminal"),
+            isLoading: true
+        )
         Task { [weak self] in
             guard let self, let model = self.model else { return }
             guard let session = await model.createTerminalForPaneController(
                 key: self.key,
                 inheritFrom: inheritFrom
             ) else {
+                self.completeTerminalCreation(creation)
                 if self.controller.allPaneIds.contains(pane) {
                     _ = self.controller.closePane(pane)
                     self.persist(markDirty: true)
                 }
                 return
             }
+            if await self.stopIfCreationWasCancelled(creation, session: session, model: model) {
+                return
+            }
             if self.placeExistingTab(session.id, in: pane) {
+                self.completeTerminalCreation(creation, closePlaceholder: true)
                 await model.refreshRuntime(for: self.key)
                 model.applyTerminalPaneSelection(session.id, for: self.key)
                 return
             }
             guard self.controller.tabs(inPane: pane).contains(where: { $0.id == placeholder.id }) else {
-                await model.refreshRuntime(for: self.key)
+                creation.state = .cancelledNeedsCleanup
+                _ = await self.stopIfCreationWasCancelled(
+                    creation, session: session, model: model
+                )
                 return
             }
             self.register(tabId: placeholder.id, sessionId: session.id)
@@ -682,15 +744,73 @@ final class TerminalPaneController: BonsplitDelegate {
                 placeholder.id,
                 title: model.sessionDisplayName(session),
                 icon: .some("terminal.fill"),
-                kind: .some("terminal")
+                kind: .some("terminal"),
+                isLoading: true
             )
             for extra in placeholders.dropFirst() {
                 _ = self.controller.closeTab(extra.id)
             }
             self.persist(markDirty: true)
             await model.refreshRuntime(for: self.key)
+            if await self.stopIfCreationWasCancelled(creation, session: session, model: model) {
+                return
+            }
+            self.refreshTabMetadata()
             model.applyTerminalPaneSelection(session.id, for: self.key)
         }
+    }
+
+    private func beginTerminalCreation(in pane: PaneID) -> PendingTerminalCreation? {
+        guard controller.allPaneIds.contains(pane),
+              let tabId = controller.createTab(
+                title: String(
+                    localized: "terminal.creating",
+                    defaultValue: "Creating terminal…"
+                ),
+                icon: "terminal.fill",
+                kind: "terminal",
+                isLoading: true,
+                inPane: pane
+              )
+        else { return nil }
+        let creation = PendingTerminalCreation(tabId: tabId)
+        pendingCreations[tabId] = creation
+        controller.selectTab(tabId)
+        return creation
+    }
+
+    private func cancelTerminalCreation(_ tabId: TabID) {
+        guard let creation = pendingCreations.removeValue(forKey: tabId) else { return }
+        creation.state = .cancelledNeedsCleanup
+    }
+
+    private func completeTerminalCreation(_ tabId: TabID) {
+        guard let creation = pendingCreations.removeValue(forKey: tabId) else { return }
+        creation.state = .completed
+    }
+
+    private func completeTerminalCreation(
+        _ creation: PendingTerminalCreation,
+        closePlaceholder: Bool = false
+    ) {
+        if pendingCreations[creation.tabId] === creation {
+            pendingCreations[creation.tabId] = nil
+        }
+        creation.state = .completed
+        if closePlaceholder, controller.allTabIds.contains(creation.tabId) {
+            _ = controller.closeTab(creation.tabId)
+        }
+    }
+
+    private func stopIfCreationWasCancelled(
+        _ creation: PendingTerminalCreation,
+        session: Session,
+        model: WorkbenchModel
+    ) async -> Bool {
+        guard creation.state == .cancelledNeedsCleanup else { return false }
+        await model.removeCancelledCreatedSession(session.id, for: key)
+        creation.state = .completed
+        return true
     }
 
     private func removeEmptyPaneIfPossible(_ pane: PaneID) {

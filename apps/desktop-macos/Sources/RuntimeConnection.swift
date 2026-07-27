@@ -212,6 +212,9 @@ final class RuntimeConnection: ObservableObject {
     private var endpointIndex = 0
     private var generation = 0
     private var nextId = 1
+    private var pendingSessionRemovalIds: Set<String> = []
+    private var acknowledgedSessionRemovalRefreshFloors: [String: Int] = [:]
+    private var sessionRemovalInFlightIds: Set<String> = []
     private struct PendingRpc {
         let continuation: CheckedContinuation<Any, Error>
         let timeoutTask: Task<Void, Never>
@@ -715,6 +718,24 @@ final class RuntimeConnection: ObservableObject {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    func removeSession(_ sessionId: String) async throws {
+        do {
+            _ = try await rpc("session.remove", ["sessionId": sessionId])
+        } catch where error.localizedDescription == "session.remove" {
+            _ = try await rpc("session.kill", ["sessionId": sessionId])
+        }
+    }
+
+    func requestPersistentSessionRemoval(_ sessionId: String) async throws {
+        pendingSessionRemovalIds.insert(sessionId)
+        acknowledgedSessionRemovalRefreshFloors.removeValue(forKey: sessionId)
+        if sessions.contains(where: { $0.id == sessionId }) {
+            sessions.removeAll { $0.id == sessionId }
+            snapshotRevision &+= 1
+        }
+        try await retryPendingSessionRemoval(sessionId)
+    }
+
     // 终端输入等二进制帧走加密信道
     func sendBinary(_ frame: Data) {
         guard let task, let session, let sealed = try? session.sealBinary(frame) else { return }
@@ -813,6 +834,7 @@ final class RuntimeConnection: ObservableObject {
             guard self.generation == generation else { return false }
             let snapshotAgentEventVersion = agentEventVersion
             let result = await performRefresh(
+                refreshJobId: id,
                 connectionGeneration: generation,
                 snapshotAgentEventVersion: snapshotAgentEventVersion
             )
@@ -833,6 +855,7 @@ final class RuntimeConnection: ObservableObject {
     }
 
     private func performRefresh(
+        refreshJobId: Int,
         connectionGeneration: Int,
         snapshotAgentEventVersion: Int
     ) async -> Bool {
@@ -844,7 +867,8 @@ final class RuntimeConnection: ObservableObject {
                 workspaces: snapshot.workspaces,
                 sessions: snapshot.sessions,
                 focus: snapshot.focus,
-                snapshotAgentEventVersion: snapshotAgentEventVersion
+                snapshotAgentEventVersion: snapshotAgentEventVersion,
+                refreshJobId: refreshJobId
             )
             return true
         } catch {
@@ -872,7 +896,8 @@ final class RuntimeConnection: ObservableObject {
         workspaces: [Workspace],
         sessions: [Session],
         focus: [SessionFocus],
-        snapshotAgentEventVersion: Int? = nil
+        snapshotAgentEventVersion: Int? = nil,
+        refreshJobId: Int? = nil
     ) {
         var mergedSessions = sessions
         if let snapshotAgentEventVersion {
@@ -888,6 +913,20 @@ final class RuntimeConnection: ObservableObject {
                 )
             }
         }
+        let authoritativeSessionIds = Set(mergedSessions.map(\.id))
+        let completedSessionRemovalIds = Set(pendingSessionRemovalIds.filter { sessionId in
+            guard let refreshJobId,
+                  let refreshFloor = acknowledgedSessionRemovalRefreshFloors[sessionId],
+                  refreshJobId > refreshFloor
+            else { return false }
+            return !authoritativeSessionIds.contains(sessionId)
+        })
+        pendingSessionRemovalIds.subtract(completedSessionRemovalIds)
+        for sessionId in completedSessionRemovalIds {
+            acknowledgedSessionRemovalRefreshFloors.removeValue(forKey: sessionId)
+        }
+        let retrySessionIds = pendingSessionRemovalIds
+        mergedSessions.removeAll { pendingSessionRemovalIds.contains($0.id) }
         let incomingSessionIds = Set(mergedSessions.map(\.id))
         let snapshotCanClear: (String) -> Bool = { sessionId in
             guard let snapshotAgentEventVersion else { return true }
@@ -942,6 +981,31 @@ final class RuntimeConnection: ObservableObject {
             reconnectAttempt = 0
             endpointIndex = 0
         }
+        for sessionId in retrySessionIds where !sessionRemovalInFlightIds.contains(sessionId) {
+            Task { [weak self] in
+                try? await self?.retryPendingSessionRemoval(sessionId)
+            }
+        }
+    }
+
+    private func retryPendingSessionRemoval(_ sessionId: String) async throws {
+        guard pendingSessionRemovalIds.contains(sessionId),
+              sessionRemovalInFlightIds.insert(sessionId).inserted
+        else { return }
+        defer { sessionRemovalInFlightIds.remove(sessionId) }
+        try await removeSession(sessionId)
+        let refreshFloor = nextRefreshJobId
+        acknowledgedSessionRemovalRefreshFloors[sessionId] = refreshFloor
+        await refresh(startedAfter: refreshFloor)
+    }
+
+    private func refresh(startedAfter refreshJobId: Int) async {
+        var job = enqueueRefresh(generation: generation)
+        while job.id <= refreshJobId {
+            _ = await job.task.value
+            job = enqueueRefresh(generation: generation)
+        }
+        _ = await job.task.value
     }
 
     private static func session(_ session: Session, replacingAgent agent: AgentSession?) -> Session {

@@ -17,7 +17,12 @@ struct TerminalPanesView: View {
                     paneId: paneId
                 )
             } emptyPane: { _ in
-                ContentUnavailableView("终端已结束", systemImage: "terminal")
+                TerminalLoadingView(
+                    title: String(
+                        localized: "terminal.creating",
+                        defaultValue: "Creating terminal…"
+                    )
+                )
             }
             .onChange(of: tabMetadata, initial: true) { _, _ in
                 paneController.refreshTabMetadata()
@@ -30,6 +35,13 @@ struct TerminalPanesView: View {
                     model.requestNewTerminal(in: selectedWorkspace)
                 }
             }
+        } else if runtime.state == .connecting || runtime.recoveryState == .retrying {
+            TerminalLoadingView(
+                title: String(
+                    localized: "runtime.connecting",
+                    defaultValue: "Connecting to Runtime…"
+                )
+            )
         } else if runtime.connected {
             ContentUnavailableView("选择工作区", systemImage: "square.stack.3d.up")
         } else {
@@ -93,9 +105,18 @@ private struct TerminalPaneContent: View {
     let paneId: Bonsplit.PaneID
 
     var body: some View {
-        if let sessionId = paneController.sessionId(for: tab.id),
-           let connection = model.hub.connection(for: paneController.key.serverId),
-           connection.sessions.contains(where: { $0.id == sessionId && $0.alive }) {
+        let sessionId = paneController.sessionId(for: tab.id)
+        let connection = model.hub.connection(for: paneController.key.serverId)
+        let state = TerminalPaneContentState.resolve(
+            hasSessionMapping: sessionId != nil,
+            isTabLoading: tab.isLoading,
+            snapshotLoaded: connection?.snapshotLoaded == true,
+            remoteSessionAlive: sessionId.map { id in
+                connection?.sessions.contains(where: { $0.id == id && $0.alive }) == true
+            } ?? false
+        )
+
+        if state == .active, let sessionId, let connection {
             let selected = paneController.controller.selectedTabId(inPane: paneId) == tab.id
             let focused = paneController.controller.focusedPaneId == paneId
 
@@ -151,8 +172,56 @@ private struct TerminalPaneContent: View {
                 token: model.flashToken,
                 active: model.flashSessionId == sessionId
             )
+        } else if state == .creating {
+            TerminalLoadingView(
+                title: String(
+                    localized: "terminal.creating",
+                    defaultValue: "Creating terminal…"
+                )
+            )
+        } else if state == .connecting {
+            TerminalLoadingView(
+                title: String(
+                    localized: "terminal.connecting",
+                    defaultValue: "Connecting terminal…"
+                )
+            )
         } else {
-            ContentUnavailableView("终端已结束", systemImage: "terminal")
+            ContentUnavailableView(
+                String(localized: "terminal.ended", defaultValue: "Terminal ended"),
+                systemImage: "terminal"
+            )
+        }
+    }
+}
+
+enum TerminalPaneContentState: Equatable {
+    case creating
+    case connecting
+    case active
+    case ended
+
+    static func resolve(
+        hasSessionMapping: Bool,
+        isTabLoading: Bool,
+        snapshotLoaded: Bool,
+        remoteSessionAlive: Bool
+    ) -> Self {
+        if isTabLoading || !hasSessionMapping { return .creating }
+        if !snapshotLoaded { return .connecting }
+        return remoteSessionAlive ? .active : .ended
+    }
+}
+
+private struct TerminalLoadingView: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text(title)
+                .foregroundStyle(.secondary)
         }
     }
 }
