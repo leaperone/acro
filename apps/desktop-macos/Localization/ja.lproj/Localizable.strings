@@ -7,3 +7,7 @@
 "terminal.connecting" = "ターミナルに接続中…";
 "terminal.ended" = "ターミナルは終了しました";
 "runtime.connecting" = "Runtime に接続中…";
+"terminal.action.new" = "新しいターミナル";
+"browser.action.new" = "新しいブラウザー";
+"terminal.action.splitRight" = "右に分割";
+"terminal.action.splitDown" = "下に分割";

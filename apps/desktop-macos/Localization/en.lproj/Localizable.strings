@@ -7,3 +7,7 @@
 "terminal.connecting" = "Connecting terminal…";
 "terminal.ended" = "Terminal ended";
 "runtime.connecting" = "Connecting to Runtime…";
+"terminal.action.new" = "New Terminal";
+"browser.action.new" = "New Browser";
+"terminal.action.splitRight" = "Split Right";
+"terminal.action.splitDown" = "Split Down";
