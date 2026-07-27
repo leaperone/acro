@@ -1748,7 +1748,7 @@ struct TerminalPanesInteractionTests {
         secondWindow.contentView = firstView
         #expect(!firstIsFullScreen)
         NotificationCenter.default.post(
-            name: NSWindow.didExitFullScreenNotification,
+            name: NSWindow.didEnterFullScreenNotification,
             object: firstWindow
         )
         #expect(!firstIsFullScreen)
