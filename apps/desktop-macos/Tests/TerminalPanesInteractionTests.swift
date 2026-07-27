@@ -646,6 +646,67 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func acknowledgedRemovalIgnoresSnapshotsStartedBeforeTheRpcSucceeded() async {
+        let session = makeSession(id: UUID().uuidString)
+        let olderRefresh = RefreshSnapshotGate()
+        var refreshCount = 0
+        var removalAttempts = 0
+        let runtime = RuntimeConnection(
+            refreshSnapshotProvider: {
+                refreshCount += 1
+                if refreshCount == 1 { return try await olderRefresh.wait() }
+                if refreshCount == 2 {
+                    return .init(
+                        workspaceGroups: [], workspaces: [], sessions: [session], focus: []
+                    )
+                }
+                return .init(workspaceGroups: [], workspaces: [], sessions: [], focus: [])
+            },
+            rpcProvider: { method, _ in
+                if method == "session.remove" { removalAttempts += 1 }
+                return [:]
+            }
+        )
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [session],
+            focus: []
+        )
+
+        let olderRefreshTask = Task { await runtime.refresh() }
+        #expect(await waitUntil { olderRefresh.isWaiting })
+        let removal = Task {
+            try? await runtime.requestPersistentSessionRemoval(session.id)
+        }
+        #expect(await waitUntil { removalAttempts == 1 })
+        olderRefresh.resume(returning: .init(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [],
+            focus: []
+        ))
+        _ = await olderRefreshTask.value
+        await removal.value
+
+        #expect(removalAttempts == 1)
+        #expect(refreshCount == 2)
+        #expect(!runtime.sessions.contains(where: { $0.id == session.id }))
+
+        runtime.commitRefreshSnapshot(
+            workspaceGroups: [],
+            workspaces: [],
+            sessions: [session],
+            focus: []
+        )
+        #expect(await waitUntil { removalAttempts >= 2 && refreshCount >= 3 })
+
+        #expect(removalAttempts == 2)
+        #expect(refreshCount == 3)
+        #expect(runtime.sessions.isEmpty)
+    }
+
+    @Test
     func restoringTopologyCancelsAndCleansUpPendingCreation() async throws {
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
         let existing = makeSession(id: UUID().uuidString)

@@ -213,7 +213,7 @@ final class RuntimeConnection: ObservableObject {
     private var generation = 0
     private var nextId = 1
     private var pendingSessionRemovalIds: Set<String> = []
-    private var acknowledgedSessionRemovalIds: Set<String> = []
+    private var acknowledgedSessionRemovalRefreshFloors: [String: Int] = [:]
     private var sessionRemovalInFlightIds: Set<String> = []
     private struct PendingRpc {
         let continuation: CheckedContinuation<Any, Error>
@@ -728,6 +728,7 @@ final class RuntimeConnection: ObservableObject {
 
     func requestPersistentSessionRemoval(_ sessionId: String) async throws {
         pendingSessionRemovalIds.insert(sessionId)
+        acknowledgedSessionRemovalRefreshFloors.removeValue(forKey: sessionId)
         if sessions.contains(where: { $0.id == sessionId }) {
             sessions.removeAll { $0.id == sessionId }
             snapshotRevision &+= 1
@@ -833,6 +834,7 @@ final class RuntimeConnection: ObservableObject {
             guard self.generation == generation else { return false }
             let snapshotAgentEventVersion = agentEventVersion
             let result = await performRefresh(
+                refreshJobId: id,
                 connectionGeneration: generation,
                 snapshotAgentEventVersion: snapshotAgentEventVersion
             )
@@ -853,6 +855,7 @@ final class RuntimeConnection: ObservableObject {
     }
 
     private func performRefresh(
+        refreshJobId: Int,
         connectionGeneration: Int,
         snapshotAgentEventVersion: Int
     ) async -> Bool {
@@ -864,7 +867,8 @@ final class RuntimeConnection: ObservableObject {
                 workspaces: snapshot.workspaces,
                 sessions: snapshot.sessions,
                 focus: snapshot.focus,
-                snapshotAgentEventVersion: snapshotAgentEventVersion
+                snapshotAgentEventVersion: snapshotAgentEventVersion,
+                refreshJobId: refreshJobId
             )
             return true
         } catch {
@@ -892,7 +896,8 @@ final class RuntimeConnection: ObservableObject {
         workspaces: [Workspace],
         sessions: [Session],
         focus: [SessionFocus],
-        snapshotAgentEventVersion: Int? = nil
+        snapshotAgentEventVersion: Int? = nil,
+        refreshJobId: Int? = nil
     ) {
         var mergedSessions = sessions
         if let snapshotAgentEventVersion {
@@ -909,11 +914,17 @@ final class RuntimeConnection: ObservableObject {
             }
         }
         let authoritativeSessionIds = Set(mergedSessions.map(\.id))
-        let completedSessionRemovalIds = pendingSessionRemovalIds
-            .intersection(acknowledgedSessionRemovalIds)
-            .subtracting(authoritativeSessionIds)
+        let completedSessionRemovalIds = Set(pendingSessionRemovalIds.filter { sessionId in
+            guard let refreshJobId,
+                  let refreshFloor = acknowledgedSessionRemovalRefreshFloors[sessionId],
+                  refreshJobId > refreshFloor
+            else { return false }
+            return !authoritativeSessionIds.contains(sessionId)
+        })
         pendingSessionRemovalIds.subtract(completedSessionRemovalIds)
-        acknowledgedSessionRemovalIds.subtract(completedSessionRemovalIds)
+        for sessionId in completedSessionRemovalIds {
+            acknowledgedSessionRemovalRefreshFloors.removeValue(forKey: sessionId)
+        }
         let retrySessionIds = pendingSessionRemovalIds
         mergedSessions.removeAll { pendingSessionRemovalIds.contains($0.id) }
         let incomingSessionIds = Set(mergedSessions.map(\.id))
@@ -983,8 +994,18 @@ final class RuntimeConnection: ObservableObject {
         else { return }
         defer { sessionRemovalInFlightIds.remove(sessionId) }
         try await removeSession(sessionId)
-        acknowledgedSessionRemovalIds.insert(sessionId)
-        await refresh()
+        let refreshFloor = nextRefreshJobId
+        acknowledgedSessionRemovalRefreshFloors[sessionId] = refreshFloor
+        await refresh(startedAfter: refreshFloor)
+    }
+
+    private func refresh(startedAfter refreshJobId: Int) async {
+        var job = enqueueRefresh(generation: generation)
+        while job.id <= refreshJobId {
+            _ = await job.task.value
+            job = enqueueRefresh(generation: generation)
+        }
+        _ = await job.task.value
     }
 
     private static func session(_ session: Session, replacingAgent agent: AgentSession?) -> Session {

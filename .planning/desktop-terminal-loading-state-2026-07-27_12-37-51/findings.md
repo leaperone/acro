@@ -37,6 +37,7 @@
 - 空 pane 创建失败后现有逻辑会移除 pane；加载提示不会掩盖错误弹窗。
 - 用户可在 `session.create` 返回、refresh 提交前关闭 loading 标签。此时必须保留远端删除意图，否则删除失败或 Controller 重建后 session 会复活。
 - 任意“缺少 session”的旧快照不能清除删除意图。只有 `session.remove` 已成功，且后续权威快照仍缺少 session，才算清理完成。
+- “后续快照”还必须具备因果边界：其 refresh job 必须在删除 RPC 成功后启动。删除前已启动、成功后才提交的旧 refresh 不能清 tombstone。
 
 ## 参考指针
 
