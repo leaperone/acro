@@ -199,6 +199,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
     @Bindable var splitState: SplitState
     let controller: SplitViewController
     let appearance: BonsplitConfiguration.Appearance
+    var tabBarLeadingInset: CGFloat? = nil
     let dividerPositionRange: ClosedRange<CGFloat>
     let contentBuilder: (TabItem, PaneID) -> Content
     let emptyPaneBuilder: (PaneID) -> EmptyContent
@@ -671,6 +672,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
                 controller: controller,
                 contentBuilder: contentBuilder,
                 emptyPaneBuilder: emptyPaneBuilder,
+                tabBarLeadingInset: tabBarLeadingInset,
                 showSplitButtons: showSplitButtons,
                 tabBarVisibility: tabBarVisibility,
                 contentViewLifecycle: contentViewLifecycle
@@ -680,6 +682,7 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
                 splitState: nestedSplitState,
                 controller: controller,
                 appearance: appearance,
+                tabBarLeadingInset: tabBarLeadingInset,
                 dividerPositionRange: dividerPositionRange,
                 contentBuilder: contentBuilder,
                 emptyPaneBuilder: emptyPaneBuilder,

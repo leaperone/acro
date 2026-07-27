@@ -19,6 +19,7 @@ import SwiftUI
 /// ```
 public struct BonsplitView<Content: View, EmptyContent: View>: View {
     @Bindable private var controller: BonsplitController
+    private let tabBarLeadingInset: CGFloat?
     private let contentBuilder: (Tab, PaneID) -> Content
     private let emptyPaneBuilder: (PaneID) -> EmptyContent
 
@@ -29,10 +30,12 @@ public struct BonsplitView<Content: View, EmptyContent: View>: View {
     ///   - emptyPane: A ViewBuilder closure that provides content for empty panes
     public init(
         controller: BonsplitController,
+        tabBarLeadingInset: CGFloat? = nil,
         @ViewBuilder content: @escaping (Tab, PaneID) -> Content,
         @ViewBuilder emptyPane: @escaping (PaneID) -> EmptyContent
     ) {
         self.controller = controller
+        self.tabBarLeadingInset = tabBarLeadingInset
         self.contentBuilder = content
         self.emptyPaneBuilder = emptyPane
     }
@@ -45,19 +48,26 @@ public struct BonsplitView<Content: View, EmptyContent: View>: View {
             emptyPaneBuilder: { internalPaneId in
                 emptyPaneBuilder(PaneID(id: internalPaneId.id))
             },
-            appearance: controller.configuration.appearance,
+            appearance: appearance,
+            tabBarLeadingInset: tabBarLeadingInset,
             dividerPositionRange: controller.configuration.dividerPositionRange,
-            showSplitButtons: controller.configuration.allowSplits && controller.configuration.appearance.showSplitButtons,
+            showSplitButtons: controller.configuration.allowSplits && appearance.showSplitButtons,
             tabBarVisibility: controller.configuration.tabBarVisibility,
             contentViewLifecycle: controller.configuration.contentViewLifecycle,
             onGeometryChange: { [weak controller] isDragging in
                 controller?.notifyGeometryChange(isDragging: isDragging)
             },
-            enableAnimations: controller.configuration.appearance.enableAnimations,
-            animationDuration: controller.configuration.appearance.animationDuration
+            enableAnimations: appearance.enableAnimations,
+            animationDuration: appearance.animationDuration
         )
         .environment(controller)
         .environment(controller.internalController)
+    }
+
+    private var appearance: BonsplitConfiguration.Appearance {
+        var appearance = controller.configuration.appearance
+        if let tabBarLeadingInset { appearance.tabBarLeadingInset = tabBarLeadingInset }
+        return appearance
     }
 }
 
@@ -70,9 +80,11 @@ extension BonsplitView where EmptyContent == DefaultEmptyPaneView {
     ///   - content: A ViewBuilder closure that provides content for each tab. Receives the tab and pane ID.
     public init(
         controller: BonsplitController,
+        tabBarLeadingInset: CGFloat? = nil,
         @ViewBuilder content: @escaping (Tab, PaneID) -> Content
     ) {
         self.controller = controller
+        self.tabBarLeadingInset = tabBarLeadingInset
         self.contentBuilder = content
         self.emptyPaneBuilder = { _ in DefaultEmptyPaneView() }
     }

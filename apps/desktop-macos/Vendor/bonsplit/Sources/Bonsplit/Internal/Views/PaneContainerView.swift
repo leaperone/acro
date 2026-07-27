@@ -153,6 +153,7 @@ struct PaneContainerView<Content: View, EmptyContent: View>: View {
     @Bindable var controller: SplitViewController
     let contentBuilder: (TabItem, PaneID) -> Content
     let emptyPaneBuilder: (PaneID) -> EmptyContent
+    var tabBarLeadingInset: CGFloat? = nil
     var showSplitButtons: Bool = true
     var tabBarVisibility: TabBarVisibility = .always
     var contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch
@@ -174,6 +175,7 @@ struct PaneContainerView<Content: View, EmptyContent: View>: View {
                 TabBarView(
                     pane: pane,
                     isFocused: isFocused,
+                    tabBarLeadingInset: tabBarLeadingInset,
                     showSplitButtons: showSplitButtons
                 )
             }

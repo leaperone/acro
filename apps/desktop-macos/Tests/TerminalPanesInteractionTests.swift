@@ -1710,7 +1710,59 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
-    func fullScreenNotificationsUpdateTrafficLightClearance() async throws {
+    func fullScreenNotificationsStayScopedToTheirWindow() {
+        var firstIsFullScreen = false
+        var secondIsFullScreen = false
+        let firstView = WindowConfigurationView()
+        firstView.onFullScreenChange = { firstIsFullScreen = $0 }
+        let secondView = WindowConfigurationView()
+        secondView.onFullScreenChange = { secondIsFullScreen = $0 }
+        let firstWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let secondWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        defer {
+            firstWindow.orderOut(nil)
+            secondWindow.orderOut(nil)
+        }
+        firstWindow.contentView = firstView
+        secondWindow.contentView = secondView
+
+        #expect(!firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+        NotificationCenter.default.post(
+            name: NSWindow.didEnterFullScreenNotification,
+            object: firstWindow
+        )
+        #expect(firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+
+        secondWindow.contentView = firstView
+        #expect(!firstIsFullScreen)
+        NotificationCenter.default.post(
+            name: NSWindow.didExitFullScreenNotification,
+            object: firstWindow
+        )
+        #expect(!firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+        NotificationCenter.default.post(
+            name: NSWindow.didEnterFullScreenNotification,
+            object: secondWindow
+        )
+        #expect(firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+    }
+
+    @Test
+    func tabBarLeadingInsetOverrideDoesNotMutateTheSharedController() async throws {
         let model = WorkbenchModel(hub: RuntimeHub())
         let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
         model.selectedServerId = key.serverId
@@ -1720,9 +1772,10 @@ struct TerminalPanesInteractionTests {
         )
         model.setLeftSidebarPresentation(.hidden)
         let paneController = try #require(model.currentTerminalPaneController)
-        let hostingView = NSHostingView(rootView: WorkbenchView(
+        let hostingView = NSHostingView(rootView: TerminalPanesView(
             model: model,
-            runtime: model.runtime
+            runtime: model.runtime,
+            tabBarLeadingInsetOverride: 0
         ))
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
@@ -1730,20 +1783,30 @@ struct TerminalPanesInteractionTests {
             backing: .buffered,
             defer: false
         )
-        defer { window.orderOut(nil) }
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
         window.contentView?.layoutSubtreeIfNeeded()
-        await Task.yield()
 
         #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 80)
-        NotificationCenter.default.post(name: NSWindow.didEnterFullScreenNotification, object: window)
-        await Task.yield()
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 0)
+        let overriddenTab = try #require(renderedTabItemHitRegions(in: hostingView).first)
+        #expect(overriddenTab.convert(overriddenTab.bounds, to: nil).minX < 80)
 
-        NotificationCenter.default.post(name: NSWindow.didExitFullScreenNotification, object: window)
-        await Task.yield()
+        hostingView.rootView = TerminalPanesView(
+            model: model,
+            runtime: model.runtime
+        )
         #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 80)
+        #expect(await waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return renderedTabItemHitRegions(in: hostingView).first.map {
+                $0.convert($0.bounds, to: nil).minX >= 80
+            } == true
+        })
     }
 
     @Test
@@ -1867,7 +1930,7 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
-    func sidebarAndFullScreenPresentationUpdateEveryTrafficLightClearance() {
+    func sidebarPresentationUpdatesEveryTrafficLightClearance() {
         let model = WorkbenchModel(hub: RuntimeHub())
         let keys = ["one", "two"].map {
             ScopedResourceID(serverId: "server", resourceId: $0)
@@ -1890,10 +1953,6 @@ struct TerminalPanesInteractionTests {
         model.setLeftSidebarPresentation(.compact)
         #expect(leadingInsets() == [0, 0])
         model.setLeftSidebarPresentation(.hidden)
-        #expect(leadingInsets() == [80, 80])
-        model.setMainWindowFullScreen(true)
-        #expect(leadingInsets() == [0, 0])
-        model.setMainWindowFullScreen(false)
         #expect(leadingInsets() == [80, 80])
         model.setLeftSidebarPresentation(.wide)
         #expect(leadingInsets() == [0, 0])

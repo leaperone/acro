@@ -13,7 +13,7 @@
 ## 真实调用链
 
 - `WorkbenchModel.synchronizeTerminalPaneControllers` 只根据 `leftSidebarPresentation == .hidden` 计算 clearance。
-- `WindowConfigurationView` 已监听 `didEnterFullScreen` / `didExitFullScreen`，但只重算 safe area，没有把状态交给 model。
+- `WindowConfigurationView` 已监听 `didEnterFullScreen` / `didExitFullScreen`，但只重算 safe area，没有把状态交给所属 WorkbenchView。
 - `TerminalPaneController.configuration` 把 bool 映射为 80pt。
 - `TabBarView` 用 `rootNode.allPaneIds.first == pane.id` 决定哪个 pane 渲染 inset；`SplitViewContainer` zoom 时渲染 `zoomedNode`。
 
@@ -24,22 +24,23 @@
 - 正确 owner 是 `zoomedPaneId ?? rootNode.allPaneIds.first`。
 - 正确 clearance 是 `leftSidebarPresentation == .hidden && !isMainWindowFullScreen`。
 - 行为红测确认：zoom 第二窗格后唯一可见标签的窗口坐标 `minX` 为 `0`，没有拿到 80pt 避让。
-- 行为红测确认：工作台窗口收到 `didEnterFullScreen` 后，缓存 controller 的 leading inset 仍为 `80`。
+- 行为红测确认：工作台窗口收到 `didEnterFullScreen` 后，渲染仍使用 controller 的 `80pt` leading inset。
 
 ## 技术决策
 
 | 决策 | 证据 |
 |---|---|
 | 复用现有窗口通知 | 不新增 monitor，didEnter/didExit 已是权威事件 |
-| model 保存主窗口 fullscreen bool | 同步更新所有 workspace 的 TerminalPaneController configuration |
+| WorkbenchView 保存窗口 fullscreen bool | `WindowGroup` 的多个窗口共享 model；全屏状态必须按窗口分域 |
+| BonsplitView 接受渲染局部 override | 不改共享 controller configuration，其他窗口继续保留正常 80pt |
 | Bonsplit 直接按可见 pane 决策 | 最短根修，不引入新的策略对象或配置项 |
 
 ## 风险与边界
 
-- WindowGroup 当前只有主工作台使用这套 model；设置窗口不挂载 WorkbenchView，不会污染状态。
+- `WindowGroup` 可创建或恢复多个工作台窗口，而 Acro 的 model/controller 是共享的；把 fullscreen bool 放进 model 会让窗口互相覆盖。
 - 全屏动画期间配置更新可能触发一次重新布局，必须验证顶部无残余空位且标签命中不回归。
 - 真实全屏自动化在 CI 不稳定；配置链用行为测试，最终 Beta 做人工全屏验收。
-- 测试不伪造 `.fullScreen` style mask；用窗口权威 enter/exit 通知验证接线，用 model 配置断言验证最终 inset。
+- 测试不伪造 `.fullScreen` style mask；用两个 WindowConfigurationView 验证通知按 window 隔离，再验证渲染 override 不修改共享 controller。
 
 ## 参考指针
 

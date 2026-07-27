@@ -9,7 +9,7 @@
 
 ## 范围
 
-- Workbench 将主窗口全屏状态同步到终端窗格配置。
+- Workbench 在每个窗口内维护全屏状态，只覆盖该窗口的标签栏渲染。
 - 隐藏左侧栏时仅在非全屏保留 80pt 红绿灯占位。
 - Bonsplit 放大任意窗格后，把 leading inset 交给当前唯一可见窗格。
 - 添加真实配置与渲染行为回归测试。
@@ -31,6 +31,12 @@
 
 - `apps/desktop-macos/Sources/WorkbenchView.swift`
 - `apps/desktop-macos/Sources/WorkbenchModel.swift`
+- `apps/desktop-macos/Sources/TerminalPanesView.swift`
+- `apps/desktop-macos/Vendor/bonsplit/Sources/Bonsplit/Public/BonsplitView.swift`
+- `apps/desktop-macos/Vendor/bonsplit/Sources/Bonsplit/Internal/Views/SplitViewContainer.swift`
+- `apps/desktop-macos/Vendor/bonsplit/Sources/Bonsplit/Internal/Views/SplitNodeView.swift`
+- `apps/desktop-macos/Vendor/bonsplit/Sources/Bonsplit/Internal/Views/SplitContainerView.swift`
+- `apps/desktop-macos/Vendor/bonsplit/Sources/Bonsplit/Internal/Views/PaneContainerView.swift`
 - `apps/desktop-macos/Vendor/bonsplit/Sources/Bonsplit/Internal/Views/TabBarView.swift`
 - `apps/desktop-macos/Tests/TerminalPanesInteractionTests.swift`
 
@@ -65,7 +71,8 @@
 
 | 决策 | 理由 |
 |---|---|
-| 全屏状态进入 WorkbenchModel | 终端 pane configuration 已由 model 集中管理，避免视图层散改 Bonsplit |
+| 全屏状态留在 WorkbenchView | WindowGroup 可以创建多个窗口；窗口状态不能写入共享 model/controller |
+| Bonsplit 支持只影响当前渲染树的 leading inset override | 手工 NSHostingController 边界不会自动传递普通 SwiftUI 状态，显式参数链最可靠 |
 | leading inset 跟随 zoomedPaneId | zoom 后只有该 pane 被渲染，原 root first 已不代表可见首窗格 |
 | 一次修两个 High | 两个症状都来自“固定占位没有跟随真实窗口/可见 pane 状态”的同一根因 |
 

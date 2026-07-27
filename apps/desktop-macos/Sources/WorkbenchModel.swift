@@ -90,7 +90,6 @@ final class WorkbenchModel: ObservableObject {
             synchronizeTerminalPaneControllers()
         }
     }
-    private(set) var isMainWindowFullScreen = false
     @Published var inspectorVisible = true { didSet { persistLayout() } }
     @Published var sidebarViewMode: SidebarViewMode {
         didSet { UserDefaults.standard.set(sidebarViewMode.rawValue, forKey: Self.sidebarModeKey) }
@@ -340,12 +339,6 @@ final class WorkbenchModel: ObservableObject {
         leftSidebarPresentation = presentation
     }
 
-    func setMainWindowFullScreen(_ isFullScreen: Bool) {
-        guard isMainWindowFullScreen != isFullScreen else { return }
-        isMainWindowFullScreen = isFullScreen
-        synchronizeTerminalPaneControllers()
-    }
-
     func cycleLeftSidebarPresentation() {
         setLeftSidebarPresentation(leftSidebarPresentation.next)
     }
@@ -579,7 +572,7 @@ final class WorkbenchModel: ObservableObject {
     }
 
     private func synchronizeTerminalPaneControllers() {
-        let trafficLightClearance = leftSidebarPresentation == .hidden && !isMainWindowFullScreen
+        let trafficLightClearance = leftSidebarPresentation == .hidden
         let validKeys = Set(workspaceLayouts.keys)
         let staleKeys = terminalPaneControllers.keys.filter { !validKeys.contains($0) }
         for key in staleKeys {

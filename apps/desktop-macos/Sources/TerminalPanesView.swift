@@ -4,12 +4,26 @@ import SwiftUI
 struct TerminalPanesView: View {
     @ObservedObject var model: WorkbenchModel
     @ObservedObject var runtime: RuntimeConnection
+    var tabBarLeadingInsetOverride: CGFloat?
+
+    init(
+        model: WorkbenchModel,
+        runtime: RuntimeConnection,
+        tabBarLeadingInsetOverride: CGFloat? = nil
+    ) {
+        self.model = model
+        self.runtime = runtime
+        self.tabBarLeadingInsetOverride = tabBarLeadingInsetOverride
+    }
 
     var body: some View {
         if let paneController = model.currentTerminalPaneController,
            model.currentLayout?.root != nil {
             let tabMetadata = tabMetadata(for: paneController)
-            BonsplitView(controller: paneController.controller) { tab, paneId in
+            BonsplitView(
+                controller: paneController.controller,
+                tabBarLeadingInset: tabBarLeadingInsetOverride
+            ) { tab, paneId in
                 TerminalPaneContent(
                     model: model,
                     paneController: paneController,
