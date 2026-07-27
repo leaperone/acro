@@ -1519,6 +1519,8 @@ struct TerminalPanesInteractionTests {
         window.makeKeyAndOrderFront(nil)
 
         window.contentView?.layoutSubtreeIfNeeded()
+        #expect(hostingView.safeAreaInsets.top == 0)
+        #expect(!window.isMovableByWindowBackground)
         try await Task.sleep(for: .milliseconds(150))
         window.contentView?.layoutSubtreeIfNeeded()
 
