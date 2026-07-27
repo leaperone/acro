@@ -2,7 +2,7 @@
 
 - 任务 ID：`native-window-drag-2026-07-27_14-42-42`
 - 创建时间：`2026-07-27_14-42-42`
-- 当前状态：`in_progress`
+- 当前状态：`completed`
 
 ## 已完成
 
@@ -16,7 +16,7 @@
 
 ## 进行中
 
-- 执行 PR、preflight、Beta 发布与本机热替换。
+- 无；代码已达到合并与发布条件。
 
 ## 修改文件
 
@@ -38,6 +38,8 @@
 | Swift release build | `swift build -c release` | pass |
 | workspace check | `pnpm check` | pass |
 | workspace build | `pnpm build` | pass，只有既有 `import.meta` 警告 |
+| 最终代码审查 | Critical / High / Medium / Low 全部为 0 | pass |
+| 与 `origin/main` 合并探测 | 无冲突 | pass |
 
 ## 错误与恢复
 
