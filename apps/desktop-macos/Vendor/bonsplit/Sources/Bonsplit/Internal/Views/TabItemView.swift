@@ -2,6 +2,16 @@ import SwiftUI
 import AppKit
 import QuartzCore
 
+private extension Bundle {
+    static let bonsplitResources: Bundle = {
+        if let url = Bundle.main.resourceURL?.appendingPathComponent("Bonsplit_Bonsplit.bundle"),
+           let bundle = Bundle(url: url) {
+            return bundle
+        }
+        return .module
+    }()
+}
+
 enum TabControlShortcutHintAnimation {
     static let visibility: Animation = .easeOut(duration: 0.12)
 }
@@ -572,7 +582,7 @@ struct TabItemView: View {
                 // route. Hidden when the tab is neither playing nor muted.
                 if tab.isAudioMuted || tab.isAudioPlaying {
                     let isMuted = tab.isAudioMuted
-                    let audioLabel = Bundle.module.localizedString(
+                    let audioLabel = Bundle.bonsplitResources.localizedString(
                         forKey: isMuted ? "tabContext.unmuteTab" : "tabContext.muteTab",
                         value: isMuted ? "Unmute Tab" : "Mute Tab",
                         table: nil
@@ -765,7 +775,7 @@ struct TabItemView: View {
         if !tab.isLoading {
             if tab.isAudioMuted || tab.isAudioPlaying {
                 let isMuted = tab.isAudioMuted
-                let audioLabel = Bundle.module.localizedString(
+                let audioLabel = Bundle.bonsplitResources.localizedString(
                     forKey: isMuted ? "tabContext.unmuteTab" : "tabContext.muteTab",
                     value: isMuted ? "Unmute Tab" : "Mute Tab",
                     table: nil
@@ -988,10 +998,10 @@ struct TabItemView: View {
         if tab.showsNotificationBadge { parts.append("Unread") }
         if tab.isDirty { parts.append("Modified") }
         if tab.isAudioMuted {
-            parts.append(Bundle.module.localizedString(forKey: "tabContext.audioMutedAccessibility", value: "Muted", table: nil))
+            parts.append(Bundle.bonsplitResources.localizedString(forKey: "tabContext.audioMutedAccessibility", value: "Muted", table: nil))
         }
         if tab.showsRemoteIndicator {
-            parts.append(Bundle.module.localizedString(forKey: "tabContext.remoteConnectedAccessibility", value: "Connected over SSH", table: nil))
+            parts.append(Bundle.bonsplitResources.localizedString(forKey: "tabContext.remoteConnectedAccessibility", value: "Connected over SSH", table: nil))
         }
         if showsZoomIndicator { parts.append("Zoomed") }
         return parts.joined(separator: ", ")
@@ -1843,7 +1853,7 @@ enum TabContextMenuBuilder {
     }
 
     private static func localized(_ key: String, defaultValue: String) -> String {
-        Bundle.module.localizedString(forKey: key, value: defaultValue, table: nil)
+        Bundle.bonsplitResources.localizedString(forKey: key, value: defaultValue, table: nil)
     }
 }
 

@@ -1,0 +1,5 @@
+"tab.rename.title" = "重命名标签";
+"tab.rename.message" = "输入这个标签的自定义名称。";
+"tab.rename.placeholder" = "标签名称";
+"common.rename" = "重命名";
+"common.cancel" = "取消";

@@ -467,7 +467,15 @@ final class WorkbenchModel: ObservableObject {
     // 标签标题不再追加 " · N" 同名序号:靠终端 OSC 标题天然区分同目录的多个终端,
     // 都不设标题的裸 shell 本无语义差异,序号不携带信息。on: 形参保留仅为调用点零改动。
     func sessionDisplayName(_ session: Session, on connection: RuntimeConnection? = nil) -> String {
-        Self.sessionTitle(session)
+        let source = connection ?? runtime
+        if let serverId = serverId(for: source),
+           let workspace = source.workspaces.first(where: { $0.sessionIds.contains(session.id) }),
+           let title = workspaceLayouts[
+               ScopedResourceID(serverId: serverId, resourceId: workspace.id)
+           ]?.customTitlesBySessionId[session.id] {
+            return title
+        }
+        return Self.sessionTitle(session)
     }
 
     // 标题优先级:终端 OSC 标题(vim/agent/ssh 等主动设置)> 工作目录尾段 > "终端"。
@@ -484,7 +492,24 @@ final class WorkbenchModel: ObservableObject {
         guard let connection = hub.connection(for: key.serverId),
               let session = connection.sessions.first(where: { $0.id == sessionId })
         else { return "终端" }
+        if let title = workspaceLayouts[key]?.customTitlesBySessionId[sessionId] {
+            return title
+        }
         return sessionDisplayName(session, on: connection)
+    }
+
+    @discardableResult
+    func setTerminalTabCustomTitle(
+        _ title: String?,
+        for sessionId: String,
+        in key: ScopedResourceID
+    ) -> Bool {
+        guard var layout = workspaceLayouts[key],
+              layout.setCustomTitle(title, for: sessionId)
+        else { return false }
+        dirtyLayoutWorkspaceIds.insert(key)
+        workspaceLayouts[key] = layout
+        return true
     }
 
     // ---- 布局变更入口(集中同步选中态与持久化) ----

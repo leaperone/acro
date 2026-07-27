@@ -318,10 +318,39 @@ extension TerminalLayoutNode {
 struct WorkspaceTerminalLayout: Codable, Equatable {
     var root: TerminalLayoutNode?
     var focusedPaneId: String?
+    var customTitlesBySessionId: [String: String]
 
-    init(root: TerminalLayoutNode? = nil, focusedPaneId: String? = nil) {
+    init(
+        root: TerminalLayoutNode? = nil,
+        focusedPaneId: String? = nil,
+        customTitlesBySessionId: [String: String] = [:]
+    ) {
         self.root = root
         self.focusedPaneId = focusedPaneId ?? root?.panes.first?.id
+        self.customTitlesBySessionId = customTitlesBySessionId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case root, focusedPaneId, customTitlesBySessionId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        root = try container.decodeIfPresent(TerminalLayoutNode.self, forKey: .root)
+        focusedPaneId = try container.decodeIfPresent(String.self, forKey: .focusedPaneId)
+        customTitlesBySessionId = try container.decodeIfPresent(
+            [String: String].self,
+            forKey: .customTitlesBySessionId
+        ) ?? [:]
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(root, forKey: .root)
+        try container.encode(focusedPaneId, forKey: .focusedPaneId)
+        if !customTitlesBySessionId.isEmpty {
+            try container.encode(customTitlesBySessionId, forKey: .customTitlesBySessionId)
+        }
     }
 
     var focusedPane: PaneTabGroup? {
@@ -395,7 +424,20 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
 
     mutating func removeTab(_ sessionId: String) {
         root = root?.removingTab(sessionId)
+        customTitlesBySessionId.removeValue(forKey: sessionId)
         reconcileFocus()
+    }
+
+    @discardableResult
+    mutating func setCustomTitle(_ title: String?, for sessionId: String) -> Bool {
+        guard root?.sessionIds.contains(sessionId) == true else { return false }
+        let normalized = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if normalized.isEmpty {
+            return customTitlesBySessionId.removeValue(forKey: sessionId) != nil
+        }
+        guard customTitlesBySessionId[sessionId] != normalized else { return false }
+        customTitlesBySessionId[sessionId] = normalized
+        return true
     }
 
     // 拖拽:把标签移入目标窗格 index 处(nil 表示末尾)
@@ -519,6 +561,9 @@ struct WorkspaceTerminalLayout: Codable, Equatable {
 
     mutating func prune(validSessionIds: Set<String>) {
         root = root?.pruning(validSessionIds: validSessionIds)
+        customTitlesBySessionId = customTitlesBySessionId.filter {
+            validSessionIds.contains($0.key)
+        }
         reconcileFocus()
     }
 

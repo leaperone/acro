@@ -986,6 +986,8 @@ struct TerminalPanesInteractionTests {
 
         #expect(configuration.allowsTabContextMenu)
         #expect(configuration.allowedTabContextActions == [
+            .rename,
+            .clearName,
             .closeToLeft,
             .closeToRight,
             .closeOthers,

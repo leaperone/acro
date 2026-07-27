@@ -1,0 +1,5 @@
+"tab.rename.title" = "Rename Tab";
+"tab.rename.message" = "Enter a custom name for this tab.";
+"tab.rename.placeholder" = "Tab name";
+"common.rename" = "Rename";
+"common.cancel" = "Cancel";
