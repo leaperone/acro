@@ -1537,6 +1537,10 @@ struct TerminalPanesInteractionTests {
         #expect(window.titlebarAppearsTransparent)
         #expect(!window.isMovable)
         #expect(hostingView.safeAreaInsets.top == 0)
+        window.setContentSize(NSSize(width: 880, height: 480))
+        try await Task.sleep(for: .milliseconds(50))
+        window.contentView?.layoutSubtreeIfNeeded()
+        #expect(hostingView.safeAreaInsets.top == 0)
 
         let tabViews = renderedTabItemHitRegions(in: hostingView)
             .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }

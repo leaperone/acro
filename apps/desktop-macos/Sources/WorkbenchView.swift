@@ -11,15 +11,6 @@ enum WorkbenchLayoutMetrics {
     static let defaultSidebarWidth: CGFloat = 248
     static let minimumSidebarWidth: CGFloat = 180
     static let maximumSidebarWidth: CGFloat = 420
-
-    static func terminalContentTopPadding(
-        isFullScreen: Bool,
-        nativeTitlebarHeight: CGFloat,
-        hostingSafeAreaTop: CGFloat
-    ) -> CGFloat {
-        guard !isFullScreen else { return 0 }
-        return -max(0, min(nativeTitlebarHeight, hostingSafeAreaTop))
-    }
 }
 
 struct WorkbenchView: View {
@@ -32,8 +23,6 @@ struct WorkbenchView: View {
     @AppStorage("acro.sidebar.width") private var sidebarWidth = Double(
         WorkbenchLayoutMetrics.defaultSidebarWidth
     )
-    @State private var terminalContentTopPadding: CGFloat = 0
-
     var body: some View {
         ZStack(alignment: .top) {
             HStack(spacing: 0) {
@@ -79,7 +68,6 @@ struct WorkbenchView: View {
                                 .frame(maxHeight: .infinity)
                         }
                     }
-                    .padding(.top, terminalContentTopPadding)
                     .ignoresSafeArea(.container, edges: .top)
                     .frame(
                         width: geometry.size.width,
@@ -91,10 +79,7 @@ struct WorkbenchView: View {
             }
             .coordinateSpace(name: "workbench-root")
             .ignoresSafeArea(.container, edges: .top)
-            .background(WindowConfigurator { topPadding in
-                guard abs(terminalContentTopPadding - topPadding) > 0.5 else { return }
-                terminalContentTopPadding = topPadding
-            })
+            .background(WindowConfigurator())
             .animation(
                 reduceMotion ? nil : .easeInOut(duration: 0.18),
                 value: model.leftSidebarPresentation
@@ -362,8 +347,6 @@ struct WindowDragHandle: NSViewRepresentable {
 // 标签条内嵌的 NSScrollView(SwiftUI ScrollView 桥接)内部视图会返回可拖,
 // 容器级覆盖挡不住;直接关掉窗口级隐式移动才是根治。
 private final class WindowConfigurationView: NSView {
-    var onTopPaddingChange: (CGFloat) -> Void = { _ in }
-
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
@@ -386,49 +369,47 @@ private final class WindowConfigurationView: NSView {
             name: NSWindow.didExitFullScreenNotification,
             object: window
         )
-        scheduleConfigurationAndMeasurement()
+        scheduleConfiguration()
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
 
-    func scheduleConfigurationAndMeasurement() {
+    func scheduleConfiguration() {
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.styleMask.insert(.fullSizeContentView)
             window.isMovable = false
-            self.publishTopPadding(for: window)
+            self.cancelHostingSafeArea(in: window)
         }
     }
 
     @objc private func windowGeometryChanged(_ notification: Notification) {
-        scheduleConfigurationAndMeasurement()
+        scheduleConfiguration()
     }
 
-    private func publishTopPadding(for window: NSWindow) {
-        let nativeTitlebarHeight = max(0, window.frame.height - window.contentLayoutRect.height)
-        let hostingSafeAreaTop = max(0, window.contentView?.safeAreaInsets.top ?? 0)
-        onTopPaddingChange(WorkbenchLayoutMetrics.terminalContentTopPadding(
-            isFullScreen: window.styleMask.contains(.fullScreen),
-            nativeTitlebarHeight: nativeTitlebarHeight,
-            hostingSafeAreaTop: hostingSafeAreaTop
-        ))
+    private func cancelHostingSafeArea(in window: NSWindow) {
+        guard let contentView = window.contentView else { return }
+        var insets = contentView.additionalSafeAreaInsets
+        if window.styleMask.contains(.fullScreen) {
+            insets.top = 0
+        } else {
+            let nativeTitlebarHeight = max(0, window.frame.height - window.contentLayoutRect.height)
+            let unadjustedSafeAreaTop = max(0, contentView.safeAreaInsets.top - insets.top)
+            insets.top = -min(nativeTitlebarHeight, unadjustedSafeAreaTop)
+        }
+        guard abs(contentView.additionalSafeAreaInsets.top - insets.top) > 0.5 else { return }
+        contentView.additionalSafeAreaInsets = insets
     }
 }
 
 private struct WindowConfigurator: NSViewRepresentable {
-    let onTopPaddingChange: (CGFloat) -> Void
-
     func makeNSView(context: Context) -> WindowConfigurationView {
-        let view = WindowConfigurationView()
-        view.onTopPaddingChange = onTopPaddingChange
-        return view
+        WindowConfigurationView()
     }
 
-    func updateNSView(_ nsView: WindowConfigurationView, context: Context) {
-        nsView.onTopPaddingChange = onTopPaddingChange
-    }
+    func updateNSView(_ nsView: WindowConfigurationView, context: Context) {}
 }

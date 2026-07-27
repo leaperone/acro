@@ -2,21 +2,26 @@
 
 - 任务 ID：`terminal-tab-interactions-2026-07-27_13-38-30`
 - 创建时间：`2026-07-27_13-38-30`
-- 当前状态：`completed`
+- 当前状态：`in_progress`
 
 ## 已完成
 
 - 核对主仓状态、历史提交、当前 Beta 和运行进程。
 - 对照 Acro 与 cmux/Bonsplit 的标签选择、拖拽和分屏调用链。
 - 运行现有 TerminalPanesInteractionTests：43 项通过。
+- 确认按钮视觉槽内的合法点击修复前失败、修复后通过。
+- 确认全尺寸隐藏标题栏窗口的根宿主修复前仍保留 32pt top safe area。
 
 ## 进行中
 
-- 无。
+- 删除负 top padding 补偿，改为在现有 AppKit 内容宿主上取消顶部 safe area。
+- 执行全量验证、Git 与 Beta 发布收敛。
 
 ## 修改文件
 
 - `.planning/terminal-tab-interactions-2026-07-27_13-38-30/*`
+- `apps/desktop-macos/Sources/WorkbenchView.swift`
+- `apps/desktop-macos/Tests/CompactSidebarTests.swift`
 - `apps/desktop-macos/Tests/TerminalPanesInteractionTests.swift`
 - `apps/desktop-macos/Vendor/bonsplit/Sources/Bonsplit/Internal/Views/TabBarView.swift`
 
@@ -26,12 +31,8 @@
 |---|---|---|
 | TerminalPanesInteractionTests | 43 项通过；缺少点击和按钮命中覆盖 | pass |
 | 新增真实窗口回归 | 修复前失败，修复后通过 | pass |
-| Acro Desktop 完整测试 | 全部通过 | pass |
-| Bonsplit 完整测试 | 204 项通过 | pass |
-| pnpm check | 通过 | pass |
-| pnpm build | 通过；仅既有 `import.meta` warning | pass |
-| Release package | `0.0.8-beta.27` / Build 58 本地包成功 | pass |
-| 本机热替换 | UI/runtime 已更新；daemon PID 1151 保持，8790 health 正常 | pass |
+| 全尺寸标题栏根 safe area 回归 | 修复前 32pt，修复后 0pt | pass |
+| 旧全量验证与本机包 | 新窗口根因出现后已失效，必须重跑 | pending |
 
 ## 错误与恢复
 

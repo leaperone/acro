@@ -28,7 +28,7 @@
 ## 修改路径
 
 - `apps/desktop-macos/Tests/TerminalPanesInteractionTests.swift`
-- 根据失败测试定位，最小修改 `apps/desktop-macos/Vendor/bonsplit/` 或 Acro 的 Bonsplit 集成层。
+- 根据失败测试定位，最小修改 `apps/desktop-macos/Vendor/bonsplit/` 与 Acro 的窗口宿主配置。
 
 ## 验证方式
 
@@ -53,9 +53,9 @@
 ## 执行状态
 
 - [x] 完成只读探索并确认真实调用链
-- [x] 完成实现
-- [x] 完成验证
-- [x] 完成交付前收敛检查
+- [ ] 完成实现
+- [ ] 完成验证
+- [ ] 完成交付前收敛检查
 
 ## 决策
 
