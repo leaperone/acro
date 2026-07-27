@@ -934,6 +934,56 @@ final class BonsplitTests: XCTestCase {
     }
 
     @MainActor
+    func testPaneHostingViewAcceptsFirstMouseOnlyInsideRegisteredTabBar() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        let hostingView = NonDraggableHostingView(rootView: Color.clear)
+        hostingView.frame = contentView.bounds
+        contentView.addSubview(hostingView)
+
+        let tabBar = FakeTabBarHitRegionView(frame: NSRect(x: 20, y: 132, width: 180, height: 30))
+        contentView.addSubview(tabBar)
+
+        let tabPoint = tabBar.convert(NSPoint(x: 24, y: 12), to: nil)
+        let contentPoint = NSPoint(x: 24, y: 40)
+        let tabEvent = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: tabPoint,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ))
+        let contentEvent = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: contentPoint,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ))
+
+        XCTAssertTrue(hostingView.acceptsFirstMouse(for: tabEvent))
+        XCTAssertFalse(hostingView.acceptsFirstMouse(for: contentEvent))
+    }
+
+    @MainActor
     func testTabBarHitRegionRegistryIgnoresViewsHiddenByAncestors() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
@@ -4187,6 +4237,7 @@ final class BonsplitTests: XCTestCase {
         contentView.addSubview(view)
         window.makeKeyAndOrderFront(nil)
         let event = try makeLeftMouseDownEvent(in: view, at: NSPoint(x: 20, y: 15), clickCount: 1)
+        XCTAssertTrue(view.acceptsFirstMouse(for: event))
         view.mouseDown(with: event)
 
         XCTAssertTrue(focused, "Inactive-pane drag zone should focus the pane before starting a window drag")
