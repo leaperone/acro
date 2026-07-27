@@ -7,5 +7,15 @@
 "tabContext.closeOtherTabs" = "关闭其他标签";
 "tabContext.zoomPane" = "放大窗格";
 "tabContext.exitZoom" = "退出窗格放大";
+"tabContext.closeTab" = "关闭标签";
+"tabContext.muteTab" = "静音标签";
+"tabContext.unmuteTab" = "取消静音标签";
+"tabContext.audioMutedAccessibility" = "已静音";
+"tabContext.remoteConnectedAccessibility" = "已通过 SSH 连接";
+"tabStatus.loading" = "正在加载";
+"tabStatus.pinned" = "已固定";
+"tabStatus.unread" = "未读";
+"tabStatus.modified" = "已修改";
+"tabStatus.zoomed" = "已放大";
 "tabContext.enterFullWidthTab" = "全宽标签";
 "tabContext.exitFullWidthTab" = "退出全宽标签";

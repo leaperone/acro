@@ -41,3 +41,9 @@
 "tabContext.forkConversation.newWorkspace" = "New Workspace";
 "tabContext.disconnectRemote" = "Disconnect SSH";
 "tabContext.remoteConnectedAccessibility" = "Connected over SSH";
+"tabContext.closeTab" = "Close Tab";
+"tabStatus.loading" = "Loading";
+"tabStatus.pinned" = "Pinned";
+"tabStatus.unread" = "Unread";
+"tabStatus.modified" = "Modified";
+"tabStatus.zoomed" = "Zoomed";

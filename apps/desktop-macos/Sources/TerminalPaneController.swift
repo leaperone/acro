@@ -401,10 +401,22 @@ final class TerminalPaneController: BonsplitDelegate {
             ),
             tabBarLeadingInset: trafficLightClearance ? 80 : 0,
             splitButtonTooltips: .init(
-                newTerminal: "新建终端",
-                newBrowser: "新建浏览器",
-                splitRight: "向右分屏",
-                splitDown: "向下分屏"
+                newTerminal: String(
+                    localized: "terminal.action.new",
+                    defaultValue: "New Terminal"
+                ),
+                newBrowser: String(
+                    localized: "browser.action.new",
+                    defaultValue: "New Browser"
+                ),
+                splitRight: String(
+                    localized: "terminal.action.splitRight",
+                    defaultValue: "Split Right"
+                ),
+                splitDown: String(
+                    localized: "terminal.action.splitDown",
+                    defaultValue: "Split Down"
+                )
             ),
             enableAnimations: false
         )

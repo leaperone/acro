@@ -22,6 +22,8 @@
 - cmux vendored Bonsplit 同样存在 close 与 split action 缺口，不能直接照抄其当前实现。
 - 修复应绑定在最终 tab 包装和共享 action/close 控件，覆盖 terminal、browser、pinned 与未来 custom action。
 - SwiftUI 虚拟 AX 节点由系统 Accessibility 服务导出；同进程 `NSHostingView.accessibilityChildren()` 只返回空 group，不能作为可靠回归测试。
+- 最新候选的系统 AX 树已确认：标签输出动态标题、selected trait 和稳定 identifier；close 独立输出；悬停动作区输出 New Terminal、Split Right、Split Down。
+- Orca CLI 的紧凑树不会显示 SwiftUI 的 AX Description；最终验收使用 Computer Use 详细树，避免把有名称的按钮误判为无名称。
 
 ## 技术决策
 
@@ -33,8 +35,8 @@
 
 ## 风险与边界
 
-- 外层 accessibility modifier 可能合并 close/audio/zoom 子按钮；测试必须验证子操作仍独立。
-- `.accessibilityRepresentation` 可能改变拖拽/点击命中，不作为首选方案。
+- `accessibilityRepresentation` 已在真实系统树确认没有合并或重复 tab/close 子节点；audio/zoom 使用相同独立 Button 表示路径。
+- 鼠标点击、拖拽和 split action 的完整命中测试通过；表示层没有替换视觉层手势。
 - 当前任务只修已确认的顶部标签 AX 语义，不顺手重构本地化体系。
 - 自动化无法直接读取 SwiftUI 最终 AX tree；候选包必须用 Orca Computer Use 做真实树验收。
 

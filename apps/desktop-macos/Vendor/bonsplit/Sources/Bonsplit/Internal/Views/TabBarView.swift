@@ -1265,24 +1265,13 @@ struct TabBarView: View {
 #if DEBUG
                 dlog("tab.select pane=\(pane.id.id.uuidString.prefix(5)) tab=\(tab.id.uuidString.prefix(5)) title=\"\(tab.title)\"")
 #endif
-                withTransaction(Transaction(animation: nil)) {
-                    pane.selectTab(tab.id)
-                    controller.focusPane(pane.id)
-                }
+                selectTab(tab)
             },
             onClose: { source in
-                guard !tab.isPinned else { return }
-                // Close should be instant (no fade-out/removal animation).
-#if DEBUG
-                dlog("tab.close pane=\(pane.id.id.uuidString.prefix(5)) tab=\(tab.id.uuidString.prefix(5)) title=\"\(tab.title)\"")
-#endif
-                withTransaction(Transaction(animation: nil)) {
-                    controller.onTabCloseRequest?(TabID(id: tab.id), pane.id, source)
-                    _ = controller.closeTab(TabID(id: tab.id), inPane: pane.id)
-                }
+                closeTab(tab, source: source)
             },
             onZoomToggle: {
-                _ = controller.requestTabZoomToggle(for: TabID(id: tab.id), inPane: pane.id)
+                toggleZoom(for: tab)
             },
             onContextAction: { action in
                 controller.requestTabContextAction(action, for: TabID(id: tab.id), inPane: pane.id)
@@ -1317,6 +1306,113 @@ struct TabBarView: View {
                     .saturation(tabBarSaturation)
             }
         }
+        .accessibilityRepresentation {
+            tabAccessibilityRepresentation(
+                for: tab,
+                showsZoomIndicator: showsZoomIndicator
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func tabAccessibilityRepresentation(
+        for tab: TabItem,
+        showsZoomIndicator: Bool
+    ) -> some View {
+        Button(tab.title) { selectTab(tab) }
+            .accessibilityLabel(Text(tab.title))
+            .accessibilityValue(tabAccessibilityValue(
+                for: tab,
+                showsZoomIndicator: showsZoomIndicator
+            ))
+            .accessibilityAddTraits(pane.selectedTabId == tab.id ? .isSelected : [])
+            .accessibilityIdentifier("paneTab.\(tab.id.uuidString)")
+
+        if tab.isAudioMuted || tab.isAudioPlaying {
+            let label = tab.isAudioMuted
+                ? localized("tabContext.unmuteTab", "Unmute Tab")
+                : localized("tabContext.muteTab", "Mute Tab")
+            Button(label) {
+                controller.requestTabContextAction(
+                    .toggleAudioMute,
+                    for: TabID(id: tab.id),
+                    inPane: pane.id
+                )
+            }
+            .accessibilityLabel(Text(label))
+            .accessibilityIdentifier("paneTab.audio.\(tab.id.uuidString)")
+        }
+
+        if showsZoomIndicator {
+            let label = localized("tabContext.exitZoom", "Exit Zoom")
+            Button(label) {
+                toggleZoom(for: tab)
+            }
+            .accessibilityLabel(Text(label))
+            .accessibilityIdentifier("paneTab.zoom.\(tab.id.uuidString)")
+        }
+
+        if controller.configuration.allowCloseTabs && !tab.isPinned {
+            let label = localized("tabContext.closeTab", "Close Tab")
+            Button(label) {
+                closeTab(tab, source: .closeButton)
+            }
+            .accessibilityLabel(Text(label))
+            .accessibilityIdentifier("paneTab.close.\(tab.id.uuidString)")
+        }
+    }
+
+    private func selectTab(_ tab: TabItem) {
+        withTransaction(Transaction(animation: nil)) {
+            pane.selectTab(tab.id)
+            controller.focusPane(pane.id)
+        }
+    }
+
+    private func closeTab(_ tab: TabItem, source: TabCloseRequestSource) {
+        guard !tab.isPinned else { return }
+        // Close should be instant (no fade-out/removal animation).
+#if DEBUG
+        dlog("tab.close pane=\(pane.id.id.uuidString.prefix(5)) tab=\(tab.id.uuidString.prefix(5)) title=\"\(tab.title)\"")
+#endif
+        withTransaction(Transaction(animation: nil)) {
+            controller.onTabCloseRequest?(TabID(id: tab.id), pane.id, source)
+            _ = controller.closeTab(TabID(id: tab.id), inPane: pane.id)
+        }
+    }
+
+    private func toggleZoom(for tab: TabItem) {
+        _ = controller.requestTabZoomToggle(for: TabID(id: tab.id), inPane: pane.id)
+    }
+
+    private func tabAccessibilityValue(
+        for tab: TabItem,
+        showsZoomIndicator: Bool
+    ) -> String {
+        var parts: [String] = []
+        if tab.isLoading { parts.append(localized("tabStatus.loading", "Loading")) }
+        if tab.isPinned { parts.append(localized("tabStatus.pinned", "Pinned")) }
+        if tab.showsNotificationBadge { parts.append(localized("tabStatus.unread", "Unread")) }
+        if tab.isDirty { parts.append(localized("tabStatus.modified", "Modified")) }
+        if tab.isAudioMuted {
+            parts.append(localized("tabContext.audioMutedAccessibility", "Muted"))
+        }
+        if tab.showsRemoteIndicator {
+            parts.append(localized(
+                "tabContext.remoteConnectedAccessibility",
+                "Connected over SSH"
+            ))
+        }
+        if showsZoomIndicator { parts.append(localized("tabStatus.zoomed", "Zoomed")) }
+        return parts.joined(separator: ", ")
+    }
+
+    private func localized(_ key: String, _ defaultValue: String) -> String {
+        Bundle.bonsplitResources.localizedString(
+            forKey: key,
+            value: defaultValue,
+            table: nil
+        )
     }
 
     private func contextMenuState(for tab: TabItem, at index: Int) -> TabContextMenuState {
@@ -1562,31 +1658,33 @@ struct TabBarView: View {
         _ button: BonsplitConfiguration.SplitActionButton,
         tooltips: BonsplitConfiguration.SplitButtonTooltips
     ) -> some View {
-        if button.activatesOnMouseDown {
-            splitActionButtonIcon(button.icon)
-                .frame(
-                    width: TabBarStyling.splitActionButtonReservedWidth,
-                    height: tabBarLayout.splitActionButtonHeight
-                )
-                .contentShape(Rectangle())
-                .foregroundStyle(TabBarColors.splitActionIcon(for: appearance, isPressed: false))
-                .tabBarButtonAnimationsDisabled()
-                .overlay(
-                    SplitActionMouseDownOverlay {
-                        performSplitActionButton(button)
-                    }
-                )
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(splitActionButtonTooltip(button, tooltips: tooltips))
-                .accessibilityAddTraits(.isButton)
-        } else {
-            Button {
-                performSplitActionButton(button)
-            } label: {
+        Group {
+            if button.activatesOnMouseDown {
                 splitActionButtonIcon(button.icon)
+                    .frame(
+                        width: TabBarStyling.splitActionButtonReservedWidth,
+                        height: tabBarLayout.splitActionButtonHeight
+                    )
+                    .contentShape(Rectangle())
+                    .foregroundStyle(TabBarColors.splitActionIcon(for: appearance, isPressed: false))
+                    .tabBarButtonAnimationsDisabled()
+                    .overlay(
+                        SplitActionMouseDownOverlay {
+                            performSplitActionButton(button)
+                        }
+                    )
+            } else {
+                Button {
+                    performSplitActionButton(button)
+                } label: {
+                    splitActionButtonIcon(button.icon)
+                }
+                .buttonStyle(SplitActionButtonStyle(appearance: appearance, layout: tabBarLayout))
             }
-            .buttonStyle(SplitActionButtonStyle(appearance: appearance, layout: tabBarLayout))
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(splitActionButtonTooltip(button, tooltips: tooltips))
+        .accessibilityAddTraits(.isButton)
     }
 
     private func splitActionButtonAccessibilityIdentifier(_ button: BonsplitConfiguration.SplitActionButton) -> String {

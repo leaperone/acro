@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import QuartzCore
 
-private extension Bundle {
+extension Bundle {
     static let bonsplitResources: Bundle = {
         if let url = Bundle.main.resourceURL?.appendingPathComponent("Bonsplit_Bonsplit.bundle"),
            let bundle = Bundle(url: url) {
@@ -387,10 +387,6 @@ struct TabItemView: View {
                 isHovered = hovering
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(tab.title)
-        .accessibilityValue(accessibilityValue)
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .safeHelp(tab.title)
         .tabGeometryDebugFrame { frame in
             debugRecordTabFrame(frame)
@@ -548,6 +544,7 @@ struct TabItemView: View {
             // Icon + title block uses the standard spacing, but keep the close affordance tight.
             HStack(spacing: scaledContentSpacing) {
                 leadingIcon
+                    .accessibilityHidden(true)
 
                 Text(tab.title)
                     .font(.system(size: appearance.tabTitleFontSize))
@@ -561,6 +558,7 @@ struct TabItemView: View {
                     .tabGeometryDebugFrame { frame in
                         debugRecordGeometry(which: "title", frame: frame)
                     }
+                    .accessibilityHidden(true)
 
                 if tab.showsRemoteIndicator {
                     Image(systemName: "network")
@@ -652,7 +650,11 @@ struct TabItemView: View {
                         }
                     }
                     .saturation(saturation)
-                    .accessibilityLabel("Exit zoom")
+                    .accessibilityLabel(Bundle.bonsplitResources.localizedString(
+                        forKey: "tabContext.exitZoom",
+                        value: "Exit Zoom",
+                        table: nil
+                    ))
                     .tabBarButtonAnimationsDisabled()
                 }
             }
@@ -684,6 +686,7 @@ struct TabItemView: View {
     private var iconOnlyContent: some View {
         ZStack {
             leadingIcon
+                .accessibilityHidden(true)
                 .overlay(alignment: .topTrailing) {
                     pinnedActivityBadge
                         .offset(x: 3, y: -2)
@@ -991,22 +994,6 @@ struct TabItemView: View {
         )
     }
 
-    private var accessibilityValue: String {
-        var parts: [String] = []
-        if tab.isLoading { parts.append("Loading") }
-        if tab.isPinned { parts.append("Pinned") }
-        if tab.showsNotificationBadge { parts.append("Unread") }
-        if tab.isDirty { parts.append("Modified") }
-        if tab.isAudioMuted {
-            parts.append(Bundle.bonsplitResources.localizedString(forKey: "tabContext.audioMutedAccessibility", value: "Muted", table: nil))
-        }
-        if tab.showsRemoteIndicator {
-            parts.append(Bundle.bonsplitResources.localizedString(forKey: "tabContext.remoteConnectedAccessibility", value: "Connected over SSH", table: nil))
-        }
-        if showsZoomIndicator { parts.append("Zoomed") }
-        return parts.joined(separator: ", ")
-    }
-
     // MARK: - Tab Background
 
     @ViewBuilder
@@ -1062,6 +1049,7 @@ struct TabItemView: View {
                         .foregroundStyle(TabBarColors.inactiveText(for: appearance))
                         .frame(width: accessorySlotSize, height: accessorySlotSize)
                         .saturation(saturation)
+                        .accessibilityHidden(true)
                 }
             } else if allowsClose && (isSelected || isHovered || isCloseHovered) {
                 // Close button (always visible on active tab, shown on hover for others)
@@ -1092,6 +1080,12 @@ struct TabItemView: View {
                     }
                 }
                 .saturation(saturation)
+                .accessibilityLabel(Bundle.bonsplitResources.localizedString(
+                    forKey: "tabContext.closeTab",
+                    value: "Close Tab",
+                    table: nil
+                ))
+                .accessibilityIdentifier("paneTab.close.\(tab.id.uuidString)")
             }
         }
         .frame(width: accessorySlotSize, height: accessorySlotSize)
