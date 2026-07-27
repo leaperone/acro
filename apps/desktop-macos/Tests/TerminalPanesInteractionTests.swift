@@ -792,6 +792,30 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func inactiveWindowTerminalClickOnlyActivatesTheWindow() throws {
+        let view = AcroTerminalNSView(
+            serverId: UUID().uuidString,
+            sessionId: UUID().uuidString,
+            command: "true"
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        window.contentView = view
+        let event = try mouseEvent(
+            .leftMouseDown,
+            at: NSPoint(x: 0.5, y: 0.5),
+            in: window
+        )
+
+        #expect(!view.acceptsFirstMouse(for: event))
+    }
+
+    @Test
     func liveTransportExitKeepsTheCachedSurfaceViewForRestart() async throws {
         let serverId = UUID().uuidString
         let sessionId = UUID().uuidString
