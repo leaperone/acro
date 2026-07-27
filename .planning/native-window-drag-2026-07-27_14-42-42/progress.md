@@ -15,7 +15,7 @@
 
 ## 进行中
 
-- 执行完整 Swift、release 和 workspace 验证。
+- 执行 PR、preflight、Beta 发布与本机热替换。
 
 ## 修改文件
 
@@ -32,6 +32,11 @@
 | 修复前目标测试 | 原生调用次数等 3 项断言失败 | expected fail |
 | 修复后目标测试 | 原生拖动、状态恢复、双击 zoom 全部通过 | pass |
 | 标签交互隔离 | 点击、排序、分屏后 `performDragCallCount == 0` | pass |
+| `TerminalPanesInteractionTests` | 44 tests | pass |
+| 完整 Swift 测试 | 86 XCTest + 57 Swift Testing | pass |
+| Swift release build | `swift build -c release` | pass |
+| workspace check | `pnpm check` | pass |
+| workspace build | `pnpm build` | pass，只有既有 `import.meta` 警告 |
 
 ## 错误与恢复
 
