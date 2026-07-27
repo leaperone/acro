@@ -21,7 +21,7 @@
 
 ## 进行中
 
-- 独立 diff 复核、Git / PR / preflight 和 Beta 发布。
+- 无。代码、测试和交付前复核已经收敛；PR、合并和发布状态在用户交付核对中单独记录。
 
 ## 修改文件
 
@@ -45,8 +45,10 @@
 | Bonsplit | 204 项通过 | 通过 |
 | `pnpm check` | TypeScript 检查与 15 项 Node 测试通过 | 通过 |
 | `pnpm build` | CLI/runtime 构建通过；仅现有 `import.meta` 警告 | 通过 |
+| release scripts | 7 项 Python unittest 通过 | 通过 |
 | 文案 / 本地化 | 本增量没有新增用户文案 | 不适用 |
 | 独立 diff 复核 | 逐 session 事件版本、隐藏工作区和快速状态跃迁均通过 | 通过 |
+| base merge probe | 与 `origin/main` 无冲突 | 通过 |
 
 ## 错误与恢复
 
