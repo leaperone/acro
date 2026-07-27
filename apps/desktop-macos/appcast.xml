@@ -3,6 +3,19 @@
   <channel>
     <title>Acro Desktop</title>
     <item>
+      <title>0.0.8-beta.32</title>
+      <pubDate>Mon, 27 Jul 2026 11:04:53 GMT</pubDate>
+      <sparkle:version>63</sparkle:version>
+      <sparkle:shortVersionString>0.0.8-beta.32</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>beta</sparkle:channel>
+      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.32/Acro-v0.0.8-beta.32-macos.zip" type="application/octet-stream" length="52447132" sparkle:edSignature="/n6ITsiV3t9BslS4HIj0jM7uzt8XTcuCCZBaJZBZR8/XXX6AiblFNwHI9sZoTQknzwS3VxgdJzbZ7yczufXOBQ==" />
+      <sparkle:deltas>
+        <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.32/Acro-v0.0.8-beta.32-from-0.0.7.delta" type="application/octet-stream" length="2848286" sparkle:deltaFrom="30" sparkle:edSignature="olI2k0S/jfcA9fRan5F6RsAKuAnhtdMa4K1i0YAPLPjzqu5u4UPrf1EsmGrVPMB/3YhkzDDxoI+uBtw9c/R0CQ==" />
+        <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.32/Acro-v0.0.8-beta.32-from-0.0.8-beta.31.delta" type="application/octet-stream" length="626382" sparkle:deltaFrom="62" sparkle:edSignature="kQN5i1Q4XYvQB2UtyWE91JdIUM7VvBxgBVWceAIeohcBdW4F13ivtnD0fkAl5QXaHAnKQAsEKwLYGefnJTokCw==" />
+      </sparkle:deltas>
+    </item>
+    <item>
       <title>0.0.8-beta.31</title>
       <pubDate>Mon, 27 Jul 2026 10:05:09 GMT</pubDate>
       <sparkle:version>62</sparkle:version>
@@ -182,19 +195,6 @@
       <sparkle:deltas>
         <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.18/Acro-v0.0.8-beta.18-from-0.0.7.delta" type="application/octet-stream" length="2081474" sparkle:deltaFrom="30" sparkle:edSignature="0xcfy3i7pTi8/aHMS/8WHlUlGEZbzT7SVAGdAFZVqMShM62qfRYJfsCJlYMO7RfIX5vrpPZ8Eps8QOMit6alDg==" />
         <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.18/Acro-v0.0.8-beta.18-from-0.0.8-beta.17.delta" type="application/octet-stream" length="709558" sparkle:deltaFrom="48" sparkle:edSignature="e/Fm14mnd2tct1mWQV/CnN31lI5VWbEMYns5juIX+bIQiJl7aNCqdYN/u43Y1h53Ig53HnFTiJuj6pW1t5SmCA==" />
-      </sparkle:deltas>
-    </item>
-    <item>
-      <title>0.0.8-beta.17</title>
-      <pubDate>Sun, 26 Jul 2026 08:21:58 GMT</pubDate>
-      <sparkle:version>48</sparkle:version>
-      <sparkle:shortVersionString>0.0.8-beta.17</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <sparkle:channel>beta</sparkle:channel>
-      <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.17/Acro-v0.0.8-beta.17-macos.zip" type="application/octet-stream" length="51674852" sparkle:edSignature="GNBVz26kSKuCGQrDBH8wE6CEJ3B2zRyCqUSfpBFoapHANRowLCXlkwH3KFkGjWbzkTIP2iDlSblSxs7I5UwVAw==" />
-      <sparkle:deltas>
-        <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.17/Acro-v0.0.8-beta.17-from-0.0.7.delta" type="application/octet-stream" length="2028646" sparkle:deltaFrom="30" sparkle:edSignature="dxX+cblYEuYjz/opCj6b2rvZaoUKJ1hsIkjt8W3lxyHo8aWk/3pfznBMPQSH6Z6MJcy8k/tYkpNq2rzZBmh0AA==" />
-        <enclosure url="https://github.com/leaperone/acro/releases/download/desktop-v0.0.8-beta.17/Acro-v0.0.8-beta.17-from-0.0.8-beta.16.delta" type="application/octet-stream" length="469350" sparkle:deltaFrom="46" sparkle:edSignature="NGuimptuQCsNrGGs5T+1Oe3q+41hAyjGd4w6pz5w0nXiezHK9BLNAbCC1NLC7LSYfp/iq9qnXgxf4FoYIw1KDg==" />
       </sparkle:deltas>
     </item>
   </channel>
