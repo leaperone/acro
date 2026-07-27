@@ -9,6 +9,7 @@ struct SplitNodeView<Content: View, EmptyContent: View>: View {
     let contentBuilder: (TabItem, PaneID) -> Content
     let emptyPaneBuilder: (PaneID) -> EmptyContent
     let appearance: BonsplitConfiguration.Appearance
+    var tabBarLeadingInset: CGFloat? = nil
     let dividerPositionRange: ClosedRange<CGFloat>
     var showSplitButtons: Bool = true
     var tabBarVisibility: TabBarVisibility = .always
@@ -25,6 +26,7 @@ struct SplitNodeView<Content: View, EmptyContent: View>: View {
                 pane: paneState,
                 contentBuilder: contentBuilder,
                 emptyPaneBuilder: emptyPaneBuilder,
+                tabBarLeadingInset: tabBarLeadingInset,
                 showSplitButtons: showSplitButtons,
                 tabBarVisibility: tabBarVisibility,
                 contentViewLifecycle: contentViewLifecycle
@@ -35,6 +37,7 @@ struct SplitNodeView<Content: View, EmptyContent: View>: View {
                 splitState: splitState,
                 controller: controller,
                 appearance: appearance,
+                tabBarLeadingInset: tabBarLeadingInset,
                 dividerPositionRange: dividerPositionRange,
                 contentBuilder: contentBuilder,
                 emptyPaneBuilder: emptyPaneBuilder,
@@ -98,6 +101,7 @@ struct SinglePaneWrapper<Content: View, EmptyContent: View>: NSViewRepresentable
     let pane: PaneState
     let contentBuilder: (TabItem, PaneID) -> Content
     let emptyPaneBuilder: (PaneID) -> EmptyContent
+    var tabBarLeadingInset: CGFloat? = nil
     var showSplitButtons: Bool = true
     var tabBarVisibility: TabBarVisibility = .always
     var contentViewLifecycle: ContentViewLifecycle = .recreateOnSwitch
@@ -108,6 +112,7 @@ struct SinglePaneWrapper<Content: View, EmptyContent: View>: NSViewRepresentable
             controller: controller,
             contentBuilder: contentBuilder,
             emptyPaneBuilder: emptyPaneBuilder,
+            tabBarLeadingInset: tabBarLeadingInset,
             showSplitButtons: showSplitButtons,
             tabBarVisibility: tabBarVisibility,
             contentViewLifecycle: contentViewLifecycle
@@ -165,6 +170,7 @@ struct SinglePaneWrapper<Content: View, EmptyContent: View>: NSViewRepresentable
             controller: controller,
             contentBuilder: contentBuilder,
             emptyPaneBuilder: emptyPaneBuilder,
+            tabBarLeadingInset: tabBarLeadingInset,
             showSplitButtons: showSplitButtons,
             tabBarVisibility: tabBarVisibility,
             contentViewLifecycle: contentViewLifecycle

@@ -18,6 +18,7 @@ struct WorkbenchView: View {
     @ObservedObject var runtime: RuntimeConnection
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isFullScreen = false
     // 自绘布局(cmux 模式):NavigationSplitView 会给隐藏的工具栏保留整条高度,
     // 紧凑模式必须让 tab 条真正贴到窗口顶边。
     @AppStorage("acro.sidebar.width") private var sidebarWidth = Double(
@@ -42,7 +43,11 @@ struct WorkbenchView: View {
                 GeometryReader { geometry in
                     // HSplitView(NSSplitView)会给子视图重新套顶部安全区,逐层穿透
                     HSplitView {
-                        TerminalPanesView(model: model, runtime: runtime)
+                        TerminalPanesView(
+                            model: model,
+                            runtime: runtime,
+                            tabBarLeadingInsetOverride: isFullScreen ? 0 : nil
+                        )
                             .ignoresSafeArea(.container, edges: .top)
                             .frame(
                                 minWidth: WorkbenchLayoutMetrics.minimumTerminalWidth,
@@ -79,7 +84,9 @@ struct WorkbenchView: View {
             }
             .coordinateSpace(name: "workbench-root")
             .ignoresSafeArea(.container, edges: .top)
-            .background(WindowConfigurator())
+            .background(WindowConfigurator { isFullScreen in
+                self.isFullScreen = isFullScreen
+            })
             .animation(
                 reduceMotion ? nil : .easeInOut(duration: 0.18),
                 value: model.leftSidebarPresentation
@@ -358,11 +365,14 @@ struct WindowDragHandle: NSViewRepresentable {
 // 标题栏带的隐式拖动看的是"被命中的最深层 NSView"的 mouseDownCanMoveWindow,
 // 标签条内嵌的 NSScrollView(SwiftUI ScrollView 桥接)内部视图会返回可拖,
 // 容器级覆盖挡不住;直接关掉窗口级隐式移动才是根治。
-private final class WindowConfigurationView: NSView {
+final class WindowConfigurationView: NSView {
+    var onFullScreenChange: (Bool) -> Void = { _ in }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         NotificationCenter.default.removeObserver(self)
         guard let window else { return }
+        onFullScreenChange(window.styleMask.contains(.fullScreen))
         configure(window)
         NotificationCenter.default.addObserver(
             self,
@@ -372,13 +382,13 @@ private final class WindowConfigurationView: NSView {
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(windowGeometryChanged),
+            selector: #selector(windowFullScreenChanged),
             name: NSWindow.didEnterFullScreenNotification,
             object: window
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(windowGeometryChanged),
+            selector: #selector(windowFullScreenChanged),
             name: NSWindow.didExitFullScreenNotification,
             object: window
         )
@@ -397,6 +407,11 @@ private final class WindowConfigurationView: NSView {
     }
 
     @objc private func windowGeometryChanged(_ notification: Notification) {
+        scheduleConfiguration()
+    }
+
+    @objc private func windowFullScreenChanged(_ notification: Notification) {
+        onFullScreenChange(notification.name == NSWindow.didEnterFullScreenNotification)
         scheduleConfiguration()
     }
 
@@ -425,9 +440,15 @@ private final class WindowConfigurationView: NSView {
 }
 
 private struct WindowConfigurator: NSViewRepresentable {
+    let onFullScreenChange: (Bool) -> Void
+
     func makeNSView(context: Context) -> WindowConfigurationView {
-        WindowConfigurationView()
+        let view = WindowConfigurationView()
+        view.onFullScreenChange = onFullScreenChange
+        return view
     }
 
-    func updateNSView(_ nsView: WindowConfigurationView, context: Context) {}
+    func updateNSView(_ nsView: WindowConfigurationView, context: Context) {
+        nsView.onFullScreenChange = onFullScreenChange
+    }
 }

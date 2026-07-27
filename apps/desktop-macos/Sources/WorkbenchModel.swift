@@ -572,6 +572,7 @@ final class WorkbenchModel: ObservableObject {
     }
 
     private func synchronizeTerminalPaneControllers() {
+        let trafficLightClearance = leftSidebarPresentation == .hidden
         let validKeys = Set(workspaceLayouts.keys)
         let staleKeys = terminalPaneControllers.keys.filter { !validKeys.contains($0) }
         for key in staleKeys {
@@ -581,14 +582,14 @@ final class WorkbenchModel: ObservableObject {
             if let paneController = terminalPaneControllers[key] {
                 paneController.update(
                     layout: layout,
-                    trafficLightClearance: leftSidebarPresentation == .hidden
+                    trafficLightClearance: trafficLightClearance
                 )
             } else {
                 terminalPaneControllers[key] = TerminalPaneController(
                     model: self,
                     key: key,
                     layout: layout,
-                    trafficLightClearance: leftSidebarPresentation == .hidden,
+                    trafficLightClearance: trafficLightClearance,
                     terminalChromeAppearance: terminalChromeAppearance,
                     fileDropHandler: { [weak self] sessionKey, urls in
                         self?.handleTerminalFileDrop(

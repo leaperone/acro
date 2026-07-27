@@ -1649,6 +1649,167 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
+    func zoomedNonLeadingPaneKeepsTrafficLightClearance() async throws {
+        let fixture = makeSplitFixture()
+        fixture.model.setLeftSidebarPresentation(.hidden)
+        let paneController = try #require(fixture.model.currentTerminalPaneController)
+        guard case .split(let split) = paneController.controller.treeSnapshot(),
+              case .pane(let right) = split.second,
+              let rightPaneId = UUID(uuidString: right.id)
+        else {
+            Issue.record("expected two live panes")
+            return
+        }
+        let rightPane = PaneID(id: rightPaneId)
+        let hostingView = NSHostingView(rootView: TerminalPanesView(
+            model: fixture.model,
+            runtime: fixture.model.runtime
+        ))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        let baselineFrames = renderedTabItemHitRegions(in: hostingView)
+            .map { $0.convert($0.bounds, to: nil) }
+            .sorted { $0.minX < $1.minX }
+        #expect(baselineFrames.count == fixture.sessions.count)
+        #expect(baselineFrames.first?.minX ?? 0 >= 80)
+
+        #expect(paneController.controller.togglePaneZoom(inPane: rightPane))
+        await Task.yield()
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let zoomedTabs = renderedTabItemHitRegions(in: hostingView)
+        #expect(zoomedTabs.count == 1)
+        let zoomedTab = try #require(zoomedTabs.first)
+        #expect(zoomedTab.convert(zoomedTab.bounds, to: nil).minX >= 80)
+
+        #expect(paneController.controller.clearPaneZoom())
+        await Task.yield()
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let restoredFrames = renderedTabItemHitRegions(in: hostingView)
+            .map { $0.convert($0.bounds, to: nil) }
+            .sorted { $0.minX < $1.minX }
+        #expect(paneController.controller.zoomedPaneId == nil)
+        #expect(restoredFrames.count == baselineFrames.count)
+        for (restored, baseline) in zip(restoredFrames, baselineFrames) {
+            #expect(abs(restored.minX - baseline.minX) <= 1)
+            #expect(abs(restored.width - baseline.width) <= 1)
+        }
+    }
+
+    @Test
+    func fullScreenNotificationsStayScopedToTheirWindow() {
+        var firstIsFullScreen = false
+        var secondIsFullScreen = false
+        let firstView = WindowConfigurationView()
+        firstView.onFullScreenChange = { firstIsFullScreen = $0 }
+        let secondView = WindowConfigurationView()
+        secondView.onFullScreenChange = { secondIsFullScreen = $0 }
+        let firstWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let secondWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        defer {
+            firstWindow.orderOut(nil)
+            secondWindow.orderOut(nil)
+        }
+        firstWindow.contentView = firstView
+        secondWindow.contentView = secondView
+
+        #expect(!firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+        NotificationCenter.default.post(
+            name: NSWindow.didEnterFullScreenNotification,
+            object: firstWindow
+        )
+        #expect(firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+
+        secondWindow.contentView = firstView
+        #expect(!firstIsFullScreen)
+        NotificationCenter.default.post(
+            name: NSWindow.didEnterFullScreenNotification,
+            object: firstWindow
+        )
+        #expect(!firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+        NotificationCenter.default.post(
+            name: NSWindow.didEnterFullScreenNotification,
+            object: secondWindow
+        )
+        #expect(firstIsFullScreen)
+        #expect(!secondIsFullScreen)
+    }
+
+    @Test
+    func tabBarLeadingInsetOverrideDoesNotMutateTheSharedController() async throws {
+        let model = WorkbenchModel(hub: RuntimeHub())
+        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
+        model.selectedServerId = key.serverId
+        model.selectedWorkspaceId = key.resourceId
+        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+            root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+        )
+        model.setLeftSidebarPresentation(.hidden)
+        let paneController = try #require(model.currentTerminalPaneController)
+        let hostingView = NSHostingView(rootView: TerminalPanesView(
+            model: model,
+            runtime: model.runtime,
+            tabBarLeadingInsetOverride: 0
+        ))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        let previousKeyWindow = NSApp.keyWindow
+        defer {
+            window.orderOut(nil)
+            previousKeyWindow?.makeKeyAndOrderFront(nil)
+        }
+        window.contentView = hostingView
+        window.makeKeyAndOrderFront(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 80)
+        let overriddenTab = try #require(renderedTabItemHitRegions(in: hostingView).first)
+        #expect(overriddenTab.convert(overriddenTab.bounds, to: nil).minX < 80)
+
+        hostingView.rootView = TerminalPanesView(
+            model: model,
+            runtime: model.runtime
+        )
+        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 80)
+        #expect(await waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return renderedTabItemHitRegions(in: hostingView).first.map {
+                $0.convert($0.bounds, to: nil).minX >= 80
+            } == true
+        })
+    }
+
+    @Test
     func crossPaneMovePersistsThroughBonsplitDelegate() throws {
         let fixture = makeSplitFixture()
         let paneController = try #require(fixture.model.currentTerminalPaneController)
@@ -1769,23 +1930,32 @@ struct TerminalPanesInteractionTests {
     }
 
     @Test
-    func sidebarPresentationOnlyReservesTrafficLightSpaceWhenHidden() throws {
+    func sidebarPresentationUpdatesEveryTrafficLightClearance() {
         let model = WorkbenchModel(hub: RuntimeHub())
-        let key = ScopedResourceID(serverId: "server", resourceId: "workspace")
-        model.selectedServerId = key.serverId
-        model.selectedWorkspaceId = key.resourceId
-        model.workspaceLayouts[key] = WorkspaceTerminalLayout(
-            root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
-        )
-        let paneController = try #require(model.currentTerminalPaneController)
+        let keys = ["one", "two"].map {
+            ScopedResourceID(serverId: "server", resourceId: $0)
+        }
+        model.selectedServerId = "server"
+        model.selectedWorkspaceId = keys[0].resourceId
+        for key in keys {
+            model.workspaceLayouts[key] = WorkspaceTerminalLayout(
+                root: .pane(PaneTabGroup(sessionIds: [UUID().uuidString]))
+            )
+        }
+        let leadingInsets = {
+            keys.compactMap {
+                model.terminalPaneControllers[$0]?.controller.configuration.appearance
+                    .tabBarLeadingInset
+            }
+        }
 
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 0)
+        #expect(leadingInsets() == [0, 0])
         model.setLeftSidebarPresentation(.compact)
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 0)
+        #expect(leadingInsets() == [0, 0])
         model.setLeftSidebarPresentation(.hidden)
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 80)
+        #expect(leadingInsets() == [80, 80])
         model.setLeftSidebarPresentation(.wide)
-        #expect(paneController.controller.configuration.appearance.tabBarLeadingInset == 0)
+        #expect(leadingInsets() == [0, 0])
     }
 
     @Test
@@ -2237,7 +2407,7 @@ private final class WindowDragSpyWindow: NSWindow {
 @MainActor
 private func renderedTabItemHitRegions(in root: NSView) -> [NSView] {
     var candidates: [NSView] = []
-    if root is BonsplitTabItemHitRegionProviding, !root.isHidden, root.alphaValue > 0 {
+    if root is BonsplitTabItemHitRegionProviding, isVisibleInHierarchy(root) {
         candidates.append(root)
     }
     for subview in root.subviews {
@@ -2249,6 +2419,16 @@ private func renderedTabItemHitRegions(in root: NSView) -> [NSView] {
             other !== candidate && frame.contains(other.convert(other.bounds, to: nil))
         }
     }
+}
+
+@MainActor
+private func isVisibleInHierarchy(_ view: NSView) -> Bool {
+    var current: NSView? = view
+    while let candidate = current {
+        guard !candidate.isHidden, candidate.alphaValue > 0 else { return false }
+        current = candidate.superview
+    }
+    return true
 }
 
 @MainActor

@@ -797,6 +797,7 @@ struct TabBarView: View {
     
     @Bindable var pane: PaneState
     let isFocused: Bool
+    var tabBarLeadingInset: CGFloat? = nil
     var showSplitButtons: Bool = true
 
     @AppStorage("workspacePresentationMode") private var presentationMode = "standard"
@@ -836,7 +837,9 @@ struct TabBarView: View {
     }
 
     private var appearance: BonsplitConfiguration.Appearance {
-        controller.configuration.appearance
+        var appearance = controller.configuration.appearance
+        if let tabBarLeadingInset { appearance.tabBarLeadingInset = tabBarLeadingInset }
+        return appearance
     }
 
     private var isFullWidthTabMode: Bool {
@@ -1084,7 +1087,9 @@ struct TabBarView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if appearance.tabBarLeadingInset > 0 && controller.internalController.rootNode.allPaneIds.first == pane.id {
+            if appearance.tabBarLeadingInset > 0
+                && (splitViewController.zoomedPaneId ?? splitViewController.rootNode.allPaneIds.first) == pane.id
+            {
                 TabBarDragZoneView(
                     isMinimalMode: isMinimalMode,
                     isFocusedPane: isFocused,
