@@ -580,7 +580,6 @@ async function main(): Promise<void> {
             }
             throw error;
           }
-          if (!cwd) throw new Error("source terminal working directory is unavailable");
         }
         const { workspaceId, inheritCwdFrom, agent: provider, ...daemonParams } = params;
         const sessionId = crypto.randomUUID();
