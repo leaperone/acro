@@ -46,6 +46,16 @@ async function waitUntil(condition: () => boolean, timeoutMs: number): Promise<b
   return condition();
 }
 
+async function waitForSessionCwd(client: Client, sessionId: string, expected: string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const { cwd } = await client.rpc<{ cwd: string | null }>("session.cwd", { sessionId });
+    if (cwd === expected) return;
+    await sleep(50);
+  }
+  throw new Error(`session cwd did not become ${expected}`);
+}
+
 async function stopChild(child: ChildProcess): Promise<void> {
   const exited = () => child.exitCode !== null || child.signalCode !== null;
   if (exited()) return;
@@ -563,6 +573,7 @@ async function main(): Promise<void> {
     // 路径继承既定事实:源会话 cd 之后,不传 cwd 的新会话应落在它的实时目录
     client.sendInput(attach1.channel, "cd /private/tmp && echo CD_DONE_XYZ\n");
     await client.waitOutput("CD_DONE_XYZ");
+    await waitForSessionCwd(client, session.id, "/private/tmp");
     const inherited = await client.rpc<Session>("session.create", {
       workspaceId: updatedWorkspace.id,
       inheritCwdFrom: session.id,
@@ -797,18 +808,23 @@ async function main(): Promise<void> {
     await client3.waitOutput("AFTER_RUNTIME_RESTART_XYZ");
     client3.sendInput(attach3.channel, `cd ${stateDir} && echo CWD_UNAVAILABLE_XYZ\n`);
     await client3.waitOutput("CWD_UNAVAILABLE_XYZ");
-    await assert.rejects(
-      client3.rpc("session.create", {
-        workspaceId: updatedWorkspace.id,
-        inheritCwdFrom: session.id,
-        command: "/bin/sh",
-        cols: 80,
-        rows: 24,
-      }),
-      /source terminal working directory is unavailable/,
+    const fallbackAfterRestart = await client3.rpc<Session>("session.create", {
+      workspaceId: updatedWorkspace.id,
+      inheritCwdFrom: session.id,
+      command: "/bin/sh",
+      cols: 80,
+      rows: 24,
+    });
+    assert.equal(
+      fallbackAfterRestart.cwd,
+      os.homedir(),
+      "an unavailable source cwd must fall back to the home directory",
     );
+    await client3.rpc("session.kill", { sessionId: fallbackAfterRestart.id });
+    log("cwd fallback ok");
     client3.sendInput(attach3.channel, "cd /private/tmp && echo CWD_RESTORED_XYZ\n");
     await client3.waitOutput("CWD_RESTORED_XYZ");
+    await waitForSessionCwd(client3, session.id, "/private/tmp");
     const inheritedAfterRestart = await client3.rpc<Session>("session.create", {
       workspaceId: updatedWorkspace.id,
       inheritCwdFrom: session.id,
