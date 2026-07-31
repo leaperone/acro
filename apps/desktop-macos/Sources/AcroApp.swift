@@ -14,6 +14,7 @@ extension Notification.Name {
     static let acroSelectWorkspace = Notification.Name("acro.shortcut.selectWorkspace")
     static let acroSelectTabByNumber = Notification.Name("acro.shortcut.selectTabByNumber")
     static let acroRestartTerminalDaemon = Notification.Name("acro.daemon.restart")
+    static let acroSetExperience = Notification.Name("acro.experience.set")
 }
 
 func postShortcut(_ action: ShortcutAction) {
@@ -124,6 +125,30 @@ struct AcroWorkbenchCommands: Commands {
         }
 
         CommandMenu("工作台") {
+            Button(
+                String(localized: "t3.open", defaultValue: "Open Local Agent"),
+                systemImage: "sparkles"
+            ) {
+                NotificationCenter.default.post(
+                    name: .acroSetExperience,
+                    object: nil,
+                    userInfo: ["experience": WorkbenchExperience.localAgent.rawValue]
+                )
+            }
+
+            Button(
+                String(localized: "t3.back", defaultValue: "Workbench"),
+                systemImage: "rectangle.split.3x1"
+            ) {
+                NotificationCenter.default.post(
+                    name: .acroSetExperience,
+                    object: nil,
+                    userInfo: ["experience": WorkbenchExperience.workbench.rawValue]
+                )
+            }
+
+            Divider()
+
             item("命令面板", "command", .commandPalette)
 
             Divider()
@@ -178,6 +203,7 @@ struct AcroApp: App {
     @NSApplicationDelegateAdaptor(AcroAppDelegate.self) private var appDelegate
     @StateObject private var hub: RuntimeHub
     @StateObject private var model: WorkbenchModel
+    @StateObject private var t3CompatManager: T3CompatManager
     private let localRuntime = LocalRuntimeManager()
 
     init() {
@@ -185,11 +211,20 @@ struct AcroApp: App {
         let hub = RuntimeHub()
         _hub = StateObject(wrappedValue: hub)
         _model = StateObject(wrappedValue: WorkbenchModel(hub: hub))
+        _t3CompatManager = StateObject(wrappedValue: T3CompatManager())
     }
 
     var body: some Scene {
         WindowGroup("Acro") {
-            WorkbenchView(model: model, runtime: model.runtime)
+            Group {
+                if model.experience == .localAgent {
+                    T3CompatView(manager: t3CompatManager) {
+                        model.showWorkbench()
+                    }
+                } else {
+                    WorkbenchView(model: model, runtime: model.runtime)
+                }
+            }
                 .onAppear {
                     appDelegate.shortcutPresentationProvider = { [weak model] in
                         model?.appShortcutPresentation ?? .normal

@@ -11,3 +11,17 @@
 "browser.action.new" = "New Browser";
 "terminal.action.splitRight" = "Split Right";
 "terminal.action.splitDown" = "Split Down";
+"command.kind" = "Command";
+"t3.title" = "Local Agent";
+"t3.open" = "Open Local Agent";
+"t3.open.subtitle" = "Run T3 Code on this Mac";
+"t3.back" = "Workbench";
+"t3.starting" = "Starting Local Agent…";
+"t3.retry" = "Retry";
+"t3.error.title" = "Local Agent unavailable";
+"t3.error.missingRuntime" = "T3 Code runtime is missing.";
+"t3.error.nodeVersion" = "T3 Code requires Node 22.16+, 23.11+, or 24.10+.";
+"t3.error.invalidState" = "The local Agent service state is invalid.";
+"t3.error.startup" = "The local Agent service did not start.";
+"t3.error.authentication" = "The local Agent session could not be authenticated.";
+"t3.error.localOnly" = "Local Agent is available only when the local Runtime is selected.";

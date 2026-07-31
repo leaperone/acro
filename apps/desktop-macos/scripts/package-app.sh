@@ -21,6 +21,7 @@ else
     APP_DISPLAY_NAME="Acro"
 fi
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$DIR/../.." && pwd)"
 NODE_ENTITLEMENTS="$DIR/Node.entitlements"
 APP_ICON="$DIR/Assets/Acro.icns"
 cd "$DIR"
@@ -65,6 +66,7 @@ for ARCH in $APP_ARCHS; do
         || { echo "bundled node lacks app architecture: $ARCH" >&2; exit 1; }
 done
 "$BUNDLED_NODE" --version > /dev/null
+"$BUNDLED_NODE" "$ROOT/apps/t3-compat/scripts/check.mjs"
 
 # 打包 acro CLI(attach 桥):单文件 bundle,客户端机器无需 checkout 仓库
 (cd ../cli && pnpm build)
@@ -83,6 +85,29 @@ cp -RL ../runtime/node_modules/playwright-core "$RT/node_modules/playwright-core
 find "$RT/node_modules/node-pty/prebuilds" -mindepth 1 -maxdepth 1 \
     ! -name 'darwin-*' -exec rm -rf {} +
 find "$RT/node_modules/node-pty/prebuilds" -type f -name "spawn-helper" -exec chmod 755 {} +
+
+# T3 Code 作为独立 loopback sidecar 分发；使用 lockfile 固定的完整 production closure。
+# optional dependencies 包含当前平台必需的 ffi/Provider binary，不能整批移除。
+T3="$APP/Contents/Resources/t3-compat"
+DEPLOY_STATUS=0
+(cd "$ROOT" && CI=true pnpm --filter @acro/t3-compat deploy --legacy --prod "$DIR/$T3") \
+    || DEPLOY_STATUS=$?
+# pnpm legacy deploy 会暂时把共享 node_modules 标成 production；立即恢复开发安装，
+# 避免一次本地打包污染后续 pnpm check/build。
+(cd "$ROOT" && CI=true pnpm install)
+[[ "$DEPLOY_STATUS" -eq 0 ]] || exit "$DEPLOY_STATUS"
+# legacy deploy 会为 workspace 根包留下指回 checkout 的自引用链接；运行时不使用它，
+# 且 bundle 内 symlink 逃逸会被 codesign 判为 invalid destination。
+rm -f "$T3/node_modules/.pnpm/node_modules/@acro/t3-compat"
+[[ -f "$T3/node_modules/t3/dist/bin.mjs" ]] || { echo "missing T3 Code entry" >&2; exit 1; }
+[[ -f "$T3/node_modules/t3/dist/client/index.html" ]] || { echo "missing T3 Code web UI" >&2; exit 1; }
+[[ -f "$T3/node_modules/t3/LICENSE" ]] || { echo "missing T3 Code license" >&2; exit 1; }
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
+find "$T3" -type f -name "*.map" -delete
+while IFS= read -r -d '' PREBUILDS; do
+    find "$PREBUILDS" -mindepth 1 -maxdepth 1 ! -name 'darwin-*' -exec rm -rf {} +
+done < <(find "$T3" -type d -path '*/node-pty/prebuilds' -print0)
+find "$T3" -type f -name "spawn-helper" -exec chmod 755 {} +
 
 # Sparkle 自动更新框架(可执行文件 rpath 指向 ../Frameworks)
 SPARKLE_FW=".build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
@@ -104,6 +129,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>${BUILD_VERSION}</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSAppTransportSecurity</key>
+    <dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>UTExportedTypeDeclarations</key>
     <array>
@@ -140,16 +167,20 @@ else
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_B/Autoupdate"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$SPARKLE_B/Updater.app"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
-    # 内置 runtime 的原生二进制(node-pty 的 .node 与 spawn-helper)必须逐个签,
-    # 否则公证被拒("The staple and validate action failed")
-    find "$APP/Contents/Resources/runtime" -type f \( -name "*.node" -o -name "spawn-helper" \) \
-        -exec codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" {} \;
+    # Runtime/T3 closure 的 Mach-O 必须逐个签。不能只按扩展名枚举：T3 还包含
+    # 无执行位的 resource monitor 和 .dylib，否则正式公证会漏签。
+    while IFS= read -r -d '' BINARY; do
+        if file -b "$BINARY" | grep -q 'Mach-O'; then
+            codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$BINARY"
+        fi
+    done < <(find "$APP/Contents/Resources/runtime" "$T3" -type f -print0)
     codesign --force --options runtime --timestamp --entitlements "$NODE_ENTITLEMENTS" \
         --sign "$SIGN_IDENTITY" "$BUNDLED_NODE"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 fi
 
 codesign --verify --strict "$BUNDLED_NODE"
+codesign --verify --deep --strict "$APP"
 NODE_SIGNED_ENTITLEMENTS="$(codesign -d --entitlements :- "$BUNDLED_NODE" 2>/dev/null)"
 grep -q 'com.apple.security.cs.allow-jit' <<< "$NODE_SIGNED_ENTITLEMENTS"
 if [[ "$SIGN_IDENTITY" != "-" ]]; then
@@ -168,7 +199,7 @@ if [[ "$SIGN_IDENTITY" != "-" ]]; then
         exit 1
     fi
 fi
-if [[ -n "$(find "$RT/node_modules/node-pty/prebuilds" -type f -name "spawn-helper" ! -perm -111 -print -quit)" ]]; then
+if [[ -n "$(find "$RT" "$T3" -type f -name "spawn-helper" ! -perm -111 -print -quit)" ]]; then
     echo "spawn-helper is not executable" >&2
     exit 1
 fi

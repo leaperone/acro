@@ -44,8 +44,10 @@ let package = Package(
                 .linkedFramework("Metal"),
                 .linkedFramework("MetalKit"),
                 .linkedFramework("QuartzCore"),
+                .linkedFramework("Security"),
                 .linkedFramework("Speech"),
                 .linkedFramework("UserNotifications"),
+                .linkedFramework("WebKit"),
                 .linkedLibrary("c++"),
                 .linkedLibrary("sqlite3"),
                 // Sparkle.framework 打包时嵌入 Contents/Frameworks

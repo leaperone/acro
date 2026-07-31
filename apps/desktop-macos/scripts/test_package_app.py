@@ -49,6 +49,20 @@ class PackageAppTests(unittest.TestCase):
             self.assertIn("ACRO_SIGN_IDENTITY must be set", result.stderr)
             self.assertFalse(marker.exists(), "packager started the build before validating signing")
 
+    def test_embeds_and_signs_t3_compat_runtime(self):
+        script = PACKAGER.read_text()
+
+        self.assertIn("CI=true pnpm --filter @acro/t3-compat deploy --legacy --prod", script)
+        self.assertIn("CI=true pnpm install", script)
+        self.assertIn('"$BUNDLED_NODE" "$ROOT/apps/t3-compat/scripts/check.mjs"', script)
+        self.assertIn('"$T3/node_modules/t3/dist/bin.mjs"', script)
+        self.assertIn("THIRD_PARTY_NOTICES.md", script)
+        self.assertIn('rm -f "$T3/node_modules/.pnpm/node_modules/@acro/t3-compat"', script)
+        self.assertIn("file -b \"$BINARY\" | grep -q 'Mach-O'", script)
+        self.assertIn('codesign --verify --deep --strict "$APP"', script)
+        self.assertIn('find "$APP/Contents/Resources/runtime" "$T3" -type f -print0', script)
+        self.assertIn("NSAllowsLocalNetworking", script)
+
 
 if __name__ == "__main__":
     unittest.main()

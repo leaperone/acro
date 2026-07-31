@@ -7,7 +7,7 @@
 
 为 Acro 增加一个与现有工作台并列的“Agent 模式”：在 Acro macOS App 内运行固定版本的 T3 Code Server，并用原生 `WKWebView` 承载其完整 Web UI，使用户获得 T3 的 Project、Thread、Provider、审批、终端、Git/worktree 和 diff 体验，同时不改变 Acro Runtime、Workspace、Session 与持久 terminal daemon 的现有语义。
 
-本任务只交付实施 planning，不进入代码实现。
+Planning 已获用户确认，当前进入代码实现。
 
 ## 范围
 
@@ -131,7 +131,8 @@
 
 - [x] 完成只读探索并确认真实调用链
 - [x] 完成兼容模式实施规划
-- [x] 完成 planning 内容验证
+- [x] 完成实现
+- [x] 完成验证
 - [x] 完成交付前收敛检查
 
 ## 决策

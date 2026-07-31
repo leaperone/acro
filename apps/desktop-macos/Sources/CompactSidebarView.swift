@@ -529,6 +529,17 @@ struct CompactSidebarView: View {
     private var footer: some View {
         VStack(spacing: 2) {
             Button {
+                model.showLocalAgent()
+            } label: {
+                Image(systemName: "sparkles")
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(SidebarFooterIconButtonStyle())
+            .disabled(!model.canOpenLocalAgent)
+            .help(String(localized: "t3.open", defaultValue: "Open Local Agent"))
+            .accessibilityLabel(String(localized: "t3.open", defaultValue: "Open Local Agent"))
+
+            Button {
                 model.requestCreateWorkspace()
             } label: {
                 Image(systemName: "square.stack.3d.up.badge.plus")

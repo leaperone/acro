@@ -11,3 +11,17 @@
 "browser.action.new" = "新しいブラウザー";
 "terminal.action.splitRight" = "右に分割";
 "terminal.action.splitDown" = "下に分割";
+"command.kind" = "コマンド";
+"t3.title" = "ローカル Agent";
+"t3.open" = "ローカル Agent を開く";
+"t3.open.subtitle" = "この Mac で T3 Code を実行";
+"t3.back" = "ワークベンチ";
+"t3.starting" = "ローカル Agent を起動中…";
+"t3.retry" = "再試行";
+"t3.error.title" = "ローカル Agent を利用できません";
+"t3.error.missingRuntime" = "T3 Code ランタイムがありません。";
+"t3.error.nodeVersion" = "T3 Code には Node 22.16+、23.11+、または 24.10+ が必要です。";
+"t3.error.invalidState" = "ローカル Agent サービスの状態が無効です。";
+"t3.error.startup" = "ローカル Agent サービスを起動できませんでした。";
+"t3.error.authentication" = "ローカル Agent セッションを認証できませんでした。";
+"t3.error.localOnly" = "ローカル Agent はローカル Runtime を選択している場合のみ利用できます。";
