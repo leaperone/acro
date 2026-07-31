@@ -32,9 +32,9 @@
 
 ## 修改文件
 
-- `.planning/t3-agent-compat-mode-2026-07-31_19-47-48/task_plan.md`
-- `.planning/t3-agent-compat-mode-2026-07-31_19-47-48/findings.md`
-- `.planning/t3-agent-compat-mode-2026-07-31_19-47-48/progress.md`
+- Planning 与蓝图：`.planning/blueprint.md`、`.planning/t3-agent-compat-mode-2026-07-31_19-47-48/`
+- Desktop：T3 sidecar manager、WKWebView、模式入口、三语言文案与 Swift 测试
+- 打包与依赖：`apps/t3-compat/`、`package-app.sh`、pnpm workspace/lockfile、第三方声明与打包测试
 
 ## 验证结果
 
@@ -50,7 +50,7 @@
 | `git merge-tree --write-tree HEAD origin/main` | 成功生成合并树，无冲突 | 通过 |
 | 内容审查 | 修正 local-only 与 sidecar 窗口生命周期边界后，无 critical/high | 通过 |
 | PR 身份 | PR #150、base `main`、head 分支与 SHA 一致、mergeable | 通过 |
-| GitHub CI | 当前实现 push 后由 PR checks 重新验证 | 待 push |
+| GitHub CI | PR #150 的 `typescript` 与 `desktop-macos` checks 在实现 HEAD `451837f` 上成功 | 通过 |
 | 代码实现 | 本机 Agent 模式、sidecar、WebView、打包与声明均已完成 | 通过 |
 | T3 针对性 Swift 测试 | `T3CompatTests` 5 项通过 | 通过 |
 | 打包契约测试 | `test_package_app.py` 4 项通过 | 通过 |
@@ -66,7 +66,7 @@
 ## Git 与交付状态
 
 - 分支：`plan/t3-agent-compat-mode`
-- 提交：实现与 planning 将作为同一交付提交收敛。
+- 提交：实现提交 `451837fa1c4c600fde670f68780d5c654cea7fc7` 已 push；最终 planning 元数据同步后重新核对 HEAD/PR 身份。
 - PR：`https://github.com/leaperone/acro/pull/150`
 - 合并：尚未执行；交付前运行 preflight 并按其结论处理。
 - 发布/部署：未执行；本任务不发布 Desktop。
