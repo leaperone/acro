@@ -327,6 +327,19 @@ extension WorkbenchModel {
                 action: { self.inspectorVisible.toggle() }
             ),
         ]
+        if canOpenLocalAgent {
+            items.insert(CommandPaletteItem(
+                id: "command:local-agent",
+                title: String(localized: "t3.open", defaultValue: "Open Local Agent"),
+                subtitle: String(
+                    localized: "t3.open.subtitle",
+                    defaultValue: "Run T3 Code on this Mac"
+                ),
+                symbol: "sparkles",
+                kind: String(localized: "command.kind", defaultValue: "Command"),
+                action: { self.showLocalAgent() }
+            ), at: 0)
+        }
 
         if let selectedWorkspace {
             items.append(CommandPaletteItem(

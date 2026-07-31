@@ -11,3 +11,17 @@
 "browser.action.new" = "新建浏览器";
 "terminal.action.splitRight" = "向右分屏";
 "terminal.action.splitDown" = "向下分屏";
+"command.kind" = "命令";
+"t3.title" = "本机 Agent";
+"t3.open" = "打开本机 Agent";
+"t3.open.subtitle" = "在这台 Mac 上运行 T3 Code";
+"t3.back" = "工作台";
+"t3.starting" = "正在启动本机 Agent…";
+"t3.retry" = "重试";
+"t3.error.title" = "本机 Agent 暂不可用";
+"t3.error.missingRuntime" = "缺少 T3 Code 运行时。";
+"t3.error.nodeVersion" = "T3 Code 需要 Node 22.16+、23.11+ 或 24.10+。";
+"t3.error.invalidState" = "本机 Agent 服务状态无效。";
+"t3.error.startup" = "本机 Agent 服务未能启动。";
+"t3.error.authentication" = "无法认证本机 Agent 会话。";
+"t3.error.localOnly" = "只有选中本机 Runtime 时才能使用本机 Agent。";

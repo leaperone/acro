@@ -28,6 +28,11 @@ enum SidebarViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum WorkbenchExperience: String {
+    case workbench
+    case localAgent
+}
+
 // 应用内拖拽的真源(cmux SidebarWorkspaceDragRegistry 模式):
 // NSItemProvider 异步且跨进程,应用内直接读这里,同步且无歧义。
 struct WorkspaceDragPayload: Equatable {
@@ -94,6 +99,9 @@ final class WorkbenchModel: ObservableObject {
     @Published var sidebarViewMode: SidebarViewMode {
         didSet { UserDefaults.standard.set(sidebarViewMode.rawValue, forKey: Self.sidebarModeKey) }
     }
+    @Published var experience: WorkbenchExperience {
+        didSet { UserDefaults.standard.set(experience.rawValue, forKey: Self.experienceKey) }
+    }
 
     // 设置窗口打开请求(Commands 里 openWindow 不可用,经视图转发)
     @Published private(set) var settingsOpenRequest = 0
@@ -159,6 +167,7 @@ final class WorkbenchModel: ObservableObject {
     }
 
     var appShortcutPresentation: AppShortcutPresentation {
+        if experience == .localAgent { return .systemPresentation }
         let application = NSApplication.shared
         if AcroAppDelegate.hasSystemShortcutPresentation(
             eventWindow: nil,
@@ -204,12 +213,17 @@ final class WorkbenchModel: ObservableObject {
     private(set) var terminalPaneControllers: [ScopedResourceID: TerminalPaneController] = [:]
     private static let layoutKey = "acro.desktop.workbench.layout.v2"
     private static let sidebarModeKey = "acro.desktop.sidebar.view-mode"
+    private static let experienceKey = "acro.desktop.experience"
 
     init(hub: RuntimeHub) {
         self.hub = hub
-        selectedServerId = ClientConfig.load()?.activeServer?.id
+        let activeServer = ClientConfig.load()?.activeServer
+        selectedServerId = activeServer?.id
         sidebarViewMode = UserDefaults.standard.string(forKey: Self.sidebarModeKey)
             .flatMap(SidebarViewMode.init(rawValue:)) ?? .workspaces
+        let storedExperience = UserDefaults.standard.string(forKey: Self.experienceKey)
+            .flatMap(WorkbenchExperience.init(rawValue:)) ?? .workbench
+        experience = activeServer?.isLocal == false ? .workbench : storedExperience
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             let flags = StoredShortcut.normalizedModifiers(event)
             let cmdHeld = flags == .command
@@ -271,6 +285,42 @@ final class WorkbenchModel: ObservableObject {
                 self?.requestRestartTerminalDaemon()
             }
         }
+        NotificationCenter.default.addObserver(
+            forName: .acroSetExperience, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let raw = note.userInfo?["experience"] as? String,
+                  let experience = WorkbenchExperience(rawValue: raw) else { return }
+            MainActor.assumeIsolated {
+                if experience == .localAgent {
+                    self?.showLocalAgent()
+                } else {
+                    self?.showWorkbench()
+                }
+            }
+        }
+    }
+
+    var canOpenLocalAgent: Bool {
+        guard let selectedServerId else { return true }
+        return hub.server(for: selectedServerId)?.isLocal
+            ?? ClientConfig.load()?.servers.first { $0.id == selectedServerId }?.isLocal
+            ?? false
+    }
+
+    func showLocalAgent() {
+        guard canOpenLocalAgent else {
+            errorMessage = String(
+                localized: "t3.error.localOnly",
+                defaultValue: "Local Agent is available only when the local Runtime is selected."
+            )
+            return
+        }
+        showingCommandPalette = false
+        experience = .localAgent
+    }
+
+    func showWorkbench() {
+        experience = .workbench
     }
 
     private func scopedID(_ resourceId: String) -> ScopedResourceID? {

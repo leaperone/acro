@@ -88,6 +88,16 @@ Runtime 逻辑跨平台:也可作为登录用户的 systemd service 常驻在 Li
 
 它必须运行在已登录的图形用户会话中，并显式取得辅助功能和录屏权限。
 
+### Agent 兼容模式
+
+macOS Desktop 可切换到本机 Agent 模式：Acro 使用内置 Node 启动固定版本的 T3 Code
+server，并用 `WKWebView` 承载其原始 Web UI。T3 只监听 loopback，状态存放在
+`~/.acro/t3-compat/`；Project、Thread、PTY、Provider 与 Git/worktree 状态不进入 Acro
+Runtime 数据模型，也不控制 Acro terminal daemon。
+
+首版只代表 Desktop 所在的本机执行环境。当前选中远端 Runtime 时不得把本机 T3 投影成
+远端能力；远端 T3、Mobile 内嵌和 Electron-only Preview/SSH 需要独立设计。
+
 ## 核心数据模型
 
 ```text

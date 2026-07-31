@@ -925,6 +925,16 @@ struct SidebarView: View {
         HStack(spacing: 4) {
             SidebarPresentationMenuButton(model: model)
             Button {
+                model.showLocalAgent()
+            } label: {
+                Image(systemName: "sparkles")
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(SidebarFooterIconButtonStyle())
+            .disabled(!model.canOpenLocalAgent)
+            .help(String(localized: "t3.open", defaultValue: "Open Local Agent"))
+            .accessibilityLabel(String(localized: "t3.open", defaultValue: "Open Local Agent"))
+            Button {
                 connectSheetPresented = true
             } label: {
                 Image(systemName: "plus.rectangle.on.rectangle")

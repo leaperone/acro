@@ -3,6 +3,7 @@ packages:
   - packages/*
 allowBuilds:
   esbuild: true
+  msgpackr-extract: false
   node-pty: true
 minimumReleaseAgeExclude:
   - '@expo/cli@57.0.9'
