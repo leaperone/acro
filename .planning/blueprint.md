@@ -68,7 +68,12 @@ Runtime 逻辑跨平台:也可作为登录用户的 systemd service 常驻在 Li
 
 ### Mobile Client
 
-使用 Expo 和 React Native。终端区域通过 WebView 复用 xterm.js。
+使用 Expo 和 React Native。终端区域首版通过 WebView 复用 xterm.js。
+
+**终端渲染的终局是 libghostty-vt，不是 xterm.js。** 桌面端用 libghostty surface、移动端用 xterm.js
+意味着两套终端语义，选区、grapheme 边界和键盘编码会出现行为差异。t3code 验证过可行路径：
+移动端与 Web 加载同一份 libghostty-vt 的 C ABI（Android 链 so、Web 用 WASM），共用一个上游 pin，
+平台适配器只负责字体整形、IME、剪贴板和画布绘制。移动端终端做深之前迁移，不要让 xterm.js 长成既成事实。
 
 职责：
 
@@ -124,9 +129,13 @@ Machine
 - 一个远程 Runtime 对客户端 = 一个 token + 多个入口（LAN、公网代理），局域网优先、失败自动回退公网；从任何入口连上都是同一设备身份、同一批会话，服务端不区分连接来源。
 - 桌面客户端是多主机的：为每台已配对 Runtime 维持一条常驻连接（RuntimeHub），侧边栏按服务器分组同时显示各自的工作区；终端 attach 通过 CLI `--server` 路由到对应 Runtime。CLI 随桌面 App 打包成单文件，客户端机器不需要仓库 checkout。
 - 每个客户端与 Runtime 之间只有一条 WebSocket：控制消息使用 zod 定义的 JSON-RPC，终端数据使用二进制帧，事件带 `seq` 和 `boot_id` 支持断点续传。HTTP 只保留健康检查。
+- 事件当前广播给全部已认证连接。会话事件带 `workspaceId`，供客户端本地路由，也是将来按订阅收敛推送时的过滤依据；在实测到弱网带宽问题前不引入订阅过滤。
+- Runtime 与 terminal daemon 之间用 `daemon.info` 显式协商能力。daemon 活过 Runtime 重启，「新 Runtime + 旧 daemon」是常态，版本判断不依赖错误文案。
 - 协议唯一真源是 `packages/protocol` 的 zod schema；Swift 客户端类型用 codegen 生成，禁止手工镜像。
 - 客户端 attach 会话时先收快照再收增量；多客户端输入所有权由 Runtime 仲裁。
-- 服务端为每个控制 RPC 检查设备、Workspace、项目归属和操作类型。
+- 授权按方法粒度：每个 RPC 在协议里声明所需 scope（`read` / `control` / `computer` / `admin`），服务端在参数校验前逐次检查。持有有效连接不等于可以调用其上的一切。终端输入走二进制帧，同样要求 `control`。
+- Computer Use 与设备管理单独成档：前者等于整机键鼠与录屏，后者能再分发访问权。新配对默认只给 `read` + `control`，这两档必须由用户显式授予。
+- 资源级归属（按 Workspace、项目过滤）尚未实现；当前授权到方法级为止。
 - 终端字节流对 Acro 不透明。Git、文件修改和生产命令的安全规则由终端里的 Agent 与项目规则执行，Acro 不解析或拦截 Shell 命令。
 
 ## 关键流程
@@ -201,6 +210,7 @@ Acro 达到以下结果时，基础架构成立：
 | muxy | `.tmp/muxy` | MIT | SwiftUI + libghostty 集成与移动端远程协议的代码来源 |
 | ghostty | `.tmp/ghostty` | MIT | libghostty 上游，xcframework 构建方式 |
 | otty | `.tmp/otty` | Apache-2.0 | Rust 终端工作台，快照帧与后端抽象参考 |
+| t3code | `.tmp/t3code` | MIT | 多端 agent 控制台。取材：按方法 scope 授权、连接状态机规格、libghostty-vt 的 ABI 边界与单一 pin、文档按受众分层。**不取**其编排层（事件溯源、provider driver、checkpoint/VCS）与 Effect 全栈——那些服务于「编排 agent 会话」，与 Acro 的非目标冲突 |
 
 MIT / Apache 项目的代码在理解后可以取用并保留版权声明。libghostty 没有喂字节 API，远程会话必须走 attach CLI 作 surface command 的模式；embedding API 不稳定，需 pin ghostty fork。
 

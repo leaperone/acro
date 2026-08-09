@@ -3,10 +3,11 @@ import test from "node:test";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket } from "ws";
-import { pairingAdmissionId } from "@acro/protocol";
+import { ALL_RPC_SCOPES, encodeInFrame, pairingAdmissionId, type RpcScope } from "@acro/protocol";
 import type { DeviceRegistry } from "./devices.ts";
 import {
   admissionMatchesToken,
+  deviceHasScope,
   Gateway,
   MAX_IN_FLIGHT_RPC_PER_CONNECTION,
   MAX_IN_FLIGHT_RPC_TOTAL,
@@ -19,7 +20,7 @@ import {
   type Handlers,
 } from "./ws.ts";
 
-function fixture(bufferedAmount: number) {
+function fixture(bufferedAmount: number, scopes: readonly RpcScope[] = ALL_RPC_SCOPES) {
   let sealed = 0;
   let sent = 0;
   let terminated = 0;
@@ -47,8 +48,12 @@ function fixture(bufferedAmount: number) {
         messages.push(JSON.parse(text));
         return new Uint8Array([1]);
       },
+      // 测试夹具里 E2EE 是恒等变换,便于直接驱动 onMessage 的解密后分支
+      open(data: Uint8Array) {
+        return { kind: "binary" as const, data };
+      },
     },
-    device: { id: "device", name: "Device", createdAt: "", lastSeenAt: null },
+    device: { id: "device", name: "Device", createdAt: "", lastSeenAt: null, scopes: [...scopes] },
     admissionId: null,
     attached: new Map(),
     browserChannels: new Map(),
@@ -332,4 +337,79 @@ test("simulator interest includes pending and attached subscribers", () => {
   } finally {
     close();
   }
+});
+
+test("a valid connection is not authorization to call everything on it", async () => {
+  // 只有 read 的设备:能看,不能控,更不能碰 Computer Use 或设备管理
+  const { gateway, conn, messages, close } = fixture(0, ["read"]);
+  let called = 0;
+  (gateway as unknown as { handlers: Handlers }).handlers = new Proxy({} as Handlers, {
+    get: () => async () => {
+      called += 1;
+      return [];
+    },
+  });
+  const dispatch = (
+    gateway as unknown as {
+      dispatch(c: Conn, r: { t: "req"; id: number; method: string; params: unknown }): Promise<void>;
+    }
+  ).dispatch.bind(gateway);
+
+  try {
+    for (const [id, method] of [
+      [1, "session.kill"],
+      [2, "computer.click"],
+      [3, "computer.capture"],
+      [4, "device.share"],
+      [5, "daemon.restart"],
+    ] as const) {
+      await dispatch(conn, { t: "req", id, method, params: {} });
+    }
+    assert.equal(called, 0, "no forbidden handler may run");
+    assert.deepEqual(
+      messages.map((m) => (m as { error: { code: string } }).error.code),
+      ["forbidden", "forbidden", "forbidden", "forbidden", "forbidden"],
+    );
+
+    // 授予的 scope 照常放行
+    messages.length = 0;
+    await dispatch(conn, { t: "req", id: 6, method: "fs.list", params: { path: "/tmp" } });
+    assert.equal(called, 1);
+    assert.equal((messages[0] as { ok: boolean }).ok, true);
+  } finally {
+    close();
+  }
+});
+
+test("read-only devices watch terminals but cannot type into them", () => {
+  const { gateway, conn, close } = fixture(0, ["read"]);
+  let forwarded = 0;
+  try {
+    conn.attached.set(7, { sessionId: "s1", attachSeq: 0 });
+    (gateway as unknown as { onInput: (channel: number, data: Uint8Array) => void }).onInput =
+      () => {
+        forwarded += 1;
+      };
+    const onMessage = (
+      gateway as unknown as { onMessage(c: Conn, raw: Buffer, isBinary: boolean): void }
+    ).onMessage.bind(gateway);
+
+    const input = Buffer.from(encodeInFrame(7, new TextEncoder().encode("rm -rf /")));
+    onMessage(conn, input, true);
+    assert.equal(forwarded, 0, "terminal input requires the control scope");
+
+    conn.device = { ...conn.device!, scopes: ["read", "control"] };
+    onMessage(conn, input, true);
+    assert.equal(forwarded, 1);
+  } finally {
+    close();
+  }
+});
+
+test("scope checks treat unknown grants as unauthorized", () => {
+  assert.equal(deviceHasScope(null, "read"), false);
+  assert.equal(deviceHasScope({ scopes: null } as never, "read"), false);
+  assert.equal(deviceHasScope({ scopes: [] } as never, "read"), false);
+  assert.equal(deviceHasScope({ scopes: ["control"] } as never, "read"), false);
+  assert.equal(deviceHasScope({ scopes: ["read"] } as never, "read"), true);
 });

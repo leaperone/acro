@@ -173,3 +173,73 @@ test("terminal input drops a stalled daemon socket before its queue exceeds the 
   assert.equal(writes, 0);
   assert.equal(destroyed, true);
 });
+
+// daemon 是 detached 进程,活过 runtime 重启,所以"新 runtime + 旧 daemon"是常态。
+// 能力必须来自 daemon 的显式声明,而不是解析 "unknown method ..." 的错误文案。
+function negotiateWith(reply: (method: string) => unknown): {
+  client: DaemonClient;
+  done: Promise<void>;
+} {
+  const client = new DaemonClient(50, 8);
+  const socket = {
+    write: (data: Buffer, callback?: (error?: Error | null) => void) => {
+      callback?.();
+      const body = JSON.parse(data.subarray(5).toString("utf8")) as { id: number; method: string };
+      setImmediate(() => {
+        const result = reply(body.method);
+        (client as unknown as { onData(chunk: Buffer): void }).onData(
+          packJson(
+            result === undefined
+              ? { t: "res", id: body.id, ok: false, error: { message: "unknown method" } }
+              : { t: "res", id: body.id, ok: true, result },
+          ),
+        );
+      });
+      return true;
+    },
+    destroy: () => undefined as unknown as net.Socket,
+  } as unknown as net.Socket;
+  (client as unknown as { socket: net.Socket }).socket = socket;
+  const done = (client as unknown as { negotiate(): Promise<void> }).negotiate();
+  return { client, done };
+}
+
+test("daemon capabilities come from the handshake, not from error strings", async () => {
+  const current = negotiateWith((method) =>
+    method === "daemon.info"
+      ? { boot: "b", pid: 1, methods: ["session.createOwned", "session.cwd"] }
+      : undefined,
+  );
+  await current.done;
+  assert.equal(current.client.supports("session.createOwned"), true);
+  assert.equal(current.client.supports("session.cwd"), true);
+  assert.equal(current.client.supports("session.somethingNewer"), false);
+});
+
+test("a daemon that reports no methods supports nothing that needs declaring", async () => {
+  // 旧 daemon:daemon.info 存在但不报告 methods
+  const legacy = negotiateWith((method) =>
+    method === "daemon.info" ? { boot: "b", pid: 1, features: { agentSessions: true } } : undefined,
+  );
+  await legacy.done;
+  assert.equal(legacy.client.supports("session.createOwned"), false);
+  assert.equal(legacy.client.supports("session.cwd"), false);
+
+  // 更旧的 daemon:连 daemon.info 都没有。握手失败不得抛穿,只落到空能力集。
+  const ancient = negotiateWith(() => undefined);
+  await ancient.done;
+  assert.equal(ancient.client.supports("session.cwd"), false);
+});
+
+test("capabilities are dropped when the daemon connection closes", async () => {
+  const { client, done } = negotiateWith((method) =>
+    method === "daemon.info" ? { boot: "b", pid: 1, methods: ["session.cwd"] } : undefined,
+  );
+  await done;
+  assert.equal(client.supports("session.cwd"), true);
+
+  client.close();
+  const socket = (client as unknown as { socket: net.Socket | null }).socket;
+  (client as unknown as { onClose(s: net.Socket | null): void }).onClose(socket);
+  assert.equal(client.supports("session.cwd"), false);
+});

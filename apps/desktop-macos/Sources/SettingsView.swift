@@ -531,6 +531,22 @@ private struct ShareServerSection: View {
     @State private var generatedOffer: String?
     @State private var copied = false
     @State private var shareError: String?
+    // 新配对默认只给浏览与控制。Computer Use 等于整机键鼠 + 录屏,设备管理能再分发访问权,
+    // 两者都必须由用户显式勾选(服务端 DEFAULT_GRANT_SCOPES 是同一套默认)。
+    @State private var shareScopes: Set<String> = ["read", "control"]
+
+    private struct ScopeOption: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+    }
+
+    private static let scopeOptions: [ScopeOption] = [
+        .init(id: "read", title: "查看", detail: "文件、Git、端口与终端画面"),
+        .init(id: "control", title: "控制", detail: "终端输入、工作区、浏览器与模拟器"),
+        .init(id: "computer", title: "Computer Use", detail: "键鼠控制与录屏,作用于整台 Mac"),
+        .init(id: "admin", title: "管理", detail: "配对与撤销其他设备"),
+    ]
 
     var body: some View {
         Section {
@@ -545,6 +561,26 @@ private struct ShareServerSection: View {
                     TextField("公网入口(可选)", text: $shareExtraEndpoint)
                         .textFieldStyle(.roundedBorder)
                     Button("生成配对码") { Task { await createShare() } }
+                        .disabled(shareScopes.isEmpty)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("授予权限")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    ForEach(Self.scopeOptions) { option in
+                        Toggle(isOn: Binding(
+                            get: { shareScopes.contains(option.id) },
+                            set: { on in
+                                if on { shareScopes.insert(option.id) } else { shareScopes.remove(option.id) }
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(option.title)
+                                Text(option.detail).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                    }
                 }
                 if let generatedOffer {
                     HStack(spacing: 6) {
@@ -572,7 +608,7 @@ private struct ShareServerSection: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(devices) { device in
-                    LabeledContent(device.name) {
+                    LabeledContent {
                         HStack(spacing: 8) {
                             Text(deviceStatus(device))
                                 .font(.caption)
@@ -585,6 +621,11 @@ private struct ShareServerSection: View {
                             .buttonStyle(.borderless)
                             .foregroundStyle(.red)
                             .help("撤销授权并立即断开该设备")
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(device.name)
+                            Text(deviceScopes(device)).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -604,6 +645,14 @@ private struct ShareServerSection: View {
         return "最后使用 \(shortDate(lastSeen))"
     }
 
+    // scopes 为 nil = 服务端早于按方法授权;这类设备当时拥有全部权限,如实说明而不是假装受限。
+    private func deviceScopes(_ device: Device) -> String {
+        guard let scopes = device.scopes else { return "权限:全部(服务端版本较旧)" }
+        if scopes.isEmpty { return "权限:无" }
+        let titles = Self.scopeOptions.filter { scopes.contains($0.id) }.map(\.title)
+        return "权限:\(titles.joined(separator: "、"))"
+    }
+
     private func reload() async {
         guard let connection, connection.connected else {
             devices = []
@@ -620,6 +669,8 @@ private struct ShareServerSection: View {
         if !name.isEmpty { params["name"] = name }
         let extra = shareExtraEndpoint.trimmingCharacters(in: .whitespaces)
         if !extra.isEmpty { params["extraEndpoints"] = [extra] }
+        // 按服务端的规范顺序发送,便于与 device.list 的回显直接比对
+        params["scopes"] = Self.scopeOptions.map(\.id).filter(shareScopes.contains)
         do {
             guard let connection else { return }
             struct ShareResult: Decodable { let offer: String; let deviceId: String }

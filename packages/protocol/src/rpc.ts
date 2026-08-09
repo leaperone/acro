@@ -12,6 +12,8 @@ import {
   SessionFocus,
   Workspace,
   WorkspaceGroup,
+  RpcScope as RpcScopeSchema,
+  type RpcScope,
 } from "./models.ts";
 
 // 控制消息信封。一条 WS 上,JSON 文本帧走这里,二进制帧走 frames.ts。
@@ -65,6 +67,9 @@ export const methods = {
     params: z.object({
       name: z.string().trim().min(1).max(64).optional(),
       extraEndpoints: z.array(z.string().trim().min(1)).max(8).optional(),
+      // 授予新设备的 scope。省略时按 DEFAULT_GRANT_SCOPES(read + control),
+      // 即新配对默认不含 Computer Use 与设备管理。
+      scopes: z.array(RpcScopeSchema).min(1).optional(),
     }),
     result: z.object({ offer: z.string(), deviceId: z.string() }),
   },
@@ -398,12 +403,94 @@ export type MethodName = keyof typeof methods;
 export type MethodParams<M extends MethodName> = z.infer<(typeof methods)[M]["params"]>;
 export type MethodResult<M extends MethodName> = z.infer<(typeof methods)[M]["result"]>;
 
+// 方法 → 所需 scope。持有有效连接不等于可以调用其上的一切:
+// 服务端在参数校验之后、handler 之前逐次检查(见 apps/runtime/src/ws.ts 的 dispatch)。
+// Record<MethodName, ...> 让新增方法必须在此显式表态,漏掉会编译失败。
+export const METHOD_SCOPES: Record<MethodName, RpcScope> = {
+  // 设备管理:配对与撤销等于分发和收回整台机器的访问权
+  "device.list": "admin",
+  "device.share": "admin",
+  "device.revoke": "admin",
+
+  // 只读浏览
+  "agent.capabilities": "read",
+  "workspace.list": "read",
+  "workspaceGroup.list": "read",
+  "session.list": "read",
+  "session.cwd": "read",
+  "session.focusList": "read",
+  // attach/detach 只订阅画面;真正的终端输入走二进制帧,单独要求 control
+  "session.attach": "read",
+  "session.detach": "read",
+  "browser.list": "read",
+  "browser.controlList": "read",
+  "browser.attach": "read",
+  "browser.detach": "read",
+  "simulator.list": "read",
+  "simulator.attach": "read",
+  "simulator.detach": "read",
+  "computer.controlOwner": "read",
+  "computer.permissions": "read",
+  "fs.list": "read",
+  "fs.read": "read",
+  "fs.search": "read",
+  "git.status": "read",
+  "git.diff": "read",
+  "ports.list": "read",
+
+  // 控制:改变服务端状态,但限于 Acro 自己管理的会话与表面
+  "daemon.restart": "control",
+  "workspace.create": "control",
+  "workspace.update": "control",
+  "workspace.reorder": "control",
+  "workspace.remove": "control",
+  "workspace.setLayout": "control",
+  "workspaceGroup.create": "control",
+  "workspaceGroup.update": "control",
+  "workspaceGroup.remove": "control",
+  "session.create": "control",
+  "session.claimFocus": "control",
+  "session.resize": "control",
+  "session.kill": "control",
+  "session.remove": "control",
+  "session.resumeAgent": "control",
+  "browser.open": "control",
+  "browser.claimControl": "control",
+  "browser.navigate": "control",
+  "browser.input": "control",
+  "browser.close": "control",
+  "simulator.boot": "control",
+  "simulator.shutdown": "control",
+
+  // Computer Use:键鼠注入、应用激活与录屏。作用域是整台 Mac,不限于 Acro 的表面。
+  "computer.claimControl": "computer",
+  "computer.capture": "computer",
+  "computer.windows": "computer",
+  "computer.click": "computer",
+  "computer.type": "computer",
+  "computer.key": "computer",
+  "computer.activate": "computer",
+};
+
+// 终端输入(FRAME_IN 二进制帧)不经过方法表,但它是不折不扣的控制操作。
+export const TERMINAL_INPUT_SCOPE: RpcScope = "control";
+
 // 服务端事件。payload 同样走 zod。
+// 会话事件的所属工作区。runtime 在转发 daemon 事件时注入(daemon 不感知 workspace);
+// 会话不属于任何 workspace 时为 null。nullable + default(null) 兼容旧 runtime。
+// 目前只用于客户端本地路由,服务端仍向全部已认证连接广播;
+// 需要按订阅收敛推送时,这个字段就是过滤依据。
+const WorkspaceScopedEvent = { workspaceId: z.string().nullable().default(null) };
+
 export const events = {
-  "session.exit": z.object({ sessionId: z.string(), exitCode: z.number().int().nullable() }),
-  "session.created": Session,
-  "session.removed": z.object({ sessionId: z.string() }),
-  "session.agentChanged": z.object({ sessionId: z.string() }),
+  "session.exit": z.object({
+    sessionId: z.string(),
+    exitCode: z.number().int().nullable(),
+    ...WorkspaceScopedEvent,
+  }),
+  "session.created": Session.extend(WorkspaceScopedEvent),
+  "session.removed": z.object({ sessionId: z.string(), ...WorkspaceScopedEvent }),
+  "session.agentChanged": z.object({ sessionId: z.string(), ...WorkspaceScopedEvent }),
   "workspace.layoutChanged": z.object({ workspaceId: z.string(), rev: z.number().int() }),
   "session.focusChanged": z.object({
     sessionId: z.string(),
@@ -420,7 +507,11 @@ export const events = {
     deviceName: z.string().nullable(),
   }),
   // 终端 OSC 标题变化的增量广播(daemon 节流后发);runtime 透传,客户端刷新 session.list 拿新标题。
-  "session.title": z.object({ sessionId: z.string(), title: z.string().nullable() }),
+  "session.title": z.object({
+    sessionId: z.string(),
+    title: z.string().nullable(),
+    ...WorkspaceScopedEvent,
+  }),
 } as const;
 
 export type EventName = keyof typeof events;
@@ -436,5 +527,9 @@ export type E2eeAuth = z.infer<typeof E2eeAuth>;
 export const E2eeAuthed = z.object({
   t: z.literal("authed"),
   deviceId: z.string(),
+  // 本连接被授予的 scope。客户端据此隐藏无权使用的入口,
+  // 但拒绝的唯一权威仍是服务端 dispatch 时的检查。
+  // optional 兼容旧 runtime:缺失时客户端按"未知"处理,不据此禁用 UI。
+  scopes: z.array(RpcScopeSchema).optional(),
 });
 export type E2eeAuthed = z.infer<typeof E2eeAuthed>;

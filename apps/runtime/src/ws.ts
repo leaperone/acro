@@ -10,12 +10,21 @@ import {
   encodeSimFrame,
   FRAME_IN,
   type HelloMessage,
+  METHOD_SCOPES,
   methods,
   pairingAdmissionId,
   RpcRequest,
   ServerHandshake,
+  TERMINAL_INPUT_SCOPE,
+  type RpcScope,
 } from "@acro/protocol";
 import type { DeviceRegistry } from "./devices.ts";
+
+// 授权的唯一判定点。device.scopes 为 null 只可能出现在类型层面(注册表读取时已补全),
+// 这里仍按"无权限"处理:授权判断不接受含糊的输入。
+export function deviceHasScope(device: Device | null, scope: RpcScope): boolean {
+  return device?.scopes?.includes(scope) ?? false;
+}
 
 export function removeSurfaceChannels(channels: Map<number, string>, surfaceId: string): number[] {
   const removed: number[] = [];
@@ -331,7 +340,7 @@ export class Gateway {
         const device = this.registry.auth(auth.token);
         if (!device) throw new Error("unauthorized");
         conn.device = device;
-        this.sendText(conn, { t: "authed", deviceId: device.id });
+        this.sendText(conn, { t: "authed", deviceId: device.id, scopes: device.scopes ?? [] });
         this.onAuthenticated?.(device);
         return;
       }
@@ -340,6 +349,8 @@ export class Gateway {
         const frame = decodeFrame(opened.data);
         const attached = frame.type === FRAME_IN ? conn.attached.get(frame.channel) : undefined;
         if (attached) {
+          // 终端输入不走方法表,但它是控制操作:只读设备可以看画面,不能打字
+          if (!deviceHasScope(conn.device, TERMINAL_INPUT_SCOPE)) return;
           // 会话被其他设备占用时丢弃输入:蒙版之下的硬约束
           if (this.inputGate && !this.inputGate(conn, attached.sessionId)) return;
           this.onInput(frame.channel, frame.data);
@@ -360,6 +371,18 @@ export class Gateway {
     const method = methods[req.method as keyof typeof methods];
     if (!method) {
       send({ t: "res", id: req.id, ok: false, error: { code: "unknown_method", message: req.method } });
+      return;
+    }
+    // 授权先于参数之外的一切:未授予的方法不该泄露它对参数的偏好,
+    // 也不该占用 in-flight 配额。
+    const required = METHOD_SCOPES[req.method as keyof typeof METHOD_SCOPES];
+    if (!deviceHasScope(conn.device, required)) {
+      send({
+        t: "res",
+        id: req.id,
+        ok: false,
+        error: { code: "forbidden", message: `method requires the ${required} scope` },
+      });
       return;
     }
     const parsed = method.params.safeParse(req.params ?? {});

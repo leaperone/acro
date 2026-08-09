@@ -666,7 +666,15 @@ interface DaemonRequest {
 let daemonRequestsInFlight = 0;
 
 const handlers: Record<string, Handler> = {
-  "daemon.info": () => ({ boot, pid: process.pid, features: { agentSessions: true } }),
+  // 能力协商的唯一入口。daemon 活过 runtime 重启,所以"新 runtime + 旧 daemon"是常态:
+  // runtime 按 methods 判断某个方法是否可用,不再靠比对 "unknown method ..." 的错误文案。
+  // 旧 daemon 的响应没有 methods,runtime 会把它判定为不支持任何新方法。
+  "daemon.info": () => ({
+    boot,
+    pid: process.pid,
+    features: { agentSessions: true },
+    methods: Object.keys(handlers),
+  }),
   "daemon.restart": () => {
     setImmediate(() => process.kill(process.pid, "SIGTERM"));
     return { restarting: true };

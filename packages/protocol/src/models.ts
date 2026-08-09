@@ -1,10 +1,27 @@
 import { z } from "zod";
 
+// 访问授权的权限档位。持有有效连接不等于可以调用全部方法:
+// 每个 RPC 方法在 rpc.ts 的 METHOD_SCOPES 中声明所需 scope,服务端逐次校验。
+// read     浏览:文件、Git、端口、会话与画面订阅
+// control  控制:终端输入与生命周期、工作区、浏览器、模拟器
+// computer Computer Use:键鼠注入、应用激活与录屏(等于整机控制,单独成档)
+// admin    设备管理:列出、配对与撤销其他设备
+export const RpcScope = z.enum(["read", "control", "computer", "admin"]);
+export type RpcScope = z.infer<typeof RpcScope>;
+
+export const ALL_RPC_SCOPES: readonly RpcScope[] = ["read", "control", "computer", "admin"];
+// 新配对默认只给浏览与控制。Computer Use 和设备管理必须由用户显式勾选。
+export const DEFAULT_GRANT_SCOPES: readonly RpcScope[] = ["read", "control"];
+
 export const Device = z.object({
   id: z.string(),
   name: z.string(),
   createdAt: z.string(),
   lastSeenAt: z.string().nullable(),
+  // 本设备被授予的 scope。nullable + default(null) 兼容版本偏斜:
+  // 旧 runtime 的 device.list 没有这个字段,新客户端解码后按"未知"处理并隐藏 scope UI。
+  // 服务端自身输出恒为数组(旧记录在 DeviceRegistry 中迁移为全 scope)。
+  scopes: z.array(RpcScope).nullable().default(null),
 });
 export type Device = z.infer<typeof Device>;
 

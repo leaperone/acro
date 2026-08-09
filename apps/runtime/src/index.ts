@@ -66,6 +66,14 @@ async function main(): Promise<void> {
   let localOffer = ensureLocalOffer(registry, identity, config.port);
   const needsBootstrap = !registry.list().some((device) => device.lastSeenAt !== null);
   const daemon = await DaemonClient.connect();
+  // 版本边界的统一处置点。daemon 活过 runtime 重启,所以新 runtime 遇到旧 daemon
+  // 是常态:能力由 daemon.info 显式协商,这里只负责把"不支持"翻译成可操作的提示。
+  const requireDaemonMethod = (method: string): void => {
+    if (daemon.supports(method)) return;
+    throw new Error(
+      "terminal daemon is outdated; close existing terminals, then restart the server Mac",
+    );
+  };
   const agents = new AgentManager(async (update) => {
     await daemon.request("session.updateAgent", update);
   });
@@ -288,6 +296,7 @@ async function main(): Promise<void> {
         }
 
         const sessionId = crypto.randomUUID();
+        requireDaemonMethod("session.createOwned");
         workspaces.addSession(workspace.id, sessionId);
         try {
           await daemon.request<{ session: Session; handle: number }>(
@@ -300,11 +309,6 @@ async function main(): Promise<void> {
             if (createdWorkspace && workspaces.get(workspace.id)?.sessionIds.length === 0) {
               workspaces.remove(workspace.id);
             }
-          }
-          if ((error as Error).message === "unknown method session.createOwned") {
-            throw new Error(
-              "terminal daemon is outdated; close existing terminals, then restart the server Mac",
-            );
           }
           throw error;
         }
@@ -453,8 +457,8 @@ async function main(): Promise<void> {
       }
     },
     "device.list": () => registry.list(),
-    "device.share": (_conn, { name, extraEndpoints }) =>
-      createShareOffer(registry, identity, config.port, name, extraEndpoints),
+    "device.share": (_conn, { name, extraEndpoints, scopes }) =>
+      createShareOffer(registry, identity, config.port, name, extraEndpoints, false, scopes),
     "device.revoke": (_conn, { deviceId }) => {
       const removed = registry.remove(deviceId);
       if (!removed) throw new Error("device not found");
@@ -495,16 +499,12 @@ async function main(): Promise<void> {
     },
     "session.cwd": async (conn, { sessionId }) => {
       requireActiveDevice(conn);
+      // 旧 daemon 不提供实时目录:降级为无结果,客户端沿用已知 cwd。
+      if (!daemon.supports("session.cwd")) return { cwd: null };
       try {
         return await daemon.request<{ cwd: string | null }>("session.cwd", { sessionId });
       } catch (error) {
-        // 会话已死 / 旧 daemon 无此方法:降级为无实时目录,客户端沿用已知 cwd。
-        if (
-          (error as Error).message === "session not alive" ||
-          (error as Error).message === "unknown method session.cwd"
-        ) {
-          return { cwd: null };
-        }
+        if ((error as Error).message === "session not alive") return { cwd: null };
         throw error;
       }
     },
@@ -565,21 +565,15 @@ async function main(): Promise<void> {
       const create = async (): Promise<Session> => {
         const workspace = params.workspaceId ? workspaces.get(params.workspaceId) : null;
         if (params.workspaceId && !workspace) throw new Error("workspace not found");
+        // 版本边界前置:宁可在建立任何状态之前失败,也不要留下半个会话
+        requireDaemonMethod("session.createOwned");
         // 路径遵循既定事实:显式 cwd > 继承源会话的实时目录 > 家目录
         let cwd = params.cwd;
         if (!cwd && params.inheritCwdFrom) {
-          try {
-            cwd = await daemon
-              .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
-              .then((result) => result.cwd ?? undefined);
-          } catch (error) {
-            if ((error as Error).message === "unknown method session.cwd") {
-              throw new Error(
-                "terminal daemon is outdated; close existing terminals, then restart the server Mac",
-              );
-            }
-            throw error;
-          }
+          requireDaemonMethod("session.cwd");
+          cwd = await daemon
+            .request<{ cwd: string | null }>("session.cwd", { sessionId: params.inheritCwdFrom })
+            .then((result) => result.cwd ?? undefined);
         }
         const { workspaceId, inheritCwdFrom, agent: provider, ...daemonParams } = params;
         const sessionId = crypto.randomUUID();
@@ -629,11 +623,6 @@ async function main(): Promise<void> {
         } catch (error) {
           if (workspaceId && associated && !daemonMayHaveCreatedSession(error)) {
             workspaces.removeSession(workspaceId, sessionId);
-          }
-          if ((error as Error).message === "unknown method session.createOwned") {
-            throw new Error(
-              "terminal daemon is outdated; close existing terminals, then restart the server Mac",
-            );
           }
           throw error;
         } finally {
@@ -932,9 +921,22 @@ async function main(): Promise<void> {
   // runtime 自身的事件流(工作区布局等),与 daemon 的 seq/boot 命名空间独立
   const runtimeBoot = crypto.randomUUID();
   let runtimeSeq = 0;
+  // 会话事件补上所属工作区。daemon 只认 sessionId,归属关系只有 runtime 知道。
+  // 事件目前仍广播给全部已认证连接;workspaceId 供客户端本地路由,
+  // 也是将来按订阅收敛推送时的过滤依据。
+  const withEventWorkspace = <T extends { event: string; payload: unknown }>(evt: T): T => {
+    const payload = evt.payload;
+    if (!evt.event.startsWith("session.") || typeof payload !== "object" || payload === null) {
+      return evt;
+    }
+    const sessionId = (payload as { sessionId?: unknown; id?: unknown }).sessionId
+      ?? (payload as { id?: unknown }).id;
+    if (typeof sessionId !== "string") return evt;
+    return { ...evt, payload: { ...payload, workspaceId: workspaces.workspaceIdForSession(sessionId) } };
+  };
   const emitRuntimeEvent = (event: string, payload: unknown): void => {
     runtimeSeq += 1;
-    gateway.broadcastEvent({ seq: runtimeSeq, boot: runtimeBoot, event, payload });
+    gateway.broadcastEvent(withEventWorkspace({ seq: runtimeSeq, boot: runtimeBoot, event, payload }));
   };
   gateway.onAuthenticated = () => {
     try {
@@ -964,7 +966,7 @@ async function main(): Promise<void> {
         });
       }
     }
-    gateway.broadcastEvent(evt);
+    gateway.broadcastEvent(withEventWorkspace(evt));
     if (evt.event === "session.exit") {
       const sessionId = (evt.payload as { sessionId?: string }).sessionId;
       if (sessionId) scheduleUntrackedSessionCleanup(sessionId);

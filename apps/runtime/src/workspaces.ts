@@ -78,6 +78,12 @@ export class WorkspaceRegistry {
     return workspace ? cloneWorkspace(workspace) : null;
   }
 
+  // 会话的归属工作区。daemon 不感知 workspace,事件转发时由 runtime 反查补上。
+  // 未加入任何工作区的会话返回 null。
+  workspaceIdForSession(sessionId: string): string | null {
+    return this.workspaces.find((item) => item.sessionIds.includes(sessionId))?.id ?? null;
+  }
+
   getGroup(workspaceGroupId: string): WorkspaceGroup | null {
     const group = this.workspaceGroups.find((item) => item.id === workspaceGroupId);
     return group ? cloneWorkspaceGroup(group) : null;

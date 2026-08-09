@@ -19,6 +19,7 @@ struct Device: Codable, Identifiable, Equatable, Hashable, Sendable {
     let name: String
     let createdAt: String
     let lastSeenAt: String?
+    let scopes: [String]?
 }
 
 struct Workspace: Codable, Identifiable, Equatable, Hashable, Sendable {
