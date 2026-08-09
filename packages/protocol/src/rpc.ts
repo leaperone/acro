@@ -517,6 +517,14 @@ export const events = {
 export type EventName = keyof typeof events;
 export type EventPayload<E extends EventName> = z.infer<(typeof events)[E]>;
 
+// 声明了 workspaceId 的事件,从上面的 events 表推导而来。
+// Runtime 据此决定给哪些事件注入归属,新事件加上字段即自动生效,不需要在别处再列一份名单。
+export const WORKSPACE_SCOPED_EVENTS: ReadonlySet<string> = new Set(
+  Object.entries(events)
+    .filter(([, schema]) => "workspaceId" in schema.shape)
+    .map(([name]) => name),
+);
+
 // E2EE 信道内认证(握手后的第一条加密消息;见 e2ee.ts 头部注释)
 export const E2eeAuth = z.object({
   t: z.literal("auth"),

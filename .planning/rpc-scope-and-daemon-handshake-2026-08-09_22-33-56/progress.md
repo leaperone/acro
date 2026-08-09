@@ -42,12 +42,14 @@
 | 检查 | 结果 | 状态 |
 |---|---|---|
 | `pnpm --filter @acro/protocol test` | 15 pass / 0 fail | 通过 |
-| `pnpm --filter @acro/runtime test` | 121 pass / 0 fail | 通过 |
+| `pnpm --filter @acro/runtime test` | 122 pass / 0 fail | 通过 |
 | `pnpm check`（全仓 tsc --noEmit + 各包测试） | 全绿 | 通过 |
 | `swift build`（desktop-macos） | Build complete | 通过 |
 | `swift test`（desktop-macos） | 63 tests / 4 suites 全过 | 通过 |
 | `grep "unknown method" apps/runtime/src/index.ts` | 无命中 | 通过 |
 | 文档→源码相对链接可解析 | 全部有效 | 通过 |
+| `pnpm build` | exit 0 | 通过 |
+| `git merge-tree origin/main HEAD` | 无冲突 | 通过 |
 | 端到端热替换验证 | — | 未执行（需本机重新打包与重启 dev 实例，属交付后验收） |
 
 ## 错误与恢复
@@ -57,3 +59,6 @@
 | worktree 内 `swift build` 报 `header 'ghostty.h' not found` | 1 | GhosttyKit.xcframework 与 `GhosttyKit/ghostty.h` 都不入 Git，从主 checkout 拷入 worktree（见 memory `desktop-worktree-build-artifacts`） |
 | ws.test 夹具的 device 无 scopes，既有 dispatch 测试被 forbidden 拦截 | 1 | 夹具改为可指定 scope，默认全 scope；另加只读设备的拒绝矩阵测试 |
 | 终端输入测试直接喂原始帧，夹具 session 无 `open` | 1 | 夹具补恒等 `open`，让测试走 `onMessage` 的真实解密后分支 |
+| 自审发现 `withEventWorkspace` 会给 `session.focusChanged` 等未声明该字段的事件注入 workspaceId | 1 | 改为从 protocol 的 `events` 表推导 `WORKSPACE_SCOPED_EVENTS`，单一真源，新事件加字段即自动生效 |
+| 自审发现协商期间连接断开仍会 `emit("up")`，让恢复流程在死连接上白跑 | 1 | 协商后比对 socket 身份，已被换掉则 reject，交给下一次重连；补回归测试 |
+| 新增 client 测试触发真实重连循环导致测试进程不退出 | 1 | 测试内先 `close()` 再模拟 `onClose`，让重连不被安排 |

@@ -243,3 +243,29 @@ test("capabilities are dropped when the daemon connection closes", async () => {
   (client as unknown as { onClose(s: net.Socket | null): void }).onClose(socket);
   assert.equal(client.supports("session.cwd"), false);
 });
+
+test("a connection that dies mid-handshake does not announce itself as up", async () => {
+  const client = new DaemonClient(20, 4);
+  let ups = 0;
+  client.on("up", () => {
+    ups += 1;
+  });
+  const socket = {
+    write: (_data: Buffer, callback?: (error?: Error | null) => void) => {
+      callback?.();
+      return true;
+    },
+    destroy: () => undefined as unknown as net.Socket,
+  } as unknown as net.Socket;
+  (client as unknown as { socket: net.Socket }).socket = socket;
+
+  const negotiating = (client as unknown as { negotiate(): Promise<void> }).negotiate();
+  // 协商在途时连接断开:onClose 会把 socket 换成 null 并拒绝 pending。
+  // 先 close() 是为了让测试收敛,否则 onClose 会安排真实的重连循环。
+  client.close();
+  (client as unknown as { onClose(s: net.Socket): void }).onClose(socket);
+  await negotiating;
+
+  assert.equal(ups, 0, "negotiate itself never announces up");
+  assert.equal(client.supports("session.cwd"), false);
+});

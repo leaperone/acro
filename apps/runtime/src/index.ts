@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import type { AgentSession, Session, Workspace } from "@acro/protocol";
+import { WORKSPACE_SCOPED_EVENTS } from "@acro/protocol";
 import { loadConfig } from "./config.ts";
 import { DeviceRegistry } from "./devices.ts";
 import { DaemonClient } from "./daemon/client.ts";
@@ -926,7 +927,9 @@ async function main(): Promise<void> {
   // 也是将来按订阅收敛推送时的过滤依据。
   const withEventWorkspace = <T extends { event: string; payload: unknown }>(evt: T): T => {
     const payload = evt.payload;
-    if (!evt.event.startsWith("session.") || typeof payload !== "object" || payload === null) {
+    // 只注入协议里声明了 workspaceId 的事件。多发一个未声明的字段虽然客户端能忽略,
+    // 但会让 events schema 与实际负载不符,协议就不再是唯一真源。
+    if (!WORKSPACE_SCOPED_EVENTS.has(evt.event) || typeof payload !== "object" || payload === null) {
       return evt;
     }
     const sessionId = (payload as { sessionId?: unknown; id?: unknown }).sessionId

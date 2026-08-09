@@ -85,6 +85,12 @@ export class DaemonClient extends EventEmitter {
         socket.on("error", () => {});
         // 先协商能力再宣告可用:恢复流程紧跟 "up" 运行,不能读到空能力集而误判为旧 daemon。
         void this.negotiate().then(() => {
+          // 协商期间连接可能已经断开并被 onClose 换掉;在死连接上宣告 up 只会让
+          // 恢复流程白跑一轮。此时重连已在路上,交给下一次 up。
+          if (this.socket !== socket) {
+            reject(new Error("daemon connection lost during negotiation"));
+            return;
+          }
           this.emit("up");
           resolve();
         });
