@@ -285,3 +285,21 @@ test("aggregate null is corruption, not a legacy migration signal", () => {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("session events can be attributed to their workspace", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-workspace-session-"));
+  try {
+    const store = new WorkspaceRegistry(workspaceStorage(directory));
+    const workspace = store.create("Acro");
+    store.addSession(workspace.id, "s1");
+
+    assert.equal(store.workspaceIdForSession("s1"), workspace.id);
+    // 未加入任何工作区的会话不是错误:事件里如实写 null
+    assert.equal(store.workspaceIdForSession("orphan"), null);
+
+    store.removeSession(workspace.id, "s1");
+    assert.equal(store.workspaceIdForSession("s1"), null);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

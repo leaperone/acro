@@ -41,6 +41,9 @@ export class DaemonClient extends EventEmitter {
   private closed = false;
   private readonly requestTimeoutMs: number;
   private readonly maxPending: number;
+  // 当前 daemon 声明支持的方法。每次连接建立后重新协商:
+  // daemon 独立于 runtime 升级,能力必须绑定到具体连接而不是进程生命周期。
+  private capabilities = new Set<string>();
 
   constructor(
     requestTimeoutMs = DAEMON_REQUEST_TIMEOUT_MS,
@@ -80,16 +83,48 @@ export class DaemonClient extends EventEmitter {
         });
         socket.on("close", () => this.onClose(socket));
         socket.on("error", () => {});
-        this.emit("up");
-        resolve();
+        // 先协商能力再宣告可用:恢复流程紧跟 "up" 运行,不能读到空能力集而误判为旧 daemon。
+        void this.negotiate().then(() => {
+          // 协商期间连接可能已经断开并被 onClose 换掉;在死连接上宣告 up 只会让
+          // 恢复流程白跑一轮。此时重连已在路上,交给下一次 up。
+          if (this.socket !== socket) {
+            reject(new Error("daemon connection lost during negotiation"));
+            return;
+          }
+          this.emit("up");
+          resolve();
+        });
       });
       socket.on("error", (err) => reject(err));
     });
   }
 
+  // 握手失败不是致命错误:旧 daemon 的 daemon.info 没有 methods,超时或报错也一样,
+  // 一律落到空能力集,即"不支持任何需要显式声明的方法"。
+  private async negotiate(): Promise<void> {
+    this.capabilities = new Set();
+    try {
+      const info = await this.request<{ methods?: unknown }>("daemon.info", {}, undefined, {
+        destroySocketOnTimeout: false,
+      });
+      if (Array.isArray(info?.methods)) {
+        this.capabilities = new Set(info.methods.filter((m): m is string => typeof m === "string"));
+      }
+    } catch {
+      // 保持空能力集
+    }
+  }
+
+  // daemon 是否明确声明支持该方法。旧 daemon(不报告 methods)恒为 false,
+  // 调用方据此给出"daemon 过旧"的处置,而不是解析错误文案。
+  supports(method: string): boolean {
+    return this.capabilities.has(method);
+  }
+
   private onClose(socket: net.Socket): void {
     if (this.socket !== socket) return;
     this.socket = null;
+    this.capabilities = new Set();
     this.reader.reset();
     for (const p of this.pending.values()) {
       clearTimeout(p.timer);

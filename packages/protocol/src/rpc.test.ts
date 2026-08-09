@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Session } from "./models.ts";
-import { methods } from "./rpc.ts";
+import { DEFAULT_GRANT_SCOPES, Session } from "./models.ts";
+import { E2eeAuthed, events, METHOD_SCOPES, methods } from "./rpc.ts";
 
 test("computer input parameters stay within helper-safe bounds", () => {
   const key = methods["computer.key"].params;
@@ -160,4 +160,54 @@ test("daemon restart requires explicit destructive intent", () => {
   assert.equal(params.safeParse({ force: true }).success, true);
   assert.equal(params.safeParse({ force: false }).success, false);
   assert.equal(params.safeParse({}).success, false);
+});
+
+test("every RPC method declares a scope, and privileged methods are not readable", () => {
+  const declared = Object.keys(METHOD_SCOPES).sort();
+  const defined = Object.keys(methods).sort();
+  assert.deepEqual(declared, defined, "METHOD_SCOPES must cover exactly the method table");
+
+  // Computer Use 等于整台 Mac 的键鼠与录屏,绝不能落进 read 或 control
+  for (const [method, scope] of Object.entries(METHOD_SCOPES)) {
+    if (method.startsWith("computer.")) {
+      const shared = method === "computer.controlOwner" || method === "computer.permissions";
+      assert.equal(shared ? scope === "read" : scope === "computer", true, method);
+    }
+    if (method.startsWith("device.")) assert.equal(scope, "admin", method);
+  }
+
+  // 只读家族不得被授予写权限档
+  for (const method of ["fs.read", "fs.search", "git.diff", "git.status", "ports.list"]) {
+    assert.equal(METHOD_SCOPES[method as keyof typeof METHOD_SCOPES], "read", method);
+  }
+
+  // 新配对默认不含整机控制与设备管理
+  assert.deepEqual([...DEFAULT_GRANT_SCOPES], ["read", "control"]);
+  assert.equal(DEFAULT_GRANT_SCOPES.includes("computer"), false);
+  assert.equal(DEFAULT_GRANT_SCOPES.includes("admin"), false);
+});
+
+test("session events carry their workspace and stay backward-compatible", () => {
+  // 旧 runtime 不发 workspaceId:必须仍能解析,并落到 null
+  const legacy = events["session.exit"].safeParse({ sessionId: "s1", exitCode: 0 });
+  assert.equal(legacy.success, true);
+  assert.equal(legacy.success && legacy.data.workspaceId, null);
+
+  const scoped = events["session.title"].safeParse({
+    sessionId: "s1",
+    title: "acro",
+    workspaceId: "w1",
+  });
+  assert.equal(scoped.success && scoped.data.workspaceId, "w1");
+
+  // authed 的 scopes 对旧 runtime 可缺省
+  assert.equal(E2eeAuthed.safeParse({ t: "authed", deviceId: "d1" }).success, true);
+  assert.equal(
+    E2eeAuthed.safeParse({ t: "authed", deviceId: "d1", scopes: ["read"] }).success,
+    true,
+  );
+  assert.equal(
+    E2eeAuthed.safeParse({ t: "authed", deviceId: "d1", scopes: ["root"] }).success,
+    false,
+  );
 });

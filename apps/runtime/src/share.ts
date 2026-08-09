@@ -10,6 +10,7 @@ import {
   encodePairingOffer,
   generateKeyPair,
   ServerHandshake,
+  type RpcScope,
 } from "@acro/protocol";
 import { z } from "zod";
 import { paths, PRIVATE_FILE_MODE } from "./paths.ts";
@@ -71,8 +72,9 @@ export function createShareOffer(
   name?: string,
   extraEndpoints: string[] = [],
   local = false,
+  scopes?: readonly RpcScope[],
 ): { offer: string; deviceId: string } {
-  const { device, token } = registry.createGrant(name, local);
+  const { device, token } = registry.createGrant(name, local, scopes);
   try {
     const endpoints = [...new Set([...lanEndpoints(port), ...extraEndpoints])];
     const offer = encodePairingOffer({

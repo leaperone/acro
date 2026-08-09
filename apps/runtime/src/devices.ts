@@ -1,5 +1,12 @@
 import crypto from "node:crypto";
-import { Device as DeviceSchema, pairingAdmissionId, type Device } from "@acro/protocol";
+import {
+  ALL_RPC_SCOPES,
+  DEFAULT_GRANT_SCOPES,
+  Device as DeviceSchema,
+  pairingAdmissionId,
+  type Device,
+  type RpcScope,
+} from "@acro/protocol";
 import { z } from "zod";
 import { paths } from "./paths.ts";
 import { readJson, writeJsonAtomic } from "./store.ts";
@@ -7,14 +14,26 @@ import { readJson, writeJsonAtomic } from "./store.ts";
 interface StoredDevice extends Device {
   tokenHash: string;
   local: boolean;
+  scopes: RpcScope[];
 }
 
 const StoredDevices = z.array(
   DeviceSchema.extend({
     tokenHash: z.string().regex(/^[0-9a-f]{64}$/),
     local: z.boolean().default(false),
+    // scope 早于本字段的授权在读取时补全为全 scope(见 normalizeScopes):
+    // 已配对的 iPhone / MacBook 不能因为一次升级就失去权限。
+    scopes: z.array(z.enum(ALL_RPC_SCOPES as [RpcScope, ...RpcScope[]])).nullable().default(null),
   }),
 );
+
+// 旧记录(scopes 缺失或为 null)= 升级前配对的设备,当时的实际权限就是全部方法。
+// 静默降权会让用户已在用的设备突然报 forbidden,比暂时宽松更糟。
+function normalizeScopes(scopes: readonly RpcScope[] | null | undefined): RpcScope[] {
+  if (!scopes) return [...ALL_RPC_SCOPES];
+  const unique = [...new Set(scopes)];
+  return ALL_RPC_SCOPES.filter((scope) => unique.includes(scope));
+}
 
 // 访问授权模型(取自 orca 的 runtime access grant):
 // 每个授权 = 一个设备条目 + 一个 token。token 由配对码带外分发,服务端只存哈希。
@@ -28,7 +47,10 @@ export class DeviceRegistry {
     this.file = file;
     try {
       const raw = readJson<unknown>(file, []);
-      this.devices = StoredDevices.parse(raw);
+      this.devices = StoredDevices.parse(raw).map((device) => ({
+        ...device,
+        scopes: normalizeScopes(device.scopes),
+      }));
       if (Array.isArray(raw)) {
         this.legacyDeviceIds = new Set(
           raw.flatMap((entry) =>
@@ -46,8 +68,18 @@ export class DeviceRegistry {
     }
   }
 
-  createGrant(name?: string, local = false): { device: Device; token: string } {
+  // local grant 是本机桌面端自己用的授权,必须拿全 scope,否则本机 UI 会被自己锁住。
+  // 远程配对省略 scopes 时按 DEFAULT_GRANT_SCOPES(不含 computer / admin)。
+  createGrant(
+    name?: string,
+    local = false,
+    scopes?: readonly RpcScope[],
+  ): { device: Device; token: string } {
     const token = crypto.randomBytes(32).toString("hex");
+    const granted = local
+      ? [...ALL_RPC_SCOPES]
+      : normalizeScopes(scopes ?? DEFAULT_GRANT_SCOPES);
+    if (granted.length === 0) throw new Error("grant requires at least one scope");
     const device: StoredDevice = {
       id: crypto.randomUUID(),
       name: name ?? `Runtime ${new Date().toISOString().slice(0, 10)}`,
@@ -55,6 +87,7 @@ export class DeviceRegistry {
       lastSeenAt: null,
       tokenHash: pairingAdmissionId(token),
       local,
+      scopes: granted,
     };
     const next = [...this.devices, device];
     this.persist(next);
