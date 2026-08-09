@@ -10,6 +10,7 @@ import {
   encodePairingOffer,
   generateKeyPair,
   ServerHandshake,
+  ALL_RPC_SCOPES,
   type RpcScope,
 } from "@acro/protocol";
 import { z } from "zod";
@@ -174,9 +175,17 @@ export function writeBootstrapOffer(
   port: number,
   file = paths.bootstrapOffer,
 ): { offer: string; deviceId: string } {
-  const result = createShareOffer(registry, identity, port, "bootstrap", [
-    `127.0.0.1:${port}`,
-  ]);
+  // 引导设备是这台 Runtime 的第一台设备,必须拿全 scope:
+  // 缺 admin 就无法再配对第二台,Runtime 会就此锁死在单设备状态。
+  const result = createShareOffer(
+    registry,
+    identity,
+    port,
+    "bootstrap",
+    [`127.0.0.1:${port}`],
+    false,
+    ALL_RPC_SCOPES,
+  );
   writeOfferFile(registry, result, file);
   return result;
 }

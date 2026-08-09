@@ -189,3 +189,33 @@ test("legacy HTTP local grants are revoked during local offer migration", () => 
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+// 引导设备和本机设备都是「这台 Runtime 的管理入口」。只给默认 scope 会让首台设备
+// 拿不到 admin,再也配不出第二台,Runtime 就此锁死在单设备状态。
+test("bootstrap and local grants keep the full scope set", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "acro-share-scope-"));
+  try {
+    const registry = new DeviceRegistry(path.join(directory, "devices.json"));
+    const identity = new ServerIdentity(path.join(directory, "identity.json"));
+
+    const bootstrap = ensureBootstrapOffer(
+      registry,
+      identity,
+      8790,
+      path.join(directory, "bootstrap-offer.txt"),
+    );
+    const bootstrapDevice = registry.list().find((d) => d.id === bootstrap.deviceId);
+    assert.deepEqual(bootstrapDevice?.scopes, ["read", "control", "computer", "admin"]);
+
+    const local = ensureLocalOffer(registry, identity, 8790, path.join(directory, "local.txt"));
+    const localDevice = registry.list().find((d) => d.id === local.deviceId);
+    assert.deepEqual(localDevice?.scopes, ["read", "control", "computer", "admin"]);
+
+    // 对比:普通分享仍是最小授权
+    const shared = createShareOffer(registry, identity, 8790, "iPhone");
+    const sharedDevice = registry.list().find((d) => d.id === shared.deviceId);
+    assert.deepEqual(sharedDevice?.scopes, ["read", "control"]);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
