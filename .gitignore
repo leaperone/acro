@@ -5,5 +5,8 @@ dist/
 *.log
 .build/
 
+# Local planning
+/.planning/
+
 # Local Git worktrees
 /.worktrees/
