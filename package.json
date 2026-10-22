@@ -2,17 +2,6 @@
   "name": "acro",
   "private": true,
   "packageManager": "pnpm@11.5.2",
-  "pnpm": {
-    "overrides": {
-      "shell-quote": ">=1.11.0",
-      "@xmldom/xmldom": ">=0.8.15",
-      "nanoid": ">=3.3.18",
-      "js-yaml": ">=4.3.2",
-      "source-map-js": ">=1.2.2",
-      "compression": ">=1.8.2",
-      "browserslist": ">=4.28.7"
-    }
-  },
   "scripts": {
     "build": "pnpm -r --if-present build",
     "check": "pnpm -r --if-present check"
